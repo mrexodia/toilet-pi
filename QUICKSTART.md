@@ -1,110 +1,114 @@
 # Quick Start Guide
 
-Get toilet-pi running in under 2 minutes.
+Get toilet-pi running with the web UI in under 2 minutes.
 
-## 1. Install Dependencies
+## 1. Start the Server
 
 ```bash
 cd ~/Projects/toilet-pi
-npm install
+npm start
 ```
 
-## 2. Start the WebSocket Server
-
-```bash
-npm start
+You should see:
+```
+============================================================
+Toilet-Pi Server
+============================================================
+WebSocket: ws://localhost:3456
+Web UI: http://localhost:3457
+Authentication: Disabled
+============================================================
 ```
 
 Keep this terminal open.
 
-## 3. Run pi with the Hook
+## 2. Run pi with the Hook
 
-Open a new terminal and run:
-
+In a new terminal:
 ```bash
 pi --hook ~/Projects/toilet-pi/websocket-hook.ts
 ```
 
+## 3. Open the Web UI
+
+Open your browser to:
+```
+http://localhost:3457
+```
+
+You should see:
+- Status: Connected (green)
+- Session info showing your current directory and model
+- Message input field
+- Send and Abort buttons
+
 ## 4. Test It
 
-Open another terminal and connect the test client:
+**Send a message from the web UI:**
+1. Type something in the input field
+2. Click Send or press Enter
+3. The message appears in pi and triggers a response
+4. You'll see both your message and the agent's response in the web UI
 
-```bash
-npm run client
-```
+**Abort from the web UI:**
+1. Start a long-running task in pi
+2. Click the Abort button in the web UI
+3. The operation stops immediately
 
-Try these commands:
-- `message Hello from another terminal!`
-- `abort`
+## Phone Setup
 
-You can also use `wscat`:
+### Option A: Use ngrok (easiest)
 
-```bash
-wscat -c ws://localhost:3456
-# Then send: {"type":"message","content":"Testing!"}
-```
-
-## 5. Setup Your Phone
-
-**Option A: ngrok (easiest)**
 ```bash
 # In a new terminal
-ngrok tcp 3456
+ngrok http 3457
 ```
-Use the URL it gives you on your phone's WebSocket app.
 
-**Option B: Cloudflare (recommended)**
+Use the HTTPS URL ngrok gives you on your phone.
+
+### Option B: Use Cloudflare tunnel
+
 ```bash
-# In a new terminal
-cloudflared tunnel --url ws://localhost:3456
+cloudflared tunnel --url http://localhost:3457
 ```
-Use the URL it gives you on your phone's WebSocket app.
 
-**Option C: Local network (at home only)**
+Use the provided URL on your phone.
+
+### Option C: Local network only
+
 ```bash
 # Find your IP
 ifconfig | grep inet
 ```
-Connect your phone to: `ws://192.168.1.XX:3456`
 
-## That's It!
+Open your phone's browser to: `http://192.168.1.XX:3457`
 
-You can now control pi from your phone while on the toilet. 🚽
+## Features
 
----
+- **Live conversation** - See all messages in real-time
+- **Send messages** - Type and send from anywhere
+- **Abort operations** - Stop whatever pi is doing with one tap
+- **Mobile-first** - Optimized for phone screens
+- **Auto-reconnect** - Web UI reconnects automatically if disconnected
+- **Session info** - See current directory and model
 
-### Commands in pi
+## Commands in pi
 
 - `/ws` - Show WebSocket connection status
 
-### Message Format
+## Security
 
-From your phone, send JSON:
-
-**Send a message:**
-```json
-{"type":"message","content":"Run the tests"}
-```
-
-**Abort:**
-```json
-{"type":"abort"}
-```
-
-### Security Tip
-
-For public access, use authentication:
+For public access, enable authentication:
 
 ```bash
 # Start server with token
 TOKEN=your-secret-token npm start
 
-# Connect with token
-wscat -c "ws://localhost:3456?token=your-secret-token"
+# Web UI URL will be: http://localhost:3457?token=your-secret-token
 ```
 
-### Troubleshooting
+## Troubleshooting
 
-- **Can't connect?** Make sure the server is running (`npm start` in a terminal)
-- **Messages not showing?** Run `/ws` in pi to check connection
+- **"Not connected" in web UI?** Make sure pi is running with the hook
+- **Messages not appearing?** Check `/ws` in pi to verify connection
 - **Need help?** See [README.md](./README.md) for detailed documentation

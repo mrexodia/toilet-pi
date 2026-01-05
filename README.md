@@ -1,27 +1,26 @@
 # Toilet-Pi: Remote Control pi from the Toilet
 
-A WebSocket client hook for pi that lets you send messages and abort operations remotely from your phone (or any WebSocket client). Perfect for when nature calls but your agent keeps running.
+A WebSocket hook + web UI for pi that lets you monitor conversations, send messages, and abort operations remotely from your phone (or any browser). Perfect for when nature calls.
 
 ## 🎯 What This Does
 
-This project gives you remote control over your pi instance:
+This project gives you full remote control and visibility of your pi session:
 
-1. **Send messages** - Inject messages into the conversation from anywhere
-2. **Abort operations** - Stop whatever pi is doing instantly
-3. **Full history** - Messages sent remotely are stored in the session just like normal user messages
-4. **Auto-reconnect** - The hook stays connected even if the network drops
+- **Live conversation feed** - See all messages in real-time
+- **Send messages** - Type messages that appear as if you typed them directly
+- **Abort operations** - Stop whatever pi is doing instantly
+- **Mobile-first web UI** - Optimized for phone screens
+- **In-memory session tracking** - No disk persistence, just works
 
 ## 📋 Table of Contents
 
 - [Quick Start](#quick-start)
 - [How It Works](#how-it-works)
 - [Architecture](#architecture)
-- [Message Format](#message-format)
+- [Web UI Features](#web-ui-features)
 - [Phone Setup](#phone-setup)
 - [Security](#security)
 - [Troubleshooting](#troubleshooting)
-- [Advanced Usage](#advanced-usage)
-- [Extending](#extending)
 
 ## 🚀 Quick Start
 
@@ -32,61 +31,40 @@ cd ~/Projects/toilet-pi
 npm install
 ```
 
-### Step 2: Start the WebSocket Server
+### Step 2: Start the Server
 
 ```bash
 npm start
 ```
 
-You should see:
+Keep this terminal open. You should see:
 ```
 ============================================================
-Toilet-Pi WebSocket Server
+Toilet-Pi Server
 ============================================================
-Running on ws://localhost:3456
-Authentication: Disabled
-
-Connect a client:
-  wscat -c ws://localhost:3456
-
-Message formats:
-  {"type":"message","content":"your message"}
-  {"type":"abort"}
+WebSocket: ws://localhost:3456
+Web UI: http://localhost:3457
 ============================================================
 ```
 
 ### Step 3: Run pi with the Hook
 
 In a new terminal:
-
 ```bash
 pi --hook ~/Projects/toilet-pi/websocket-hook.ts
 ```
 
-You should see a notification: `Connecting to WebSocket: ws://localhost:3456`
+### Step 4: Open the Web UI
 
-### Step 4: Test from Another Terminal
-
-Install `wscat` if needed: `npm install -g wscat`
-
-```bash
-wscat -c ws://localhost:3456
+Open your browser to:
+```
+http://localhost:3457
 ```
 
-Then send a message:
-```json
-{"type":"message","content":"Hello from the toilet!"}
-```
+### Step 5: Test It
 
-The message should appear in pi and trigger a response!
-
-### Step 5: Test Abort
-
-```json
-{"type":"abort"}
-```
-
-This will stop whatever pi is doing, just like pressing Ctrl+C.
+- Type a message in the web UI and click Send - it appears in pi
+- Start a long task in pi, then click Abort in the web UI - it stops immediately
 
 ---
 
@@ -95,163 +73,140 @@ This will stop whatever pi is doing, just like pressing Ctrl+C.
 ### The Big Picture
 
 ```
-Your Phone (on toilet)
+Phone Browser (web UI)
     ↓
-WebSocket Client App
+HTTP/WebSocket Server (port 3457/3456)
     ↓
-WebSocket Server (ws://localhost:3456)
-    ↓
-WebSocket Hook (running in pi)
+pi Hook (running in pi)
     ↓
 pi Agent
 ```
 
 ### Components
 
-1. **WebSocket Server** (`websocket-server.js`)
-   - Runs on your desktop machine (the same one running pi)
-   - Listens for WebSocket connections on port 3456
-   - Relays messages from clients to pi
-   - Optional token-based authentication
+1. **Server** (`websocket-server.js`)
+   - Runs on your desktop (same machine as pi)
+   - WebSocket server on port 3456 for hook connections
+   - HTTP server on port 3457 serving the web UI
+   - Tracks sessions in memory (no disk persistence)
+   - Broadcasts messages to web UI clients
+   - Forwards web UI commands (message/abort) to hook
 
-2. **WebSocket Hook** (`websocket-hook.ts`)
+2. **Hook** (`websocket-hook.ts`)
    - Loaded when pi starts via `--hook` flag
-   - Connects to the WebSocket server as a client
-   - Listens for JSON messages
-   - Calls pi APIs to inject messages or abort
+   - Connects to WebSocket server
+   - Sends session_start event when connected
+   - Forwards all messages (user, assistant, tool results) to server
+   - Receives message/abort commands from server and executes them
 
-3. **WebSocket Client** (your phone or another terminal)
-   - Any WebSocket client can send messages
-   - Uses JSON format: `{"type":"message","content":"..."}` or `{"type":"abort"}`
+3. **Web UI** (embedded in server)
+   - Mobile-first responsive design
+   - Real-time message feed
+   - Message input field
+   - Abort button
+   - Auto-reconnect on disconnect
+   - Shows session info (directory, model)
 
 ### Message Flow
 
-When you send a message from your phone:
+**From pi to phone:**
+1. Agent sends a message (user, assistant, or tool result)
+2. Hook catches the event (turn_end or tool_result)
+3. Hook forwards to server via WebSocket
+4. Server stores in memory and broadcasts to web UI
+5. Web UI displays the message
 
-1. Your phone's WebSocket client sends JSON to the server
-2. The server receives and relays it to pi's hook
-3. The hook parses the JSON:
-   - If `type: "message"`: calls `pi.sendMessage()` which:
-     - Creates a `CustomMessageEntry` in the session
-     - Adds it to the LLM context
-     - Displays it in the TUI
-     - If agent is idle, triggers a new turn
-   - If `type: "abort"`: calls `ctx.abort()` which:
-     - Cancels any in-progress LLM request
-     - Aborts any running tool execution
-     - Returns control to the user
+**From phone to pi:**
+1. User types message or clicks Abort in web UI
+2. Web UI sends to server via WebSocket
+3. Server forwards to hook via WebSocket
+4. Hook calls pi API (sendMessage or ctx.abort)
+5. pi executes the action
 
 ---
 
 ## 🏗 Architecture
 
-### Hook Lifecycle
+### Server Architecture
+
+```
+Server Process
+├── WebSocket Server (port 3456)
+│   ├── Hook clients (pi connections)
+│   └── Web UI clients (browser connections)
+├── HTTP Server (port 3457)
+│   └── Serves web UI HTML/JS/CSS
+└── In-Memory Storage
+    └── sessions Map: sessionId → {
+        messages: [],
+        connected: boolean,
+        cwd: string,
+        model: string
+      }
+```
+
+### Hook Event Flow
 
 ```
 pi starts
   ↓
-Hook is loaded
+Hook loaded
   ↓
-session_start event fires
+session_start event
   ↓
-Hook connects to WebSocket server
+Hook connects to server
   ↓
-Hook waits for messages...
+Hook sends session_start (with sessionId, cwd, model)
   ↓
-Message received
+Hook sends existing messages from session
   ↓
-Hook calls pi.sendMessage() or ctx.abort()
+turn_end event → Hook forwards to server → Server broadcasts to web UI
+tool_result event → Hook forwards to server → Server broadcasts to web UI
   ↓
-pi processes the action
-  ↓
-User session_shutdown
-  ↓
-Hook closes WebSocket connection
+Web UI sends message → Server → Hook → pi.sendMessage()
+Web UI sends abort → Server → Hook → ctx.abort()
 ```
-
-### Session Integration
-
-Messages sent via WebSocket are **first-class citizens** in the pi session:
-
-- Stored as `CustomMessageEntry` with `customType: "websocket-message"`
-- Appear in conversation history with purple styling
-- Participate in LLM context (sent to the model)
-- Visible in `/tree` navigation
-- Persisted across pi restarts
-- Can be branched from, compacted, etc.
-
-The only difference from a regular user message is the custom styling that identifies it as coming from the WebSocket.
 
 ---
 
-## 📨 Message Format
+## 🎨 Web UI Features
 
-All messages are JSON with a `type` field:
+### Message Display
 
-### Send Message
+- **User messages** - Blue, right-aligned (like you typed them)
+- **Assistant messages** - Dark gray, left-aligned
+- **Tool results** - Purple left border, left-aligned
+- **Errors** - Red left border, left-aligned
+- **Timestamps** - Small, gray text above each message
 
-```json
-{
-  "type": "message",
-  "content": "Run the tests again"
-}
-```
+### Controls
 
-- `type`: Must be `"message"`
-- `content`: Your message text (required)
+- **Message input** - Text field with autocomplete disabled
+- **Send button** - Green, disabled when disconnected
+- **Abort button** - Red, disabled when disconnected
+- **Send on Enter** - Press Enter in input to send
 
-**Behavior:**
-- Message is added to the conversation
-- If agent is idle, wakes it up and triggers a response
-- Message is stored in the session file
-- Displays in the TUI with purple styling
+### Status
 
-### Abort
+- **Connection status** - Green "Connected" or red "Disconnected"
+- **Session info** - Current working directory and model name
+- **Auto-reconnect** - Web UI reconnects automatically every 3 seconds
 
-```json
-{
-  "type": "abort"
-}
-```
+### Mobile Optimization
 
-- `type`: Must be `"abort"`
-- No other fields
-
-**Behavior:**
-- Stops any in-progress LLM request
-- Aborts any running tool execution
-- Equivalent to pressing Ctrl+C
-- Returns control to the user
+- Full-height layout (no browser chrome)
+- Touch-friendly buttons
+- Large tap targets
+- Auto-scroll to newest messages
+- No zoom on focus (viewport meta tag)
 
 ---
 
 ## 📱 Phone Setup
 
-To use this from your phone while on the toilet:
+To use the web UI from your phone while on the toilet:
 
-### Option 1: Local Network (at home)
-
-1. Find your desktop's local IP address:
-   ```bash
-   ifconfig | grep inet
-   ```
-   Look for something like `192.168.1.23`
-
-2. Start the WebSocket server (it binds to all interfaces by default):
-   ```bash
-   npm start
-   ```
-
-3. Connect your phone's WebSocket client to:
-   ```
-   ws://192.168.1.23:3456
-   ```
-
-**Limitations:**
-- Only works when phone and desktop are on the same network
-- Doesn't work when you're away from home
-
-### Option 2: ngrok (easiest for public access)
+### Option 1: ngrok (easiest)
 
 1. Install ngrok:
    ```bash
@@ -260,29 +215,25 @@ To use this from your phone while on the toilet:
 
 2. Run ngrok tunnel:
    ```bash
-   ngrok tcp 3456
+   ngrok http 3457
    ```
 
-3. ngrok will give you a URL like:
+3. ngrok gives you a URL like:
    ```
-   tcp://0.tcp.ngrok.io:12345
+   https://a1b2c3d4.ngrok-free.app
    ```
 
-4. Connect your phone to:
-   ```
-   ws://0.tcp.ngrok.io:12345
-   ```
+4. Open that URL on your phone
 
 **Pros:**
 - Works from anywhere
-- No router configuration needed
-- Free tier is sufficient
+- HTTPS by default
+- No router configuration
 
 **Cons:**
-- URL changes each time ngkok starts
-- ngrok may rate-limit free tier
+- URL changes on each ngrok restart
 
-### Option 3: Cloudflare Tunnel (recommended)
+### Option 2: Cloudflare Tunnel (recommended)
 
 1. Install cloudflared:
    ```bash
@@ -291,41 +242,44 @@ To use this from your phone while on the toilet:
 
 2. Run the tunnel:
    ```bash
-   cloudflared tunnel --url ws://localhost:3456
+   cloudflared tunnel --url http://localhost:3457
    ```
 
-3. cloudflared will give you a URL like:
+3. Get the URL like:
    ```
-   wss://random-name.trycloudflare.com
+   https://random-name.trycloudflare.com
    ```
 
-4. Connect your phone to that URL.
+4. Open on your phone
 
 **Pros:**
 - Free, no account required
+- HTTPS by default
 - Works from anywhere
-- URL persists while tunnel is running
-- Encrypted (WSS)
 
 **Cons:**
-- URL changes on restart (but stays same while running)
+- URL changes on restart
 
-### Phone WebSocket Client Apps
+### Option 3: Local Network (at home only)
 
-**Android:**
-- "Simple WebSocket Client"
-- "WebSocket Client"
-- Any browser-based client
+1. Find your desktop's IP:
+   ```bash
+   ifconfig | grep inet
+   ```
+   Look for something like `192.168.1.23`
 
-**iOS:**
-- "Rocket WebSocket"
-- "WebSocket Terminal"
-- Any browser-based client
+2. Open your phone's browser to:
+   ```
+   http://192.168.1.23:3457
+   ```
 
-**Browser:**
-- https://www.piesocket.com/websocket-tester
-- https://amritb.github.io/websocket-client/
-- Any online WebSocket test tool
+**Pros:**
+- No external service needed
+- Private to your network
+
+**Cons:**
+- Only works when phone and desktop are on same network
+- No HTTPS (HTTP only)
 
 ---
 
@@ -333,57 +287,41 @@ To use this from your phone while on the toilet:
 
 ### Authentication
 
-The server supports token-based authentication. Without it, anyone who connects can send messages to your pi.
+The server supports token-based authentication. Without it, anyone who can access your web UI can control your pi.
 
 **Enable authentication:**
 
-1. Set a token when starting the server:
-   ```bash
-   TOKEN=my-secret-token npm start
-   ```
+```bash
+TOKEN=your-secret-token npm start
+```
 
-2. Clients must include the token in their connection URL:
-   ```
-   wscat -c "ws://localhost:3456?token=my-secret-token"
-   ```
-
-3. Invalid tokens are rejected with:
-   ```json
-   {"error":"Invalid token"}
-   ```
-
-**Best Practices:**
-- Use a strong, random token (at least 32 characters)
-- Store token in environment variable, not in code
-- Rotate tokens regularly
-- Never commit tokens to git
-
-### Additional Security Measures
+Then access the web UI with:
+```
+http://localhost:3457?token=your-secret-token
+```
 
 **For public internet access:**
 
-1. **Always use authentication** (TOKEN)
-2. **Use WSS (encrypted)**:
-   - cloudflared provides WSS automatically
-   - For ngrok, you'll need a paid plan for custom domains
-3. **Consider IP whitelisting** if your server supports it
-4. **Rate limiting** - Add to your server if needed
-5. **Use a reverse proxy** with authentication (nginx, caddy)
+1. **Always use TOKEN** - Set a strong, random token
+2. **Use HTTPS** - ngrok or cloudflared provide HTTPS automatically
+3. **Rotate tokens** - Change tokens regularly
+4. **Use a tunnel service** - Don't expose ports directly
 
-**For local network only:**
+**Best Practices:**
 
-- Still use TOKEN for basic protection
-- Your network is your main security boundary
-- Ensure your WiFi is secure (WPA3, strong password)
+- Generate a random token: `openssl rand -hex 32`
+- Store token in environment variable, not in code
+- Don't share URLs with tokens
+- Use VPN or firewall if possible
 
-### What Can a Compromised Connection Do?
+### What Can a Compromised Access Do?
 
-If someone connects to your WebSocket server (or guesses your token):
+If someone accesses your web UI:
 
-- Send arbitrary messages to your pi
+- See your entire conversation history
+- Send arbitrary messages to pi
 - Abort your work in progress
-- Potentially execute commands (if the message triggers tools)
-- Read your session history (if you add that feature)
+- Potentially execute commands (if messages trigger tools)
 
 **This is essentially remote control of your pi.**
 
@@ -393,281 +331,111 @@ If someone connects to your WebSocket server (or guesses your token):
 
 ### Connection Issues
 
-**Problem: "Connection refused"**
+**Problem: "Not connected" in web UI**
 
-Cause: WebSocket server isn't running
+Checklist:
+- Is the server running? (`npm start`)
+- Is pi running with the hook? (`pi --hook ...`)
+- Try `/ws` command in pi to check connection
+- Check browser console for errors
 
-Solution:
-```bash
-# Check if port is in use
-lsof -i :3456
+**Problem: Messages not appearing**
 
-# Start the server
-npm start
-```
-
-**Problem: "Port already in use"**
-
-Cause: Something else is using port 3456
-
-Solution:
-```bash
-# Find what's using the port
-lsof -i :3456
-
-# Kill the process or use a different port
-PORT=3457 npm start
-```
+Checklist:
+- Is pi actually generating messages?
+- Try sending a message from the web UI first
+- Check `/ws` in pi to verify connection
+- Refresh the web UI page
 
 **Problem: Can't connect from phone**
 
 Checklist:
-- Is the server running?
-- Is your desktop firewall blocking port 3456?
-- Are phone and desktop on the same network (for local IP)?
-- Is the tunnel service running (for ngrok/cloudflared)?
+- Is the tunnel service running (ngrok/cloudflared)?
 - Is the URL correct?
+- Are phone and desktop on same network (for local IP)?
+- Try opening the URL on your desktop first
 
 ### Hook Issues
 
-**Problem: Hook not connecting**
+**Problem: Hook shows "retry X" forever**
 
-Check:
-- Is pi running with `--hook` flag?
-- Is the WS_URL correct? Check `/ws` command in pi
-- Is the server running and accessible?
+- Make sure server is running
+- Check the port (default 3456) isn't blocked
+- Try restarting pi
 
-**Problem: Messages not appearing in pi**
+**Problem: Messages from web UI don't reach pi**
 
-Check:
-- Run `/ws` in pi to see connection status
+- Try `/ws` command to check connection status
 - Check server logs show messages being received
 - Verify JSON format is correct
-- Try sending a test message from wscat first
 
-**Problem: Can't abort**
+### Server Issues
 
-Check:
-- Is pi actually doing something?
-- Does regular Ctrl+C work?
-- Check for error messages
-- Verify message format: `{"type":"abort"}`
+**Problem: Port already in use**
 
-### Token Issues
+```bash
+# Find what's using the port
+lsof -i :3456
+lsof -i :3457
 
-**Problem: "Invalid token"**
+# Kill the process or use different ports
+WS_PORT=3458 HTTP_PORT=3459 npm start
+```
 
-Check:
-- Token matches exactly between server and client
-- Client includes `?token=XYZ` in connection URL
-- No extra spaces in token
-- Environment variable is set: `TOKEN=... npm start`
+**Problem: Server crashes on Ctrl+C**
 
-### Phone-Specific Issues
-
-**Problem: Can't connect from phone**
-
-- Verify phone and desktop are on same network (for local IP)
-- Check if router has firewall rules blocking the port
-- Try tunnel service (ngrok/cloudflared) instead
-- Test with wscat from another computer first
-
-**Problem: Connection drops**
-
-- Check phone's WiFi connection
-- Try a different WebSocket client app
-- Check if tunnel service is still running
-- Hook will auto-reconnect every 5 seconds
+- Should shutdown cleanly now
+- Check for zombie processes: `ps aux | grep node`
 
 ---
 
-## 🎛 Advanced Usage
+## 🛠 Configuration
 
-### Custom Server Port
+### Ports
+
+Default ports:
+- WebSocket (hook): 3456
+- HTTP (web UI): 3457
+
+Custom ports:
+```bash
+WS_PORT=3458 HTTP_PORT=3459 npm start
+```
+
+Then update hook to match:
+```bash
+PI_WS_URL=ws://localhost:3458 pi --hook ~/Projects/toilet-pi/websocket-hook.ts
+```
+
+### Authentication Token
 
 ```bash
-PORT=8080 npm start
+TOKEN=your-secret-token npm start
 ```
 
-Then connect to `ws://localhost:8080`
-
-### Custom WebSocket URL in Hook
-
-```bash
-PI_WS_URL=ws://my-server:8080 pi --hook ~/Projects/toilet-pi/websocket-hook.ts
+Web UI URL includes token:
 ```
-
-### Running as Background Service
-
-**Using nohup:**
-```bash
-nohup npm start > /tmp/toilet-pi-server.log 2>&1 &
-```
-
-**Using systemd (Linux):**
-Create `/etc/systemd/system/toilet-pi.service`:
-```ini
-[Unit]
-Description=Toilet-Pi WebSocket Server
-After=network.target
-
-[Service]
-Type=simple
-User=your-user
-WorkingDirectory=/home/your-user/Projects/toilet-pi
-Environment="TOKEN=your-token"
-ExecStart=/usr/bin/node /home/your-user/Projects/toilet-pi/websocket-server.js
-Restart=always
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-```
-
-Then:
-```bash
-sudo systemctl enable toilet-pi
-sudo systemctl start toilet-pi
-sudo systemctl status toilet-pi
-```
-
-### Multiple Clients
-
-The server supports multiple connected clients. Messages sent from one client can be broadcast to others (this is enabled by default).
-
-Useful for:
-- Multiple phones sending messages
-- Observing messages sent from other devices
-- Collaborative remote control
-
-### Hook Auto-Loading
-
-Instead of using `--hook` flag every time, you can:
-
-1. Copy hook to auto-load directory:
-   ```bash
-   cp ~/Projects/toilet-pi/websocket-hook.ts ~/.pi/agent/hooks/
-   ```
-
-2. The hook will load automatically when pi starts
-
----
-
-## 🚀 Extending
-
-Here are some ideas for extending this hook:
-
-### 1. Receive pi Responses on Phone
-
-Add to `websocket-hook.ts`:
-
-```typescript
-pi.on("turn_end", async (event, ctx) => {
-  const message = event.message;
-  const text = message.content
-    .filter((c): c is { type: "text"; text: string } => c.type === "text")
-    .map((c) => c.text)
-    .join("\n");
-
-  if (ws?.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify({
-      type: "response",
-      content: text,
-    }));
-  }
-});
-```
-
-### 2. Get Session History
-
-Add message type handler:
-
-```typescript
-} else if (msg.type === "history") {
-  const entries = ctx.sessionManager.getEntries();
-  const history = entries.map(e => ({
-    id: e.id,
-    type: e.type,
-    timestamp: e.timestamp,
-    // ... more fields
-  }));
-
-  if (ws?.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify({ type: "history", data: history }));
-  }
-}
-```
-
-### 3. Branch/Switch Sessions Remotely
-
-```typescript
-} else if (msg.type === "branch") {
-  const result = await ctx.branch(msg.entryId);
-  if (!result.cancelled && ctx.hasUI) {
-    ctx.ui.notify("Branched via WebSocket", "info");
-  }
-}
-```
-
-### 4. Get Session Stats
-
-```typescript
-} else if (msg.type === "stats") {
-  const stats = {
-    entryCount: ctx.sessionManager.getEntries().length,
-    sessionId: ctx.sessionManager.getSessionId(),
-    leafId: ctx.sessionManager.getLeafId(),
-    // ... more stats
-  };
-
-  if (ws?.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify({ type: "stats", data: stats }));
-  }
-}
-```
-
-### 5. Two-Way Editor Sync
-
-Sync the pi editor with your phone:
-
-```typescript
-// Send editor content to phone on change
-pi.on("...", (event, ctx) => {
-  const text = ctx.ui.getEditorText();
-  ws?.send(JSON.stringify({ type: "editor", content: text }));
-});
-
-// Receive editor updates from phone
-} else if (msg.type === "editor") {
-  ctx.ui.setEditorText(msg.content);
-}
-```
-
-### 6. Custom Message Renderer
-
-Style WebSocket messages differently:
-
-```typescript
-import { Text } from "@mariozechner/pi-tui";
-
-pi.registerMessageRenderer("websocket-message", (message, options, theme) => {
-  const icon = theme.fg("accent", "📱 ");
-  const text = typeof message.content === "string"
-    ? message.content
-    : "[complex message]";
-  return new Text(icon + theme.fg("text", text), 0, 0);
-});
+http://localhost:3457?token=your-secret-token
 ```
 
 ---
 
-## 📚 Additional Resources
+## 📚 Session Information
 
-- **pi Documentation**: `/opt/homebrew/lib/node_modules/@mariozechner/pi-coding-agent/README.md`
-- **Hooks Documentation**: `/opt/homebrew/lib/node_modules/@mariozechner/pi-coding-agent/docs/hooks.md`
-- **Hook Examples**: `/opt/homebrew/lib/node_modules/@mariozechner/pi-coding-agent/examples/hooks/`
-- **WebSocket API**: https://developer.mozilla.org/en-US/docs/Web/API/WebSocket
-- **ws Library**: https://github.com/websockets/ws
+The web UI shows:
+- **Current working directory** - Where pi is running
+- **Model name** - Which LLM model is active
+- **Connection status** - Green if connected, red otherwise
+
+---
+
+## 🎯 Use Cases
+
+- **Monitor long-running jobs** - Watch progress from anywhere
+- **Send quick updates** - "Stop and run tests instead"
+- **Emergency abort** - Something went wrong, stop immediately
+- **Collaborative debugging** - Multiple people can watch the session
+- **Toilet productivity** - Stay productive anywhere
 
 ---
 
@@ -677,17 +445,15 @@ MIT
 
 ---
 
-## 💡 Usage Tips
+## 💡 Tips
 
-1. **Test locally first** - Use `wscat` from another terminal before trying your phone
+1. **Test locally first** - Open web UI on your desktop before trying your phone
 2. **Use authentication** - Always set TOKEN for any public access
-3. **Check connection status** - Use `/ws` command in pi to verify connection
-4. **Start server early** - Start the server before pi so the hook can connect immediately
-5. **Monitor logs** - Keep server logs visible to see messages being sent/received
+3. **Keep server running** - Use a process manager (tmux, screen) for long sessions
+4. **Monitor connection** - Use `/ws` command in pi to check status
+5. **Refresh if stuck** - Reload the web UI page if messages stop appearing
 6. **Auto-load the hook** - Copy to `~/.pi/agent/hooks/` for automatic loading
-7. **Use WSS for public** - Prefer encrypted connections when exposing to internet
-8. **Keep tunnel running** - Use a process manager (systemd, tmux, etc.) for long-running tunnels
 
 ---
 
-**Happy toileting!** 🚽✨
+**Happy toileting! 🚽✨**

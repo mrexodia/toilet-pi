@@ -6,7 +6,8 @@
   "type": "module",
   "scripts": {
     "start": "node websocket-server.js",
-    "client": "node test-client.js"
+    "client": "node test-client.js",
+    "web": "node websocket-server.js"
   },
   "dependencies": {
     "ws": "^8.18.0"
