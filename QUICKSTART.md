@@ -22,11 +22,11 @@ Authentication: Disabled
 
 Keep this terminal open.
 
-## 2. Run pi with the Hook
+## 2. Run pi with the Extension
 
 In a new terminal:
 ```bash
-pi --hook ~/Projects/toilet-pi/websocket-hook.ts
+pi -e ~/Projects/toilet-pi/websocket-extension.ts
 ```
 
 ## 3. Open the Web UI
@@ -109,6 +109,6 @@ TOKEN=your-secret-token npm start
 
 ## Troubleshooting
 
-- **"Not connected" in web UI?** Make sure pi is running with the hook
+- **"Not connected" in web UI?** Make sure pi is running with the extension
 - **Messages not appearing?** Check `/ws` in pi to verify connection
 - **Need help?** See [README.md](./README.md) for detailed documentation

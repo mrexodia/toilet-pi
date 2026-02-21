@@ -2,7 +2,7 @@
  * WebSocket Server + Web UI for toilet-pi
  *
  * This server provides:
- * - WebSocket endpoint for pi hook connection
+ * - WebSocket endpoint for pi extension connection
  * - HTTP server for mobile-first web UI
  * - Session tracking in memory (no disk persistence)
  */
@@ -17,7 +17,7 @@ const TOKEN = process.env.TOKEN; // Optional authentication
 
 // In-memory session storage
 const sessions = new Map(); // sessionId -> { messages: [], connected: false, cwd: null, model: null }
-const hookClients = new Set(); // WebSocket connections from pi hooks
+const extensionClients = new Set(); // WebSocket connections from pi extensions
 const webClients = new Set(); // WebSocket connections from web UI
 
 // HTML for mobile-first web UI
@@ -29,22 +29,67 @@ const HTML = `<!DOCTYPE html>
 	<title>Toilet-Pi</title>
 	<style>
 		* { box-sizing: border-box; margin: 0; padding: 0; }
-		body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0d1117; color: #c9d1d9; height: 100vh; display: flex; flex-direction: column; }
-		.header { background: #161b22; padding: 12px 16px; border-bottom: 1px solid #30363d; display: flex; justify-content: space-between; align-items: center; }
+		body {
+			font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+			background: #0d1117; color: #c9d1d9;
+			height: 100vh; height: 100dvh;
+			display: flex; flex-direction: column;
+		}
+		.header {
+			background: #161b22; padding: 12px 16px;
+			border-bottom: 1px solid #30363d;
+			display: flex; justify-content: space-between; align-items: center;
+		}
 		.header h1 { font-size: 18px; font-weight: 600; }
+		.header-left { display: flex; align-items: center; gap: 8px; }
 		.status { font-size: 12px; padding: 4px 8px; border-radius: 12px; }
 		.status.connected { background: #238636; color: #fff; }
 		.status.disconnected { background: #da3633; color: #fff; }
 		.session-info { font-size: 11px; color: #8b949e; }
-		.messages { flex: 1; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
-		.message { padding: 10px 12px; border-radius: 8px; max-width: 100%; word-wrap: break-word; font-size: 14px; line-height: 1.4; }
+		.busy-dot {
+			width: 8px; height: 8px; border-radius: 50%;
+			background: #e3b341; display: none;
+		}
+		.busy-dot.active {
+			display: inline-block;
+			animation: pulse 1.2s ease-in-out infinite;
+		}
+		@keyframes pulse { 0%, 100% { opacity: 0.3; } 50% { opacity: 1; } }
+		.messages {
+			flex: 1; overflow-y: auto; padding: 12px;
+			display: flex; flex-direction: column; gap: 8px;
+		}
+		.message {
+			padding: 10px 12px; border-radius: 8px; max-width: 100%;
+			word-wrap: break-word; font-size: 14px; line-height: 1.4;
+			white-space: pre-wrap;
+		}
 		.message.user { background: #1f6feb; color: #fff; align-self: flex-end; }
 		.message.assistant { background: #21262d; border: 1px solid #30363d; align-self: flex-start; }
+		.message.assistant.streaming { border: 1px dashed #58a6ff; opacity: 0.9; }
+		.message.assistant.streaming::after {
+			content: '\\u258b'; animation: blink 0.7s step-end infinite;
+		}
+		@keyframes blink { 50% { opacity: 0; } }
 		.message.system { background: #21262d; color: #8b949e; font-style: italic; font-size: 12px; align-self: center; }
 		.message.tool { background: #21262d; border-left: 3px solid #a371f7; padding-left: 10px; font-size: 12px; }
+		.message.tool-running {
+			background: #21262d; border-left: 3px solid #e3b341;
+			padding-left: 10px; font-size: 12px; color: #e3b341;
+		}
 		.message.error { background: #21262d; border-left: 3px solid #da3633; padding-left: 10px; color: #ffa198; }
-		.input-area { background: #161b22; padding: 12px; border-top: 1px solid #30363d; display: flex; gap: 8px; }
-		#message-input { flex: 1; background: #0d1117; border: 1px solid #30363d; border-radius: 8px; padding: 10px 12px; color: #c9d1d9; font-size: 14px; outline: none; }
+		.tool-content { max-height: 120px; overflow: hidden; }
+		.tool-content.expanded { max-height: none; }
+		.tool-expand { color: #58a6ff; font-size: 11px; cursor: pointer; margin-top: 4px; }
+		.input-area {
+			background: #161b22; padding: 12px;
+			border-top: 1px solid #30363d; display: flex; gap: 8px;
+		}
+		#message-input {
+			flex: 1; background: #0d1117; border: 1px solid #30363d;
+			border-radius: 8px; padding: 10px 12px;
+			color: #c9d1d9; font-size: 14px; outline: none;
+		}
 		#message-input:focus { border-color: #58a6ff; }
 		.btn { padding: 10px 16px; border-radius: 8px; border: none; font-size: 14px; font-weight: 600; cursor: pointer; }
 		.btn-send { background: #238636; color: #fff; }
@@ -54,12 +99,17 @@ const HTML = `<!DOCTYPE html>
 		.empty { text-align: center; color: #6e7681; padding: 40px 20px; }
 		.loading { text-align: center; color: #8b949e; padding: 20px; }
 		.timestamp { font-size: 10px; color: #6e7681; margin-bottom: 4px; }
+		@keyframes spin { to { transform: rotate(360deg); } }
+		.spinner { display: inline-block; animation: spin 1.5s linear infinite; }
 	</style>
 </head>
 <body>
 	<div class="header">
 		<div>
-			<h1>Toilet-Pi 🚽</h1>
+			<div class="header-left">
+				<h1>Toilet-Pi</h1>
+				<span class="busy-dot" id="busy-dot"></span>
+			</div>
 			<div class="session-info" id="session-info">Not connected</div>
 		</div>
 		<div>
@@ -75,17 +125,20 @@ const HTML = `<!DOCTYPE html>
 		<button class="btn btn-send" id="send-btn" disabled>Send</button>
 	</div>
 	<script>
-		// Connect to WebSocket server with ?web parameter to identify as web UI client
+		const params = new URLSearchParams(location.search);
+		const token = params.get('token');
+		const wsParams = token ? '?web&token=' + encodeURIComponent(token) : '?web';
 		let WS_URL;
 		if (location.hostname === 'localhost' || location.hostname === '127.0.0.1') {
-			WS_URL = 'ws://localhost:${WS_PORT}?web';
+			WS_URL = 'ws://localhost:${WS_PORT}' + wsParams;
 		} else {
-			// Use same host as page, just change protocol
 			const wsProtocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-			WS_URL = wsProtocol + '//' + location.host + '?web';
+			WS_URL = wsProtocol + '//' + location.host + wsParams;
 		}
 		let ws = null;
 		let currentSessionId = null;
+		let streamingDiv = null;
+		const activeTools = new Map();
 
 		const messagesEl = document.getElementById('messages');
 		const messageInput = document.getElementById('message-input');
@@ -93,8 +146,29 @@ const HTML = `<!DOCTYPE html>
 		const abortBtn = document.getElementById('abort-btn');
 		const statusEl = document.getElementById('connection-status');
 		const sessionInfoEl = document.getElementById('session-info');
+		const busyDot = document.getElementById('busy-dot');
+
+		function scrollToBottom() {
+			messagesEl.scrollTop = messagesEl.scrollHeight;
+		}
+
+		function clearEmpty() {
+			const el = messagesEl.querySelector('.empty, .loading');
+			if (el) el.remove();
+		}
+
+		function escapeHtml(text) {
+			const d = document.createElement('div');
+			d.textContent = text;
+			return d.innerHTML;
+		}
+
+		function extractText(message) {
+			return message.content?.map(c => c.type === 'text' ? c.text : '[image]').join('') || '';
+		}
 
 		function addMessage(type, content, timestamp) {
+			clearEmpty();
 			const msg = document.createElement('div');
 			msg.className = 'message ' + type;
 
@@ -105,14 +179,48 @@ const HTML = `<!DOCTYPE html>
 				msg.appendChild(ts);
 			}
 
-			if (type === 'tool') {
-				msg.innerHTML = content;
-			} else {
-				msg.textContent = content;
+			const textEl = document.createElement('span');
+			textEl.textContent = content;
+			msg.appendChild(textEl);
+
+			messagesEl.appendChild(msg);
+			scrollToBottom();
+			return msg;
+		}
+
+		function addToolResult(toolName, content, isError, toolCallId) {
+			clearEmpty();
+			// Remove tool-running indicator if exists
+			if (toolCallId) {
+				const running = activeTools.get(toolCallId);
+				if (running) { running.remove(); activeTools.delete(toolCallId); }
+			}
+			const msg = document.createElement('div');
+			msg.className = 'message ' + (isError ? 'error' : 'tool');
+
+			const label = document.createElement('strong');
+			label.textContent = toolName + ': ';
+			msg.appendChild(label);
+
+			const contentDiv = document.createElement('div');
+			contentDiv.className = 'tool-content';
+			contentDiv.textContent = content;
+			msg.appendChild(contentDiv);
+
+			// Expandable for long content
+			if (content.length > 300) {
+				const expand = document.createElement('div');
+				expand.className = 'tool-expand';
+				expand.textContent = 'Show more';
+				expand.onclick = () => {
+					contentDiv.classList.toggle('expanded');
+					expand.textContent = contentDiv.classList.contains('expanded') ? 'Show less' : 'Show more';
+				};
+				msg.appendChild(expand);
 			}
 
 			messagesEl.appendChild(msg);
-			messagesEl.scrollTop = messagesEl.scrollHeight;
+			scrollToBottom();
 		}
 
 		function updateConnection(connected) {
@@ -130,37 +238,119 @@ const HTML = `<!DOCTYPE html>
 			};
 			ws.onclose = () => {
 				updateConnection(false);
+				busyDot.classList.remove('active');
+				streamingDiv = null;
+				activeTools.clear();
 				setTimeout(connect, 3000);
 			};
 			ws.onerror = () => {};
 			ws.onmessage = (e) => {
-				const msg = JSON.parse(e.data);
-				if (msg.type === 'session_start') {
-					currentSessionId = msg.sessionId;
-					sessionInfoEl.textContent = msg.model ? \`\${msg.cwd} • \${msg.model}\` : msg.cwd;
-					messagesEl.innerHTML = '<div class="empty">No messages yet</div>';
-				} else if (msg.type === 'message') {
-					if (messagesEl.querySelector('.empty')) messagesEl.innerHTML = '';
-					const role = msg.message.role;
-					const content = msg.message.content?.map(c => c.type === 'text' ? c.text : '[image]').join('') || '';
-					addMessage(role === 'user' ? 'user' : 'assistant', content, msg.message.timestamp);
-				} else if (msg.type === 'tool_result') {
-					if (messagesEl.querySelector('.empty')) messagesEl.innerHTML = '';
-					const content = msg.content?.map(c => c.type === 'text' ? c.text : '[image]').join('') || '';
-					addMessage(msg.isError ? 'error' : 'tool', \`\${msg.toolName}: \${content}\`);
-				}
+				try { handleMessage(JSON.parse(e.data)); } catch {}
 			};
+		}
+
+		function handleMessage(msg) {
+			switch (msg.type) {
+				case 'session_start':
+					currentSessionId = msg.sessionId;
+					sessionInfoEl.textContent = msg.model ? msg.cwd + ' \\u2022 ' + msg.model : msg.cwd;
+					messagesEl.innerHTML = '<div class="empty">No messages yet</div>';
+					streamingDiv = null;
+					activeTools.clear();
+					break;
+
+				case 'message': {
+					clearEmpty();
+					const role = msg.message.role;
+					const content = extractText(msg.message);
+					if (streamingDiv && role !== 'user') {
+						// Replace streaming div with final message
+						streamingDiv.className = 'message assistant';
+						streamingDiv.textContent = content;
+						streamingDiv = null;
+					} else {
+						addMessage(role === 'user' ? 'user' : 'assistant', content, msg.message.timestamp);
+					}
+					break;
+				}
+
+				case 'tool_result': {
+					const content = msg.content?.map(c => c.type === 'text' ? c.text : '[image]').join('') || '';
+					addToolResult(msg.toolName, content, msg.isError, msg.toolCallId);
+					break;
+				}
+
+				case 'message_start':
+					if (msg.role === 'assistant') {
+						clearEmpty();
+						streamingDiv = document.createElement('div');
+						streamingDiv.className = 'message assistant streaming';
+						messagesEl.appendChild(streamingDiv);
+						scrollToBottom();
+					}
+					break;
+
+				case 'message_update':
+					if (streamingDiv) {
+						streamingDiv.textContent = msg.text;
+						scrollToBottom();
+					}
+					break;
+
+				case 'message_end':
+					if (streamingDiv) {
+						streamingDiv.classList.remove('streaming');
+					}
+					break;
+
+				case 'tool_execution_start': {
+					clearEmpty();
+					const el = document.createElement('div');
+					el.className = 'message tool-running';
+					el.innerHTML = '<span class="spinner">\\u2699</span> Running <strong>' + escapeHtml(msg.toolName) + '</strong>...';
+					messagesEl.appendChild(el);
+					activeTools.set(msg.toolCallId, el);
+					scrollToBottom();
+					break;
+				}
+
+				case 'tool_execution_end': {
+					const el = activeTools.get(msg.toolCallId);
+					if (el) {
+						el.className = 'message ' + (msg.isError ? 'error' : 'tool');
+						el.innerHTML = (msg.isError ? '\\u2717 ' : '\\u2713 ') + '<strong>' + escapeHtml(msg.toolName) + '</strong> ' + (msg.isError ? 'failed' : 'done');
+					}
+					break;
+				}
+
+				case 'agent_start':
+					busyDot.classList.add('active');
+					break;
+
+				case 'agent_end':
+					busyDot.classList.remove('active');
+					break;
+
+				case 'model_select': {
+					const parts = sessionInfoEl.textContent.split(' \\u2022 ');
+					if (parts.length >= 1) {
+						sessionInfoEl.textContent = parts[0] + ' \\u2022 ' + msg.modelId;
+					}
+					break;
+				}
+			}
 		}
 
 		sendBtn.onclick = () => {
 			const text = messageInput.value.trim();
-			if (!text) return;
+			if (!text || !ws) return;
 			ws.send(JSON.stringify({ type: 'message', content: text }));
+			addMessage('user', text);
 			messageInput.value = '';
 		};
 
 		abortBtn.onclick = () => {
-			ws.send(JSON.stringify({ type: 'abort' }));
+			if (ws) ws.send(JSON.stringify({ type: 'abort' }));
 		};
 
 		messageInput.onkeypress = (e) => {
@@ -172,7 +362,7 @@ const HTML = `<!DOCTYPE html>
 </body>
 </html>`;
 
-// WebSocket server for hook connections
+// WebSocket server for extension connections
 const wss = new WebSocketServer({ port: WS_PORT });
 
 console.log("=".repeat(60));
@@ -223,10 +413,10 @@ wss.on("connection", (ws, req) => {
 			try {
 				const msg = JSON.parse(data.toString());
 
-				// Forward message/abort from web UI to hook
-				for (const hookWs of hookClients) {
-					if (hookWs.readyState === 1) {
-						hookWs.send(data);
+				// Forward message/abort from web UI to extension
+				for (const extWs of extensionClients) {
+					if (extWs.readyState === 1) {
+						extWs.send(data);
 					}
 				}
 			} catch (error) {
@@ -239,9 +429,9 @@ wss.on("connection", (ws, req) => {
 			console.log(`[${new Date().toISOString()}] Web UI disconnected`);
 		});
 	} else {
-		// pi hook client
-		hookClients.add(ws);
-		console.log(`[${new Date().toISOString()}] Hook connected from ${clientIp}`);
+		// pi extension client
+		extensionClients.add(ws);
+		console.log(`[${new Date().toISOString()}] Extension connected from ${clientIp}`);
 
 		ws.on("message", (data) => {
 			try {
@@ -256,29 +446,34 @@ wss.on("connection", (ws, req) => {
 						model: msg.model,
 					});
 					console.log(`[${new Date().toISOString()}] Session started: ${msg.sessionId}`);
-				} else if (msg.type === "message") {
-					// Store message and broadcast to web clients
+					broadcastToWebClients(msg);
+				} else if (msg.type === "message" || msg.type === "tool_result") {
+					// Store and broadcast persistent messages
 					const session = sessions.get(msg.sessionId);
 					if (session) {
 						session.messages.push(msg);
 						broadcastToWebClients(msg);
 					}
-				} else if (msg.type === "tool_result") {
-					// Store and broadcast
+				} else if (msg.type === "model_select") {
+					// Update session model and broadcast
 					const session = sessions.get(msg.sessionId);
-					if (session) {
-						session.messages.push(msg);
-						broadcastToWebClients(msg);
-					}
+					if (session) session.model = msg.modelId;
+					broadcastToWebClients(msg);
+				} else {
+					// Broadcast ephemeral/streaming events without storing
+					// (message_start, message_update, message_end,
+					//  tool_execution_start, tool_execution_end,
+					//  agent_start, agent_end)
+					broadcastToWebClients(msg);
 				}
 			} catch (error) {
-				console.error("Invalid message from hook:", error);
+				console.error("Invalid message from extension:", error);
 			}
 		});
 
 		ws.on("close", () => {
-			hookClients.delete(ws);
-			console.log(`[${new Date().toISOString()}] Hook disconnected`);
+			extensionClients.delete(ws);
+			console.log(`[${new Date().toISOString()}] Extension disconnected`);
 			// Mark sessions as disconnected
 			for (const [sessionId, session] of sessions) {
 				if (session.connected) {
@@ -310,7 +505,7 @@ function broadcastToWebClients(message) {
 
 // HTTP server for web UI
 const httpServer = createServer((req, res) => {
-	if (req.url === "/") {
+	if (req.url === "/" || req.url?.startsWith("/?")) {
 		res.writeHead(200, { "Content-Type": "text/html" });
 		res.end(HTML);
 	} else {
@@ -332,7 +527,7 @@ const shutdown = (signal) => {
 	console.log(`${signal} received, closing servers...`);
 
 	// Close all client connections
-	for (const ws of hookClients) ws.terminate();
+	for (const ws of extensionClients) ws.terminate();
 	for (const ws of webClients) ws.terminate();
 
 	wss.close(() => {

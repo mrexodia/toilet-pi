@@ -1,6 +1,6 @@
 # Toilet-Pi: Remote Control pi from the Toilet
 
-A WebSocket hook + web UI for pi that lets you monitor conversations, send messages, and abort operations remotely from your phone (or any browser). Perfect for when nature calls.
+A WebSocket extension + web UI for pi that lets you monitor conversations, send messages, and abort operations remotely from your phone (or any browser). Perfect for when nature calls.
 
 ## 🎯 What This Does
 
@@ -47,11 +47,11 @@ Web UI: http://localhost:3457
 ============================================================
 ```
 
-### Step 3: Run pi with the Hook
+### Step 3: Run pi with the Extension
 
 In a new terminal:
 ```bash
-pi --hook ~/Projects/toilet-pi/websocket-hook.ts
+pi -e ~/Projects/toilet-pi/websocket-extension.ts
 ```
 
 ### Step 4: Open the Web UI
@@ -77,7 +77,7 @@ Phone Browser (web UI)
     ↓
 HTTP/WebSocket Server (port 3457/3456)
     ↓
-pi Hook (running in pi)
+pi Extension (running in pi)
     ↓
 pi Agent
 ```
@@ -86,14 +86,14 @@ pi Agent
 
 1. **Server** (`websocket-server.js`)
    - Runs on your desktop (same machine as pi)
-   - WebSocket server on port 3456 for hook connections
+   - WebSocket server on port 3456 for extension connections
    - HTTP server on port 3457 serving the web UI
    - Tracks sessions in memory (no disk persistence)
    - Broadcasts messages to web UI clients
-   - Forwards web UI commands (message/abort) to hook
+   - Forwards web UI commands (message/abort) to extension
 
-2. **Hook** (`websocket-hook.ts`)
-   - Loaded when pi starts via `--hook` flag
+2. **Extension** (`websocket-extension.ts`)
+   - Loaded when pi starts via `-e` flag
    - Connects to WebSocket server
    - Sends session_start event when connected
    - Forwards all messages (user, assistant, tool results) to server
@@ -111,16 +111,16 @@ pi Agent
 
 **From pi to phone:**
 1. Agent sends a message (user, assistant, or tool result)
-2. Hook catches the event (turn_end or tool_result)
-3. Hook forwards to server via WebSocket
+2. Extension catches the event (turn_end or tool_result)
+3. Extension forwards to server via WebSocket
 4. Server stores in memory and broadcasts to web UI
 5. Web UI displays the message
 
 **From phone to pi:**
 1. User types message or clicks Abort in web UI
 2. Web UI sends to server via WebSocket
-3. Server forwards to hook via WebSocket
-4. Hook calls pi API (sendMessage or ctx.abort)
+3. Server forwards to extension via WebSocket
+4. Extension calls pi API (sendMessage or ctx.abort)
 5. pi executes the action
 
 ---
@@ -132,7 +132,7 @@ pi Agent
 ```
 Server Process
 ├── WebSocket Server (port 3456)
-│   ├── Hook clients (pi connections)
+│   ├── Extension clients (pi connections)
 │   └── Web UI clients (browser connections)
 ├── HTTP Server (port 3457)
 │   └── Serves web UI HTML/JS/CSS
@@ -145,26 +145,26 @@ Server Process
       }
 ```
 
-### Hook Event Flow
+### Extension Event Flow
 
 ```
 pi starts
   ↓
-Hook loaded
+Extension loaded
   ↓
 session_start event
   ↓
-Hook connects to server
+Extension connects to server
   ↓
-Hook sends session_start (with sessionId, cwd, model)
+Extension sends session_start (with sessionId, cwd, model)
   ↓
-Hook sends existing messages from session
+Extension sends existing messages from session
   ↓
-turn_end event → Hook forwards to server → Server broadcasts to web UI
-tool_result event → Hook forwards to server → Server broadcasts to web UI
+turn_end event → Extension forwards to server → Server broadcasts to web UI
+tool_result event → Extension forwards to server → Server broadcasts to web UI
   ↓
-Web UI sends message → Server → Hook → pi.sendMessage()
-Web UI sends abort → Server → Hook → ctx.abort()
+Web UI sends message → Server → Extension → pi.sendMessage()
+Web UI sends abort → Server → Extension → ctx.abort()
 ```
 
 ---
@@ -335,7 +335,7 @@ If someone accesses your web UI:
 
 Checklist:
 - Is the server running? (`npm start`)
-- Is pi running with the hook? (`pi --hook ...`)
+- Is pi running with the extension? (`pi -e ...`)
 - Try `/ws` command in pi to check connection
 - Check browser console for errors
 
@@ -355,9 +355,9 @@ Checklist:
 - Are phone and desktop on same network (for local IP)?
 - Try opening the URL on your desktop first
 
-### Hook Issues
+### Extension Issues
 
-**Problem: Hook shows "retry X" forever**
+**Problem: Extension shows "retry X" forever**
 
 - Make sure server is running
 - Check the port (default 3456) isn't blocked
@@ -394,7 +394,7 @@ WS_PORT=3458 HTTP_PORT=3459 npm start
 ### Ports
 
 Default ports:
-- WebSocket (hook): 3456
+- WebSocket (extension): 3456
 - HTTP (web UI): 3457
 
 Custom ports:
@@ -402,9 +402,9 @@ Custom ports:
 WS_PORT=3458 HTTP_PORT=3459 npm start
 ```
 
-Then update hook to match:
+Then update the extension to match:
 ```bash
-PI_WS_URL=ws://localhost:3458 pi --hook ~/Projects/toilet-pi/websocket-hook.ts
+PI_WS_URL=ws://localhost:3458 pi -e ~/Projects/toilet-pi/websocket-extension.ts
 ```
 
 ### Authentication Token
@@ -452,7 +452,7 @@ MIT
 3. **Keep server running** - Use a process manager (tmux, screen) for long sessions
 4. **Monitor connection** - Use `/ws` command in pi to check status
 5. **Refresh if stuck** - Reload the web UI page if messages stop appearing
-6. **Auto-load the hook** - Copy to `~/.pi/agent/hooks/` for automatic loading
+6. **Auto-load the extension** - Copy to `~/.pi/agent/extensions/` for automatic loading
 
 ---
 

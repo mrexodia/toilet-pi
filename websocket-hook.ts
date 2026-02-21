@@ -1,5 +1,5 @@
 /**
- * WebSocket Client Hook for pi
+ * WebSocket Client Extension for pi
  *
  * Connects pi to the toilet-pi server, enabling:
  * - Live message streaming to web UI
@@ -10,7 +10,7 @@
  * HOW IT WORKS
  * =============================================
  *
- * This hook connects to the toilet-pi server and:
+ * This extension connects to the toilet-pi server and:
  *
  * 1. Sends session info (sessionId, cwd, model) when connected
  * 2. Sends all messages (user, assistant, tool results) to server
@@ -20,16 +20,16 @@
  * MESSAGE FLOW
  * =============================================
  *
- * Phone (web UI) → Server → Hook → pi Agent
- * Hook → Server → Phone (web UI)
+ * Phone (web UI) → Server → Extension → pi Agent
+ * Extension → Server → Phone (web UI)
  *
  * Forwarding messages TO web UI:
- * - turn_end event → Hook sends to server → Server broadcasts to web UI
- * - tool_result event → Hook sends to server → Server broadcasts to web UI
+ * - turn_end event → Extension sends to server → Server broadcasts to web UI
+ * - tool_result event → Extension sends to server → Server broadcasts to web UI
  *
  * Receiving commands FROM web UI:
- * - User sends message → Server → Hook → pi.sendMessage()
- * - User clicks abort → Server → Hook → ctx.abort()
+ * - User sends message → Server → Extension → pi.sendMessage()
+ * - User clicks abort → Server → Extension → ctx.abort()
  *
  * =============================================
  * USAGE
@@ -38,8 +38,8 @@
  * 1. Start the server:
  *    cd ~/Projects/toilet-pi && npm start
  *
- * 2. Run pi with the hook:
- *    pi --hook ~/Projects/toilet-pi/websocket-hook.ts
+ * 2. Run pi with the extension:
+ *    pi -e ~/Projects/toilet-pi/websocket-hook.ts
  *
  * 3. Open web UI:
  *    http://localhost:3457
@@ -54,7 +54,7 @@
  * =============================================
  *
  * Set custom WebSocket URL:
- *    PI_WS_URL=ws://your-server:3456 pi --hook ~/Projects/toilet-pi/websocket-hook.ts
+ *    PI_WS_URL=ws://your-server:3456 pi -e ~/Projects/toilet-pi/websocket-hook.ts
  *
  * Set server token (for authentication):
  *    TOKEN=your-token npm start
@@ -62,7 +62,7 @@
  */
 
 import { WebSocket } from "ws";
-import type { HookAPI, HookContext } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 
 const WS_URL = process.env.PI_WS_URL || "ws://localhost:3456";
 
@@ -71,10 +71,10 @@ interface WSMessage {
 	content?: string;
 }
 
-export default function (pi: HookAPI) {
+export default function (pi: ExtensionAPI) {
 	let ws: WebSocket | null = null;
 	let reconnectTimeout: NodeJS.Timeout | null = null;
-	let ctx: HookContext | null = null;
+	let ctx: ExtensionContext | null = null;
 	let retryCount = 0;
 
 	const sendToServer = (data: unknown) => {
@@ -136,7 +136,7 @@ export default function (pi: HookAPI) {
 
 					if (msg.type === "abort") {
 						// Abort current agent operation
-						await ctx?.abort();
+						ctx?.abort();
 					} else if (msg.type === "message" && msg.content) {
 						// Send user message to agent
 						pi.sendMessage(
@@ -199,9 +199,86 @@ export default function (pi: HookAPI) {
 		sendToServer({
 			type: "tool_result",
 			sessionId: context.sessionManager.getSessionId(),
+			toolCallId: event.toolCallId,
 			toolName: event.toolName,
 			content: event.content,
 			isError: event.isError,
+		});
+	});
+
+	// === Streaming events for live web UI updates ===
+
+	let lastUpdateTime = 0;
+
+	pi.on("agent_start", async (_event, context) => {
+		sendToServer({
+			type: "agent_start",
+			sessionId: context.sessionManager.getSessionId(),
+		});
+	});
+
+	pi.on("agent_end", async (_event, context) => {
+		sendToServer({
+			type: "agent_end",
+			sessionId: context.sessionManager.getSessionId(),
+		});
+	});
+
+	pi.on("message_start", async (event, context) => {
+		sendToServer({
+			type: "message_start",
+			sessionId: context.sessionManager.getSessionId(),
+			role: event.message.role,
+		});
+	});
+
+	pi.on("message_update", async (event, context) => {
+		const now = Date.now();
+		if (now - lastUpdateTime < 150) return;
+		lastUpdateTime = now;
+
+		const content = event.message.content;
+		const text = Array.isArray(content)
+			? content.filter((c: any) => c.type === "text").map((c: any) => c.text).join("")
+			: "";
+		sendToServer({
+			type: "message_update",
+			sessionId: context.sessionManager.getSessionId(),
+			text,
+		});
+	});
+
+	pi.on("message_end", async (_event, context) => {
+		sendToServer({
+			type: "message_end",
+			sessionId: context.sessionManager.getSessionId(),
+		});
+	});
+
+	pi.on("tool_execution_start", async (event, context) => {
+		sendToServer({
+			type: "tool_execution_start",
+			sessionId: context.sessionManager.getSessionId(),
+			toolCallId: event.toolCallId,
+			toolName: event.toolName,
+		});
+	});
+
+	pi.on("tool_execution_end", async (event, context) => {
+		sendToServer({
+			type: "tool_execution_end",
+			sessionId: context.sessionManager.getSessionId(),
+			toolCallId: event.toolCallId,
+			toolName: event.toolName,
+			isError: event.isError,
+		});
+	});
+
+	pi.on("model_select", async (event, context) => {
+		sendToServer({
+			type: "model_select",
+			sessionId: context.sessionManager.getSessionId(),
+			modelId: event.model.id,
 		});
 	});
 

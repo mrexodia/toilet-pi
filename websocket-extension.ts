@@ -200,9 +200,86 @@ export default function (pi: ExtensionAPI) {
 		sendToServer({
 			type: "tool_result",
 			sessionId: context.sessionManager.getSessionFile() ?? "ephemeral",
+			toolCallId: event.toolCallId,
 			toolName: event.toolName,
 			content: event.content,
 			isError: event.isError,
+		});
+	});
+
+	// === Streaming events for live web UI updates ===
+
+	let lastUpdateTime = 0;
+
+	pi.on("agent_start", async (_event, context) => {
+		sendToServer({
+			type: "agent_start",
+			sessionId: context.sessionManager.getSessionFile() ?? "ephemeral",
+		});
+	});
+
+	pi.on("agent_end", async (_event, context) => {
+		sendToServer({
+			type: "agent_end",
+			sessionId: context.sessionManager.getSessionFile() ?? "ephemeral",
+		});
+	});
+
+	pi.on("message_start", async (event, context) => {
+		sendToServer({
+			type: "message_start",
+			sessionId: context.sessionManager.getSessionFile() ?? "ephemeral",
+			role: event.message.role,
+		});
+	});
+
+	pi.on("message_update", async (event, context) => {
+		const now = Date.now();
+		if (now - lastUpdateTime < 150) return;
+		lastUpdateTime = now;
+
+		const content = event.message.content;
+		const text = Array.isArray(content)
+			? content.filter((c: any) => c.type === "text").map((c: any) => c.text).join("")
+			: "";
+		sendToServer({
+			type: "message_update",
+			sessionId: context.sessionManager.getSessionFile() ?? "ephemeral",
+			text,
+		});
+	});
+
+	pi.on("message_end", async (_event, context) => {
+		sendToServer({
+			type: "message_end",
+			sessionId: context.sessionManager.getSessionFile() ?? "ephemeral",
+		});
+	});
+
+	pi.on("tool_execution_start", async (event, context) => {
+		sendToServer({
+			type: "tool_execution_start",
+			sessionId: context.sessionManager.getSessionFile() ?? "ephemeral",
+			toolCallId: event.toolCallId,
+			toolName: event.toolName,
+		});
+	});
+
+	pi.on("tool_execution_end", async (event, context) => {
+		sendToServer({
+			type: "tool_execution_end",
+			sessionId: context.sessionManager.getSessionFile() ?? "ephemeral",
+			toolCallId: event.toolCallId,
+			toolName: event.toolName,
+			isError: event.isError,
+		});
+	});
+
+	pi.on("model_select", async (event, context) => {
+		sendToServer({
+			type: "model_select",
+			sessionId: context.sessionManager.getSessionFile() ?? "ephemeral",
+			modelId: event.model.id,
 		});
 	});
 
