@@ -25,7 +25,7 @@ http://localhost:3457
 npm run supervisor
 ```
 
-This advertises local pi session files and allows the web UI to start them in background mode.
+This advertises local pi session files and lets the web UI start background pi runners when needed.
 
 ## 4. Run pi interactively with the extension
 
@@ -35,14 +35,17 @@ pi -e ~/Projects/toilet-pi/websocket-extension.ts
 
 ## 5. Use the web UI
 
-In the browser you can:
+The UI has two sidebar views:
 
-- pick a host
-- view that host's discovered sessions
-- attach to a session
-- start an inactive session in background
-- send live prompts
-- abort the active owner
+- **Sessions** - every visible session across all connected hosts, sorted by recent activity
+- **Projects** - sessions grouped by project folder and host, with a **New Session** action
+
+Useful behaviors:
+
+- opening an interactive pi session makes it visible in the browser
+- sending a message to an inactive session auto-starts it in background
+- starting a new session from **Projects** launches a fresh background pi session in that project
+- resuming a background-owned session locally makes the background runner abort and release ownership
 
 ## Default URLs
 
@@ -56,6 +59,7 @@ TOILET_PI_SERVER_URL=ws://your-server:3457/ws
 TOILET_PI_HOST_ID=my-machine
 TOILET_PI_SESSION_DIR=/custom/pi/sessions
 TOILET_PI_PI_COMMAND=/path/to/pi
+TOILET_PI_SCAN_INTERVAL_MS=15000
 PORT=3457
 ```
 
@@ -63,4 +67,4 @@ PORT=3457
 
 - interactive pi does not block on server startup or event sends
 - background runners are started by `supervisor.js`
-- if you resume a background-owned session locally, the background runner aborts and releases it
+- if a background runner loses the server, it exits

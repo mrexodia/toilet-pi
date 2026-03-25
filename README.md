@@ -1,45 +1,145 @@
 # Toilet-Pi
 
-Remote control pi sessions from a central web UI.
+Toilet-Pi is a central web control plane for pi.
 
-## What this does
+The easiest way to describe it is:
 
-Toilet-Pi v2 has four pieces:
+> It is basically the same idea as pizza, except it has a central server and a pi extension that connects over WebSocket. That means you can interact with all sessions on all machines live, and it also works for normal interactive pi sessions. If you send a message from your phone, the message shows up in the desktop TUI too, so the experience stays seamless.
 
-- **Central server**: serves the web UI and routes session traffic
-- **Host supervisor**: one long-lived daemon per machine that can start background pi sessions
-- **Interactive pi + extension**: normal local pi sessions, visible and steerable from the web UI
-- **Background pi + same extension**: headless pi child processes started by the supervisor
+## Why this exists
 
-The design is intentionally simple:
+Normal pi sessions live inside one terminal on one machine.
 
-- no auth
-- no persistence beyond pi's own session files
-- no startup blocking
-- no event-send blocking
-- one active owner per session
-- interactive pi wins over background pi by aborting the background runner
+Toilet-Pi adds a thin remote layer on top:
 
-## Ports and URLs
+- one **central server** with a web UI
+- one **host supervisor** per machine
+- one **pi extension** that connects interactive and background sessions to the server
 
-By default the server uses a single port:
+That gives you a few nice advantages:
 
-- Web UI: `http://localhost:3457`
-- WebSocket: `ws://localhost:3457/ws`
+- **See sessions from every machine in one place**
+- **Control already-running interactive sessions remotely**
+- **Resume inactive sessions in background without going back to the desk first**
+- **Send a message from mobile and have it appear inside the real pi TUI**
+- **Take over a background session locally and make the background runner abort automatically**
+- **Keep the architecture simple**: WebSocket + extension + one lightweight supervisor
 
-Override with:
+## Core idea
 
-```bash
-PORT=4567 npm start
-```
+There are four pieces:
+
+### 1. Central server
+
+The server:
+
+- serves the web UI
+- accepts WebSocket connections from browsers, host supervisors, and pi extensions
+- keeps all state in memory
+- tracks the current owner of each session
+- routes messages and aborts to the active owner only
+
+### 2. Host supervisor
+
+Each machine runs one long-lived supervisor process.
+
+It:
+
+- scans local pi session files
+- advertises them to the server
+- can start background pi runners on demand
+- kills all of its children when it exits
+
+### 3. Interactive pi + extension
+
+Normal pi sessions can load `websocket-extension.ts`.
+
+Those sessions:
+
+- connect to the central server in the background
+- stream messages and status changes
+- accept live remote input
+- stay fully usable even if the server is down
+
+### 4. Background pi + same extension
+
+The supervisor starts headless pi processes in RPC mode, using the same extension.
+
+Those background sessions:
+
+- connect directly to the server
+- stream events live to the web UI
+- exit if the server connection disappears
+
+## Ownership model
+
+For each pi session GUID, Toilet-Pi keeps exactly one active command target:
+
+- `interactive`
+- `background`
+- or `none`
+
+This prevents the web UI from blasting commands at multiple copies of pi at once.
+
+### Takeover behavior
+
+Interactive pi wins.
+
+If a session is running in background and you resume it locally:
+
+1. the interactive pi instance connects
+2. the server tells the background runner to `abort_and_release`
+3. the background runner aborts and exits
+4. ownership flips to the interactive pi session
+
+That makes local takeover feel natural.
+
+## Design goals
+
+This project intentionally optimizes for simplicity over distributed-systems purity.
+
+### Things it does on purpose
+
+- **No startup blocking**
+  - pi does not wait for the server to come up
+- **No event-send blocking**
+  - server sends are best effort
+- **No database**
+  - server state is in memory only
+- **No SDK embedding**
+  - background sessions are just real pi processes in RPC mode
+- **No auth or multi-user permissions yet**
+  - this is still a focused personal tool
+
+### Important asymmetry
+
+- **Interactive pi can survive without the server**
+- **Background pi cannot**
+
+If a background runner loses its server connection, it exits. That avoids hidden orphan writers mutating a session in the dark.
+
+## User experience
+
+The web UI is meant to be useful from a phone.
+
+Current capabilities:
+
+- browse sessions across connected machines
+- switch between **Sessions** and **Projects** views
+- attach to a session and watch it live
+- send messages to active sessions
+- send a message to an inactive session and have it auto-start in background
+- start a brand-new background session in a project
+- abort the currently active owner
+- take over a background session locally from the normal pi TUI
 
 ## Files
 
-- `websocket-server.js` - central server + static web UI hosting
+- `websocket-server.js` - central HTTP/WebSocket server
 - `websocket-extension.ts` - pi extension used by interactive and background pi
-- `supervisor.js` - host supervisor that spawns background pi runners
-- `session-scanner.js` - scans local pi session files for the supervisor
-- `public/` - web UI
+- `supervisor.js` - one-per-machine supervisor
+- `session-scanner.js` - scans local pi session files
+- `public/` - browser UI
 - `test-client.js` - raw protocol debug client
 - `V2-PLAN.md` - architecture plan
 
@@ -64,106 +164,59 @@ Open:
 http://localhost:3457
 ```
 
-### 3. Start the host supervisor on a machine
+### 3. Start the host supervisor
+
+On each machine you want to expose:
 
 ```bash
+cd ~/Projects/toilet-pi
 npm run supervisor
 ```
 
-This machine will now advertise its local pi sessions and can start background runners for them.
-
-### 4. Run pi interactively with the extension
-
-In another terminal on that machine:
+### 4. Start pi interactively with the extension
 
 ```bash
 pi -e ~/Projects/toilet-pi/websocket-extension.ts
 ```
 
-Open a session normally, or resume an existing one.
-
 ### 5. Use the web UI
 
-From the web UI you can:
+From the browser you can:
 
-- see connected hosts
-- see discovered session files on each host
-- attach to a live session
-- send messages to the current owner
-- abort the current owner
-- start an inactive session in background on a selected host
+- inspect sessions from all connected hosts
+- open an existing session
+- send live prompts into the active owner
+- auto-start inactive sessions in background by just sending a message
+- start a brand-new session in a project
+- abort long-running work
 
-If a session is currently running in background and you resume it locally with pi, the server tells the background runner to abort and release the session so the interactive runner takes over.
-
-## Environment variables
-
-### Shared
-
-- `TOILET_PI_SERVER_URL` - WebSocket URL for the central server
-  - default: `ws://localhost:3457/ws`
-- `TOILET_PI_HOST_ID` - override machine ID
-  - default: hostname
-- `TOILET_PI_SESSION_DIR` - override pi session directory
-  - default: `~/.pi/agent/sessions`
+## Commands
 
 ### Server
 
-- `PORT` - HTTP + WebSocket port
-  - default: `3457`
+```bash
+npm start
+```
 
-### Supervisor
+### Host supervisor
 
-- `TOILET_PI_PI_COMMAND` - pi executable to launch
-  - default: `pi`
-- `TOILET_PI_EXTENSION_PATH` - extension path to load in background runners
-  - default: local `websocket-extension.ts`
+```bash
+npm run supervisor
+```
 
-### Background runners
+### Interactive pi
 
-The supervisor sets these automatically for child pi processes:
+```bash
+pi -e ~/Projects/toilet-pi/websocket-extension.ts
+```
 
-- `TOILET_PI_ROLE=background`
-- `TOILET_PI_SERVER_URL=...`
-- `TOILET_PI_HOST_ID=...`
-
-Interactive pi defaults to `interactive` mode automatically.
-
-## Background runner model
-
-The host supervisor is a single process per machine.
-
-It does **not** proxy all session traffic. Instead, it spawns one headless pi child per active background session, and that child connects directly to the central server using the same extension as interactive pi.
-
-That keeps the process model simple:
-
-- 1 server
-- 1 supervisor per machine
-- N background pi children per machine
-- normal interactive pi processes whenever the user starts them
-
-## Important behaviors
-
-### Server optional for interactive pi
-
-If the server is down, interactive pi still works normally. The extension reconnects in the background when possible.
-
-### Server required for background pi
-
-If a background runner loses its server connection, it exits. This avoids hidden uncontrolled writers continuing to mutate a session.
-
-### No event-send blocking
-
-All server sends are best effort. If the socket is unavailable or a send fails, the extension drops the event rather than slowing down local pi.
-
-## Debug client
-
-A raw debug client is included:
+### Raw debug client
 
 ```bash
 npm run client
 ```
 
-Commands:
+Debug client commands:
 
 - `attach <sessionGuid>`
 - `input <text>`
@@ -172,12 +225,46 @@ Commands:
 - `refresh <hostId>`
 - `quit`
 
+## Environment variables
+
+### Shared
+
+- `TOILET_PI_SERVER_URL`
+  - default: `ws://localhost:3457/ws`
+- `TOILET_PI_HOST_ID`
+  - default: hostname
+- `TOILET_PI_SESSION_DIR`
+  - default: `~/.pi/agent/sessions`
+
+### Server
+
+- `PORT`
+  - default: `3457`
+
+### Supervisor
+
+- `TOILET_PI_PI_COMMAND`
+  - default: `pi`
+- `TOILET_PI_EXTENSION_PATH`
+  - default: local `websocket-extension.ts`
+- `TOILET_PI_SCAN_INTERVAL_MS`
+  - default: `15000`
+
+### Extension / background runner
+
+- `TOILET_PI_ROLE`
+  - set automatically to `background` for supervisor-launched sessions
+- `TOILET_PI_HISTORY_LIMIT`
+  - how many recent messages are mirrored to the web UI on connect
+- `TOILET_PI_MESSAGE_LIMIT`
+  - max per-message text mirrored to the web UI
+
 ## Notes
 
-- State in the server is in-memory only
-- If the server restarts, clients reconnect and rebuild state
-- Session identity uses pi's built-in session GUID
-- Fork/tree state stays within pi's normal session file behavior
+- server state is in-memory only
+- if the server restarts, clients reconnect and rebuild state
+- session identity uses pi's built-in session GUID
+- the project intentionally keeps the protocol and architecture small
 
 ## License
 

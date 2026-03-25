@@ -135,6 +135,11 @@ function handleHello(ws, message) {
 			connectedAt: Date.now(),
 		});
 		broadcastOverview();
+		broadcastNotice({
+			type: "notice",
+			level: "info",
+			message: `Host connected: ${message.hostname || message.hostId}`,
+		});
 		return;
 	}
 
@@ -164,18 +169,39 @@ function handleWebMessage(ws, message) {
 	}
 
 	if (message.type === "input") {
-		const session = sessions.get(message.sessionGuid);
-		const target = getOwnerConnection(session);
-		if (!target) {
-			send(ws, { type: "error", message: "Session is not currently owned by an active runner" });
+		const text = String(message.text || "").trim();
+		if (!message.sessionGuid || !text) return;
+
+		const session = getKnownSession(message.sessionGuid);
+		if (!session) {
+			send(ws, { type: "error", message: `Unknown session ${message.sessionGuid}` });
 			return;
 		}
-		send(target, { type: "input", text: String(message.text || "") });
+
+		const target = getOwnerConnection(session);
+		if (target) {
+			send(target, { type: "input", text });
+			return;
+		}
+
+		session.pendingInputs.push(text);
+		const started = ensureBackgroundSession(session);
+		if (!started) {
+			session.pendingInputs.pop();
+			send(ws, { type: "error", message: "This session cannot be started in background right now" });
+			return;
+		}
+
+		send(ws, {
+			type: "notice",
+			level: "info",
+			message: `Starting background runner for ${formatSessionLabel(session)}`,
+		});
 		return;
 	}
 
 	if (message.type === "abort") {
-		const session = sessions.get(message.sessionGuid);
+		const session = getKnownSession(message.sessionGuid);
 		const target = getOwnerConnection(session);
 		if (!target) {
 			send(ws, { type: "error", message: "Session is not currently owned by an active runner" });
@@ -186,18 +212,41 @@ function handleWebMessage(ws, message) {
 	}
 
 	if (message.type === "start_background_session") {
+		const session = getKnownSession(message.sessionGuid) || getOrCreateSession(message.sessionGuid);
+		if (message.hostId) session.hostId = message.hostId;
+		if (message.sessionFile) session.sessionFile = message.sessionFile;
+		if (message.cwd) session.cwd = message.cwd;
+		const started = ensureBackgroundSession(session, { requestId: message.requestId || null });
+		if (!started) {
+			send(ws, { type: "error", message: "Could not start background session" });
+		}
+		return;
+	}
+
+	if (message.type === "create_background_session") {
 		const host = hosts.get(message.hostId);
+		const cwd = typeof message.cwd === "string" ? message.cwd : null;
 		if (!host?.conn || !isOpen(host.conn)) {
 			send(ws, { type: "error", message: `Host ${message.hostId} is not connected` });
+			return;
+		}
+		if (!cwd) {
+			send(ws, { type: "error", message: "Missing cwd for new session" });
 			return;
 		}
 
 		send(host.conn, {
 			type: "start_background_session",
 			hostId: message.hostId,
-			sessionGuid: message.sessionGuid,
-			sessionFile: message.sessionFile || null,
-			cwd: message.cwd || null,
+			requestId: message.requestId || null,
+			cwd,
+			createNew: true,
+		});
+
+		send(ws, {
+			type: "notice",
+			level: "info",
+			message: `Starting new background session in ${cwd}`,
 		});
 		return;
 	}
@@ -232,6 +281,16 @@ function handleHostMessage(_ws, message) {
 			session.updatedAt = Date.now();
 		}
 
+		if (message.requestId) {
+			broadcastWeb({
+				type: "launch_status",
+				requestId: message.requestId,
+				status: message.status,
+				sessionGuid: message.sessionGuid || null,
+				error: message.error || null,
+			});
+		}
+
 		broadcastOverview();
 		broadcastNotice({
 			type: "notice",
@@ -252,7 +311,9 @@ function handleRunnerMessage(ws, message, client) {
 			session.busy = false;
 			session.streamingText = null;
 			session.activeTools.clear();
+			session.runnerStatus = "released";
 			promoteSessionOwner(session);
+			deliverPendingInputs(session);
 			try {
 				ws.close(1000, "released");
 			} catch {
@@ -275,6 +336,7 @@ function handleRunnerMessage(ws, message, client) {
 	});
 
 	if (["message", "busy", "model", "tool_start", "tool_end"].includes(message.event?.type)) {
+		broadcastOverview();
 		notifySessionMeta(session.sessionGuid);
 	}
 }
@@ -292,11 +354,12 @@ function registerRunner(ws, message) {
 	session.sessionFile = message.sessionFile || session.sessionFile;
 	session.sessionName = message.sessionName || session.sessionName;
 	session.cwd = message.cwd || session.cwd;
+	session.preview = getSessionPreview({ history: Array.isArray(message.history) ? message.history : [] }) || session.preview;
 	session.model = message.model || session.model;
 	session.busy = !!message.busy;
 	session.history = Array.isArray(message.history) ? message.history : session.history;
 	session.streamingText = typeof message.streamingText === "string" ? message.streamingText : null;
-	session.runnerStatus = null;
+	session.runnerStatus = "running";
 	session.updatedAt = Date.now();
 	clearFinishedTools(session);
 
@@ -318,6 +381,17 @@ function registerRunner(ws, message) {
 		}
 	}
 
+	if (message.launchRequestId) {
+		broadcastWeb({
+			type: "background_session_started",
+			requestId: message.launchRequestId,
+			sessionGuid: session.sessionGuid,
+			hostId: session.hostId,
+			cwd: session.cwd,
+		});
+	}
+
+	deliverPendingInputs(session);
 	broadcastOverview();
 	notifySessionMeta(session.sessionGuid);
 }
@@ -422,11 +496,17 @@ function handleClose(ws) {
 		const host = hosts.get(client.hostId);
 		if (host?.conn === ws) hosts.delete(client.hostId);
 		broadcastOverview();
+		broadcastNotice({
+			type: "notice",
+			level: "error",
+			message: `Host disconnected: ${host?.hostname || client.hostId}`,
+		});
 		return;
 	}
 
 	const session = sessions.get(client.sessionGuid);
 	if (!session) return;
+	const previousOwner = session.owner;
 
 	if (client.role === "interactive") {
 		if (session.interactiveConn === ws) session.interactiveConn = null;
@@ -443,41 +523,79 @@ function handleClose(ws) {
 		session.busy = false;
 		session.streamingText = null;
 		session.activeTools.clear();
+		session.runnerStatus = "exited";
 	}
 
 	promoteSessionOwner(session);
+	deliverPendingInputs(session);
 	broadcastOverview();
 	notifySessionMeta(session.sessionGuid);
+
+	const roleLabel = client.role === "interactive" ? "Interactive session" : "Background runner";
+	const level = previousOwner === client.role ? "error" : "info";
+	broadcastNotice({
+		type: "notice",
+		level,
+		message: `${roleLabel} disconnected: ${formatSessionLabel(session)}`,
+	});
 }
 
-function getOrCreateSession(sessionGuid) {
-	let session = sessions.get(sessionGuid);
-	if (!session) {
-		session = {
-			sessionGuid,
-			interactiveConn: null,
-			backgroundConn: null,
-			pendingInteractiveConn: null,
-			owner: null,
-			hostId: null,
-			sessionFile: null,
-			sessionName: null,
-			cwd: null,
-			model: null,
-			busy: false,
-			history: [],
-			streamingText: null,
-			activeTools: new Map(),
-			runnerStatus: null,
-			updatedAt: Date.now(),
-		};
-		sessions.set(sessionGuid, session);
-	}
+function getKnownSession(sessionGuid) {
+	if (!sessionGuid) return null;
+	const existing = sessions.get(sessionGuid);
+	if (existing) return existing;
+
+	const found = findCatalogSession(sessionGuid);
+	if (!found) return null;
+
+	const session = createSessionState(sessionGuid);
+	session.hostId = found.hostId;
+	session.sessionFile = found.session.sessionFile || null;
+	session.sessionName = found.session.sessionName || null;
+	session.cwd = found.session.cwd || null;
+	session.preview = found.session.preview || null;
+	session.model = found.session.model || null;
+	session.busy = !!found.session.busy;
+	session.updatedAt = found.session.updatedAt || Date.now();
+	sessions.set(sessionGuid, session);
 	return session;
 }
 
+function getOrCreateSession(sessionGuid) {
+	return sessions.get(sessionGuid) || createAndStoreSession(sessionGuid);
+}
+
+function createAndStoreSession(sessionGuid) {
+	const session = createSessionState(sessionGuid);
+	sessions.set(sessionGuid, session);
+	return session;
+}
+
+function createSessionState(sessionGuid) {
+	return {
+		sessionGuid,
+		interactiveConn: null,
+		backgroundConn: null,
+		pendingInteractiveConn: null,
+		owner: null,
+		hostId: null,
+		sessionFile: null,
+		sessionName: null,
+		cwd: null,
+		model: null,
+		preview: null,
+		busy: false,
+		history: [],
+		streamingText: null,
+		activeTools: new Map(),
+		runnerStatus: null,
+		pendingInputs: [],
+		updatedAt: Date.now(),
+	};
+}
+
 function buildSessionSnapshot(sessionGuid) {
-	const session = sessionGuid ? sessions.get(sessionGuid) : null;
+	const session = getKnownSession(sessionGuid);
 	if (!session) {
 		return {
 			sessionGuid: sessionGuid || null,
@@ -537,6 +655,12 @@ function broadcastNotice(payload) {
 	}
 }
 
+function broadcastWeb(payload) {
+	for (const ws of webClients.keys()) {
+		send(ws, payload);
+	}
+}
+
 function sendOverview(ws) {
 	send(ws, {
 		type: "overview",
@@ -590,7 +714,7 @@ function buildOverviewHosts() {
 				sessionFile: session.sessionFile || current.sessionFile || null,
 				sessionName: session.sessionName || current.sessionName || null,
 				cwd: session.cwd || current.cwd || null,
-				preview: getSessionPreview(session) || current.preview || null,
+				preview: getSessionPreview(session) || session.preview || current.preview || null,
 				updatedAt: session.updatedAt || current.updatedAt || 0,
 				owner: session.owner,
 				busy: session.busy,
@@ -613,6 +737,17 @@ function buildOverviewHosts() {
 	return list;
 }
 
+function findCatalogSession(sessionGuid) {
+	for (const [hostId, catalog] of hostCatalogs) {
+		for (const session of catalog.sessions || []) {
+			if (session.sessionGuid === sessionGuid) {
+				return { hostId, session };
+			}
+		}
+	}
+	return null;
+}
+
 function getSessionPreview(session) {
 	for (const message of session.history) {
 		if (message.role === "user" && message.text) return message.text;
@@ -627,10 +762,45 @@ function getOwnerConnection(session) {
 	return null;
 }
 
+function deliverPendingInputs(session) {
+	const target = getOwnerConnection(session);
+	if (!target || session.pendingInputs.length === 0) return;
+	while (session.pendingInputs.length > 0) {
+		send(target, { type: "input", text: session.pendingInputs.shift() });
+	}
+}
+
+function ensureBackgroundSession(session, options = {}) {
+	const host = hosts.get(options.hostId || session.hostId);
+	if (!host?.conn || !isOpen(host.conn)) return false;
+	if (session.backgroundConn && isOpen(session.backgroundConn)) return true;
+	if (session.runnerStatus === "starting") return true;
+
+	session.runnerStatus = "starting";
+	session.updatedAt = Date.now();
+	broadcastOverview();
+
+	send(host.conn, {
+		type: "start_background_session",
+		hostId: host.hostId,
+		sessionGuid: session.sessionGuid,
+		sessionFile: options.sessionFile || session.sessionFile || null,
+		cwd: options.cwd || session.cwd || null,
+		requestId: options.requestId || null,
+		createNew: false,
+	});
+
+	return true;
+}
+
 function clearFinishedTools(session) {
 	if (!(session.activeTools instanceof Map)) {
 		session.activeTools = new Map();
 	}
+}
+
+function formatSessionLabel(session) {
+	return session.sessionName || getSessionPreview(session) || session.preview || session.sessionGuid.slice(0, 8);
 }
 
 function send(ws, payload) {
@@ -644,18 +814,21 @@ function isOpen(ws) {
 
 function formatRunnerStatus(message) {
 	if (message.status === "starting") {
-		return `Starting background runner for ${message.sessionGuid}`;
+		return `Starting background runner${message.sessionGuid ? ` for ${message.sessionGuid}` : ""}`;
 	}
 	if (message.status === "already-running") {
 		return `Background runner already active for ${message.sessionGuid}`;
 	}
 	if (message.status === "error") {
-		return `Background runner error for ${message.sessionGuid}: ${message.error}`;
+		return `Background runner error${message.sessionGuid ? ` for ${message.sessionGuid}` : ""}: ${message.error}`;
 	}
 	if (message.status === "exited") {
-		return `Background runner exited for ${message.sessionGuid}`;
+		return `Background runner exited${message.sessionGuid ? ` for ${message.sessionGuid}` : ""}`;
 	}
-	return `Runner status for ${message.sessionGuid}: ${message.status}`;
+	if (message.status === "released") {
+		return `Background runner released${message.sessionGuid ? ` for ${message.sessionGuid}` : ""}`;
+	}
+	return `Runner status${message.sessionGuid ? ` for ${message.sessionGuid}` : ""}: ${message.status}`;
 }
 
 function resolvePublicPath(requestPath) {

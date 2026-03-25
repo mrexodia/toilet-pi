@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import os from "node:os";
 import path from "node:path";
@@ -9,6 +10,7 @@ const SERVER_URL = process.env.TOILET_PI_SERVER_URL || "ws://localhost:3457/ws";
 const HOST_ID = process.env.TOILET_PI_HOST_ID || os.hostname();
 const PI_COMMAND = process.env.TOILET_PI_PI_COMMAND || "pi";
 const SESSION_DIR = process.env.TOILET_PI_SESSION_DIR || getDefaultSessionDir();
+const SCAN_INTERVAL_MS = Number.parseInt(process.env.TOILET_PI_SCAN_INTERVAL_MS || "15000", 10);
 const EXTENSION_PATH = process.env.TOILET_PI_EXTENSION_PATH
 	|| fileURLToPath(new URL("./websocket-extension.ts", import.meta.url));
 const PROJECT_DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -17,6 +19,7 @@ const children = new Map();
 let ws = null;
 let reconnectTimer = null;
 let shuttingDown = false;
+let catalogTimer = null;
 
 function log(message) {
 	console.log(`[supervisor ${HOST_ID}] ${message}`);
@@ -38,6 +41,21 @@ async function sendSessionCatalog() {
 		hostId: HOST_ID,
 		sessions,
 	});
+}
+
+function ensureCatalogTimer() {
+	if (catalogTimer) return;
+	catalogTimer = setInterval(() => {
+		sendSessionCatalog().catch((error) => {
+			log(`catalog scan failed: ${error.message}`);
+		});
+	}, SCAN_INTERVAL_MS);
+}
+
+function clearCatalogTimer() {
+	if (!catalogTimer) return;
+	clearInterval(catalogTimer);
+	catalogTimer = null;
 }
 
 function scheduleReconnect() {
@@ -65,6 +83,7 @@ function connect() {
 			platform: `${os.platform()} ${os.release()}`,
 			pid: process.pid,
 		});
+		ensureCatalogTimer();
 		await sendSessionCatalog();
 	});
 
@@ -98,37 +117,46 @@ function connect() {
 }
 
 function startBackgroundRunner(message) {
-	const sessionRef = message.sessionFile || message.sessionGuid;
-	if (!sessionRef) {
+	const requestId = message.requestId || null;
+	const createNew = !!message.createNew;
+	const sessionRef = !createNew ? (message.sessionFile || message.sessionGuid) : null;
+	const childKey = message.sessionGuid ? `session:${message.sessionGuid}` : `launch:${requestId || randomUUID()}`;
+	const existing = children.get(childKey);
+
+	if (existing && existing.child.exitCode === null && !existing.child.killed) {
+		log(`background runner already active for ${childKey}`);
 		send({
 			type: "runner_status",
 			hostId: HOST_ID,
 			sessionGuid: message.sessionGuid || null,
+			requestId,
+			status: "already-running",
+			pid: existing.child.pid,
+		});
+		return;
+	}
+
+	if (!createNew && !sessionRef) {
+		send({
+			type: "runner_status",
+			hostId: HOST_ID,
+			sessionGuid: message.sessionGuid || null,
+			requestId,
 			status: "error",
 			error: "Missing session reference",
 		});
 		return;
 	}
 
-	const existing = children.get(message.sessionGuid);
-	if (existing && existing.exitCode === null && !existing.killed) {
-		log(`background runner already active for ${message.sessionGuid}`);
-		send({
-			type: "runner_status",
-			hostId: HOST_ID,
-			sessionGuid: message.sessionGuid,
-			status: "already-running",
-			pid: existing.pid,
-		});
-		return;
+	const args = ["--mode", "rpc", "-e", EXTENSION_PATH];
+	if (!createNew && sessionRef) {
+		args.push("--session", sessionRef);
 	}
-
-	const args = ["--mode", "rpc", "--session", sessionRef, "-e", EXTENSION_PATH];
 	if (process.env.TOILET_PI_SESSION_DIR) {
 		args.push("--session-dir", SESSION_DIR);
 	}
 
-	log(`starting background runner for ${message.sessionGuid}`);
+	log(`starting background runner (${createNew ? "new" : message.sessionGuid})`);
 	const child = spawn(PI_COMMAND, args, {
 		cwd: message.cwd || PROJECT_DIR,
 		stdio: ["pipe", "pipe", "pipe"],
@@ -138,57 +166,68 @@ function startBackgroundRunner(message) {
 			TOILET_PI_HOST_ID: HOST_ID,
 			TOILET_PI_ROLE: "background",
 			TOILET_PI_SESSION_DIR: SESSION_DIR,
+			TOILET_PI_LAUNCH_REQUEST_ID: requestId || "",
 		},
 	});
 
-	children.set(message.sessionGuid, child);
+	children.set(childKey, {
+		child,
+		sessionGuid: message.sessionGuid || null,
+		requestId,
+		createNew,
+	});
+
 	send({
 		type: "runner_status",
 		hostId: HOST_ID,
-		sessionGuid: message.sessionGuid,
+		sessionGuid: message.sessionGuid || null,
+		requestId,
 		status: "starting",
 		pid: child.pid,
 	});
 
 	child.stdout.on("data", () => {
-		// Intentionally drain RPC stdout so the child cannot block on a full pipe.
+		// Drain RPC stdout so the child cannot block on a full pipe.
 	});
 
 	child.stderr.on("data", (chunk) => {
 		const text = chunk.toString().trim();
-		if (text) log(`child ${message.sessionGuid}: ${text}`);
+		if (text) log(`child ${message.sessionGuid || requestId || child.pid}: ${text}`);
 	});
 
 	child.on("error", (error) => {
-		log(`failed to start ${message.sessionGuid}: ${error.message}`);
+		log(`failed to start ${message.sessionGuid || requestId || child.pid}: ${error.message}`);
 		send({
 			type: "runner_status",
 			hostId: HOST_ID,
-			sessionGuid: message.sessionGuid,
+			sessionGuid: message.sessionGuid || null,
+			requestId,
 			status: "error",
 			error: error.message,
 		});
 	});
 
 	child.on("exit", (code, signal) => {
-		children.delete(message.sessionGuid);
-		log(`background runner exited for ${message.sessionGuid} (code=${code}, signal=${signal})`);
+		children.delete(childKey);
+		log(`background runner exited (${message.sessionGuid || requestId || child.pid}, code=${code}, signal=${signal})`);
 		send({
 			type: "runner_status",
 			hostId: HOST_ID,
-			sessionGuid: message.sessionGuid,
+			sessionGuid: message.sessionGuid || null,
+			requestId,
 			status: "exited",
 			code,
 			signal,
 		});
+		sendSessionCatalog().catch(() => {});
 	});
 }
 
 function killChildren() {
-	for (const [sessionGuid, child] of children) {
-		log(`stopping background runner for ${sessionGuid}`);
+	for (const [key, record] of children) {
+		log(`stopping background runner for ${key}`);
 		try {
-			child.kill("SIGTERM");
+			record.child.kill("SIGTERM");
 		} catch {
 			// Ignore.
 		}
@@ -199,6 +238,7 @@ function shutdown(signal) {
 	if (shuttingDown) return;
 	shuttingDown = true;
 	if (reconnectTimer) clearTimeout(reconnectTimer);
+	clearCatalogTimer();
 	log(`${signal} received, shutting down`);
 	killChildren();
 	if (ws) {

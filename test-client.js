@@ -26,6 +26,7 @@ ws.on("open", () => {
 	console.log("  input <text>");
 	console.log("  abort");
 	console.log("  start <hostId> <sessionGuid>");
+	console.log("  new <hostId> <cwd>");
 	console.log("  refresh <hostId>");
 	console.log("  quit");
 
@@ -92,6 +93,12 @@ process.stdin.on("readable", () => {
 		if (command === "start") {
 			const [hostId, sessionGuid] = rest;
 			send({ type: "start_background_session", hostId, sessionGuid });
+			continue;
+		}
+
+		if (command === "new") {
+			const [hostId, ...cwdParts] = rest;
+			send({ type: "create_background_session", requestId: `cli-${Date.now()}`, hostId, cwd: cwdParts.join(" ") });
 			continue;
 		}
 

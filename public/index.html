@@ -9,325 +9,612 @@
 			color-scheme: dark;
 			--bg: #0d1117;
 			--panel: #161b22;
-			--panel-2: #21262d;
+			--panel-2: #1c2128;
+			--panel-3: #21262d;
 			--border: #30363d;
 			--text: #c9d1d9;
 			--muted: #8b949e;
 			--blue: #1f6feb;
+			--blue-soft: rgba(31, 111, 235, 0.16);
 			--green: #238636;
+			--green-soft: rgba(35, 134, 54, 0.18);
 			--red: #da3633;
+			--red-soft: rgba(218, 54, 51, 0.18);
 			--purple: #8957e5;
+			--purple-soft: rgba(137, 87, 229, 0.18);
 			--yellow: #e3b341;
+			--yellow-soft: rgba(227, 179, 65, 0.18);
+			--shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
 		}
-		* { box-sizing: border-box; }
+
+		html, body {
+			height: 100%;
+			overflow: hidden;
+		}
+
+		* {
+			box-sizing: border-box;
+		}
+
 		body {
 			margin: 0;
 			font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
 			background: var(--bg);
 			color: var(--text);
-			height: 100vh;
-			height: 100dvh;
-			display: grid;
-			grid-template-columns: minmax(280px, 360px) 1fr;
 		}
-		.sidebar {
-			border-right: 1px solid var(--border);
-			background: var(--panel);
-			overflow: hidden;
-			display: flex;
-			flex-direction: column;
-		}
-		.sidebar-header,
-		.main-header,
-		.controls {
-			padding: 12px 14px;
-			border-bottom: 1px solid var(--border);
-		}
-		.sidebar-header h1,
-		.main-header h2 {
-			margin: 0;
-			font-size: 18px;
-		}
-		.small {
-			font-size: 12px;
-			color: var(--muted);
-		}
-		.status-pill {
-			display: inline-flex;
-			align-items: center;
-			gap: 6px;
-			padding: 4px 8px;
-			border-radius: 999px;
-			font-size: 12px;
-			font-weight: 600;
-		}
-		.status-pill.connected { background: rgba(35, 134, 54, 0.2); color: #7ee787; }
-		.status-pill.disconnected { background: rgba(218, 54, 51, 0.2); color: #ffa198; }
-		.hosts {
-			flex: 1;
-			overflow: auto;
-			padding: 10px;
-			display: flex;
-			flex-direction: column;
-			gap: 10px;
-		}
-		.host-card {
-			background: var(--panel-2);
-			border: 1px solid var(--border);
-			border-radius: 12px;
-			overflow: hidden;
-		}
-		.host-header {
-			padding: 10px 12px;
-			display: flex;
-			justify-content: space-between;
-			align-items: center;
-			gap: 10px;
-			border-bottom: 1px solid var(--border);
-		}
-		.host-title {
-			display: flex;
-			flex-direction: column;
-			gap: 2px;
-		}
-		.host-sessions {
-			display: flex;
-			flex-direction: column;
-		}
-		.session-row {
-			padding: 10px 12px;
-			display: grid;
-			grid-template-columns: 1fr auto;
-			gap: 8px;
-			border-top: 1px solid rgba(48, 54, 61, 0.5);
-			cursor: pointer;
-		}
-		.session-row:first-child { border-top: none; }
-		.session-row.active { background: rgba(31, 111, 235, 0.14); }
-		.session-row:hover { background: rgba(255, 255, 255, 0.03); }
-		.session-main {
-			display: flex;
-			flex-direction: column;
-			gap: 4px;
-			min-width: 0;
-		}
-		.session-name {
-			font-size: 14px;
-			font-weight: 600;
-			white-space: nowrap;
-			overflow: hidden;
-			text-overflow: ellipsis;
-		}
-		.session-preview,
-		.session-meta {
-			font-size: 12px;
-			color: var(--muted);
-			white-space: nowrap;
-			overflow: hidden;
-			text-overflow: ellipsis;
-		}
-		.badges {
-			display: flex;
-			flex-direction: column;
-			align-items: flex-end;
-			gap: 6px;
-		}
-		.badge {
-			font-size: 11px;
-			padding: 3px 7px;
-			border-radius: 999px;
-			font-weight: 700;
-		}
-		.badge.interactive { background: rgba(31, 111, 235, 0.18); color: #79c0ff; }
-		.badge.background { background: rgba(137, 87, 229, 0.18); color: #d2a8ff; }
-		.badge.idle { background: rgba(110, 118, 129, 0.18); color: #c9d1d9; }
-		.badge.busy { background: rgba(227, 179, 65, 0.18); color: #f2cc60; }
-		.badge.disconnected { background: rgba(218, 54, 51, 0.18); color: #ffa198; }
-		.button-row {
-			display: flex;
-			gap: 8px;
-			flex-wrap: wrap;
-		}
-		button,
-		input {
+
+		button, input {
 			font: inherit;
 		}
+
 		button {
-			background: var(--panel-2);
+			background: var(--panel-3);
 			color: var(--text);
 			border: 1px solid var(--border);
-			padding: 8px 12px;
 			border-radius: 10px;
+			padding: 9px 12px;
 			cursor: pointer;
 		}
-		button:hover { background: #2b3138; }
+
+		button:hover {
+			background: #2a3038;
+		}
+
 		button:disabled {
-			opacity: 0.5;
+			opacity: 0.45;
 			cursor: not-allowed;
 		}
+
 		button.primary {
 			background: var(--green);
 			border-color: var(--green);
 			color: white;
 		}
+
 		button.danger {
 			background: var(--red);
 			border-color: var(--red);
 			color: white;
 		}
-		.main {
-			display: flex;
-			flex-direction: column;
-			min-width: 0;
+
+		button.subtle {
+			background: transparent;
 		}
-		.main-header {
-			display: flex;
-			justify-content: space-between;
-			align-items: flex-start;
-			gap: 16px;
+
+		button.icon-button {
+			width: 40px;
+			height: 40px;
+			padding: 0;
+			display: inline-flex;
+			align-items: center;
+			justify-content: center;
+			font-size: 18px;
 		}
-		.main-title {
-			display: flex;
-			flex-direction: column;
-			gap: 4px;
-			min-width: 0;
+
+		input {
+			background: var(--bg);
+			color: var(--text);
+			border: 1px solid var(--border);
+			border-radius: 12px;
+			padding: 12px 14px;
 		}
-		.main-title h2,
-		#session-subtitle {
-			white-space: nowrap;
-			overflow: hidden;
-			text-overflow: ellipsis;
+
+		input:focus {
+			outline: none;
+			border-color: #58a6ff;
 		}
-		.notice-bar {
-			min-height: 24px;
-			padding: 8px 14px 0;
+
+		.small {
 			font-size: 12px;
 			color: var(--muted);
 		}
-		.notice-bar.error { color: #ffa198; }
-		.notice-bar.info { color: #79c0ff; }
-		.messages {
+
+		.status-pill,
+		.badge {
+			display: inline-flex;
+			align-items: center;
+			gap: 6px;
+			padding: 4px 8px;
+			border-radius: 999px;
+			font-size: 11px;
+			font-weight: 700;
+		}
+
+		.status-pill.connected,
+		.badge.connected {
+			background: var(--green-soft);
+			color: #7ee787;
+		}
+
+		.status-pill.disconnected,
+		.badge.disconnected {
+			background: var(--red-soft);
+			color: #ffa198;
+		}
+
+		.badge.interactive {
+			background: var(--blue-soft);
+			color: #79c0ff;
+		}
+
+		.badge.background {
+			background: var(--purple-soft);
+			color: #d2a8ff;
+		}
+
+		.badge.inactive,
+		.badge.idle {
+			background: rgba(110, 118, 129, 0.18);
+			color: #c9d1d9;
+		}
+
+		.badge.busy {
+			background: var(--yellow-soft);
+			color: #f2cc60;
+		}
+
+		.app-shell {
+			height: 100%;
+			display: grid;
+			grid-template-columns: minmax(320px, 390px) minmax(0, 1fr);
+		}
+
+		.sidebar {
+			background: var(--panel);
+			border-right: 1px solid var(--border);
+			display: grid;
+			grid-template-rows: auto auto minmax(0, 1fr);
+			min-height: 0;
+		}
+
+		.sidebar-header,
+		.sidebar-tabs,
+		.main-header,
+		.composer {
+			padding: 14px 16px;
+		}
+
+		.sidebar-header,
+		.sidebar-tabs,
+		.main-header,
+		.notice-bar,
+		.composer {
+			border-bottom: 1px solid var(--border);
+		}
+
+		.sidebar-title-row,
+		.main-header-top {
+			display: flex;
+			align-items: center;
+			justify-content: space-between;
+			gap: 12px;
+		}
+
+		.sidebar-header h1,
+		.main-header h2 {
+			margin: 0;
+			font-size: 20px;
+		}
+
+		.sidebar-subtitle,
+		.header-subtitle,
+		.header-path {
+			margin-top: 4px;
+			font-size: 12px;
+			color: var(--muted);
+		}
+
+		.sidebar-tabs {
+			display: flex;
+			gap: 8px;
+		}
+
+		.tab-button {
 			flex: 1;
-			overflow: auto;
-			padding: 14px;
+			background: var(--panel-2);
+		}
+
+		.tab-button.active {
+			background: var(--blue-soft);
+			border-color: rgba(121, 192, 255, 0.25);
+			color: #79c0ff;
+		}
+
+		.sidebar-body {
+			min-height: 0;
+			overflow-y: auto;
+			padding: 12px;
 			display: flex;
 			flex-direction: column;
 			gap: 10px;
 		}
-		.empty {
+
+		.browser-empty {
+			padding: 32px 18px;
+			text-align: center;
+			color: var(--muted);
+			font-size: 13px;
+		}
+
+		.list-item,
+		.project-card {
+			background: var(--panel-2);
+			border: 1px solid var(--border);
+			border-radius: 14px;
+			width: 100%;
+		}
+
+		.list-item {
+			padding: 12px 13px;
+			display: grid;
+			grid-template-columns: minmax(0, 1fr) auto;
+			gap: 12px;
+			cursor: pointer;
+			text-align: left;
+		}
+
+		.list-item:hover,
+		.session-mini:hover {
+			background: rgba(255, 255, 255, 0.03);
+		}
+
+		.list-item.active {
+			border-color: rgba(121, 192, 255, 0.28);
+			background: rgba(31, 111, 235, 0.14);
+		}
+
+		.item-main,
+		.project-main,
+		.session-mini-main {
+			min-width: 0;
+			display: flex;
+			flex-direction: column;
+			gap: 4px;
+		}
+
+		.item-title,
+		.project-title,
+		.session-mini-title {
+			font-size: 14px;
+			font-weight: 700;
+			white-space: nowrap;
+			overflow: hidden;
+			text-overflow: ellipsis;
+		}
+
+		.item-subtitle,
+		.item-preview,
+		.project-subtitle,
+		.session-mini-subtitle {
+			font-size: 12px;
+			color: var(--muted);
+			white-space: nowrap;
+			overflow: hidden;
+			text-overflow: ellipsis;
+		}
+
+		.item-badges,
+		.project-actions {
+			display: flex;
+			flex-direction: column;
+			align-items: flex-end;
+			gap: 6px;
+		}
+
+		.project-card {
+			overflow: hidden;
+		}
+
+		.project-header {
+			padding: 12px 13px;
+			display: grid;
+			grid-template-columns: minmax(0, 1fr) auto;
+			gap: 12px;
+			align-items: start;
+		}
+
+		.project-sessions {
+			border-top: 1px solid rgba(48, 54, 61, 0.65);
+			display: flex;
+			flex-direction: column;
+		}
+
+		.session-mini {
+			padding: 10px 13px;
+			display: grid;
+			grid-template-columns: minmax(0, 1fr) auto;
+			gap: 10px;
+			cursor: pointer;
+			border-top: 1px solid rgba(48, 54, 61, 0.55);
+			text-align: left;
+			width: 100%;
+		}
+
+		.session-mini:first-child {
+			border-top: none;
+		}
+
+		.session-mini.active {
+			background: rgba(31, 111, 235, 0.14);
+		}
+
+		.main {
+			min-width: 0;
+			min-height: 0;
+			display: grid;
+			grid-template-rows: auto auto minmax(0, 1fr) auto;
+		}
+
+		.main-header {
+			background: rgba(13, 17, 23, 0.72);
+			backdrop-filter: blur(10px);
+		}
+
+		.header-copy {
+			min-width: 0;
+		}
+
+		.header-copy h2,
+		.header-subtitle,
+		.header-path {
+			white-space: nowrap;
+			overflow: hidden;
+			text-overflow: ellipsis;
+		}
+
+		.header-actions {
+			display: flex;
+			align-items: center;
+			gap: 8px;
+			flex-wrap: wrap;
+		}
+
+		.menu-button,
+		.sidebar-close {
+			display: none;
+		}
+
+		.notice-bar {
+			padding: 10px 16px;
+			font-size: 12px;
+			color: var(--muted);
+			min-height: 41px;
+		}
+
+		.notice-bar.info {
+			color: #79c0ff;
+		}
+
+		.notice-bar.error {
+			color: #ffa198;
+		}
+
+		.messages-scroller {
+			min-height: 0;
+			overflow-y: auto;
+			padding: 16px;
+			display: flex;
+			flex-direction: column;
+			gap: 10px;
+			scroll-behavior: smooth;
+		}
+
+		.messages-empty {
 			margin: auto;
 			text-align: center;
 			color: var(--muted);
+			font-size: 14px;
+			max-width: 420px;
 		}
+
 		.message {
-			max-width: min(780px, 100%);
-			padding: 10px 12px;
-			border-radius: 12px;
-			line-height: 1.45;
+			max-width: min(880px, 100%);
+			padding: 11px 13px;
+			border-radius: 14px;
+			line-height: 1.5;
 			white-space: pre-wrap;
 			word-break: break-word;
 		}
+
 		.message.user {
 			align-self: flex-end;
 			background: var(--blue);
 			color: white;
 		}
+
 		.message.assistant {
 			align-self: flex-start;
-			background: var(--panel-2);
+			background: var(--panel-3);
 			border: 1px solid var(--border);
 		}
+
 		.message.tool {
 			align-self: flex-start;
-			background: var(--panel-2);
+			background: var(--panel-3);
 			border-left: 3px solid var(--purple);
 		}
+
 		.message.tool.error {
 			border-left-color: var(--red);
 		}
+
 		.message.system {
 			align-self: center;
+			padding: 0;
 			font-size: 12px;
 			color: var(--muted);
-			padding: 0;
 		}
+
 		.message.streaming {
 			border-style: dashed;
 			position: relative;
 		}
+
 		.message.streaming::after {
 			content: "▋";
 			animation: blink 0.8s step-end infinite;
 		}
-		@keyframes blink { 50% { opacity: 0; } }
+
 		.timestamp {
 			font-size: 10px;
 			color: var(--muted);
-			margin-bottom: 5px;
+			margin-bottom: 6px;
 		}
-		.controls {
-			display: flex;
+
+		.composer {
+			display: grid;
+			grid-template-columns: auto minmax(0, 1fr) auto;
 			gap: 10px;
 			align-items: center;
+			background: rgba(13, 17, 23, 0.78);
+			backdrop-filter: blur(10px);
 		}
+
 		#message-input {
-			flex: 1;
-			padding: 10px 12px;
-			border-radius: 10px;
-			border: 1px solid var(--border);
-			background: var(--bg);
-			color: var(--text);
+			width: 100%;
 		}
-		#message-input:focus {
-			outline: none;
-			border-color: #58a6ff;
+
+		.sidebar-scrim {
+			display: none;
 		}
+
+		@keyframes blink {
+			50% { opacity: 0; }
+		}
+
 		@media (max-width: 900px) {
-			body {
+			.app-shell {
 				grid-template-columns: 1fr;
-				grid-template-rows: minmax(240px, 40vh) 1fr;
 			}
+
 			.sidebar {
-				border-right: none;
-				border-bottom: 1px solid var(--border);
+				position: fixed;
+				left: 0;
+				top: 0;
+				bottom: 0;
+				width: min(88vw, 380px);
+				z-index: 30;
+				box-shadow: var(--shadow);
+				transform: translateX(-104%);
+				transition: transform 0.2s ease;
+			}
+
+			body.sidebar-open .sidebar {
+				transform: translateX(0);
+			}
+
+			.sidebar-scrim {
+				display: block;
+				position: fixed;
+				inset: 0;
+				background: rgba(0, 0, 0, 0.5);
+				z-index: 20;
+				opacity: 0;
+				pointer-events: none;
+				transition: opacity 0.2s ease;
+			}
+
+			body.sidebar-open .sidebar-scrim {
+				opacity: 1;
+				pointer-events: auto;
+			}
+
+			.menu-button,
+			.sidebar-close {
+				display: inline-flex;
+			}
+
+			.main-header,
+			.composer,
+			.notice-bar,
+			.sidebar-header,
+			.sidebar-tabs {
+				padding-left: 14px;
+				padding-right: 14px;
+			}
+
+			.messages-scroller {
+				padding: 14px;
+			}
+
+			.composer {
+				grid-template-columns: auto minmax(0, 1fr) auto;
+			}
+		}
+
+		@media (max-width: 560px) {
+			.header-actions {
+				width: 100%;
+				justify-content: space-between;
+			}
+
+			.composer {
+				grid-template-columns: 1fr auto;
+			}
+
+			#abort-btn {
+				grid-column: 1 / -1;
 			}
 		}
 	</style>
 </head>
 <body>
-	<aside class="sidebar">
-		<div class="sidebar-header">
-			<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;">
-				<div>
-					<h1>Toilet-Pi</h1>
-					<div class="small">Hosts and sessions</div>
+	<div class="app-shell">
+		<aside class="sidebar" id="sidebar">
+			<div class="sidebar-header">
+				<div class="sidebar-title-row">
+					<div>
+						<h1>Toilet-Pi</h1>
+						<div class="sidebar-subtitle" id="sidebar-summary">Waiting for server…</div>
+					</div>
+					<div style="display:flex;align-items:center;gap:8px;">
+						<span id="connection-status" class="status-pill disconnected">Disconnected</span>
+						<button id="sidebar-close" class="icon-button subtle sidebar-close" aria-label="Close sidebar">✕</button>
+					</div>
 				</div>
-				<span id="connection-status" class="status-pill disconnected">Disconnected</span>
 			</div>
-		</div>
-		<div class="hosts" id="hosts"></div>
-	</aside>
-	<main class="main">
-		<div class="main-header">
-			<div class="main-title">
-				<h2 id="session-title">No session selected</h2>
-				<div id="session-subtitle" class="small">Choose a session from the left.</div>
+
+			<div class="sidebar-tabs">
+				<button id="view-sessions-btn" class="tab-button active">Sessions</button>
+				<button id="view-projects-btn" class="tab-button">Projects</button>
 			</div>
-			<div class="button-row">
-				<button id="refresh-btn">Refresh Host Sessions</button>
-				<button id="start-btn" class="primary" disabled>Start Background</button>
+
+			<div class="sidebar-body" id="browser-list"></div>
+		</aside>
+
+		<div class="sidebar-scrim" id="sidebar-scrim"></div>
+
+		<main class="main">
+			<div class="main-header">
+				<div class="main-header-top">
+					<div class="header-copy">
+						<div style="display:flex;align-items:center;gap:10px;">
+							<button id="menu-btn" class="icon-button subtle menu-button" aria-label="Open sidebar">☰</button>
+							<h2 id="session-title">No session selected</h2>
+						</div>
+						<div id="session-subtitle" class="header-subtitle">Choose a session or a project from the sidebar.</div>
+						<div id="session-path" class="header-path"></div>
+					</div>
+					<div class="header-actions">
+						<button id="new-session-btn">New Session</button>
+					</div>
+				</div>
 			</div>
-		</div>
-		<div id="notice-bar" class="notice-bar"></div>
-		<div class="messages" id="messages">
-			<div class="empty">Waiting for a server connection...</div>
-		</div>
-		<div class="controls">
-			<button id="abort-btn" class="danger" disabled>Abort</button>
-			<input id="message-input" type="text" placeholder="Send a live message to the active owner..." autocomplete="off" />
-			<button id="send-btn" class="primary" disabled>Send</button>
-		</div>
-	</main>
+
+			<div id="notice-bar" class="notice-bar"></div>
+
+			<div id="messages" class="messages-scroller">
+				<div class="messages-empty">Waiting for a server connection…</div>
+			</div>
+
+			<div class="composer">
+				<button id="abort-btn" class="danger" disabled>Abort</button>
+				<input id="message-input" type="text" placeholder="Send a message to the active session…" autocomplete="off" />
+				<button id="send-btn" class="primary" disabled>Send</button>
+			</div>
+		</main>
+	</div>
+
 	<script type="module" src="/app.js"></script>
 </body>
 </html>

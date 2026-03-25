@@ -7,6 +7,7 @@ const HOST_ID = process.env.TOILET_PI_HOST_ID || os.hostname();
 const ROLE = process.env.TOILET_PI_ROLE === "background" ? "background" : "interactive";
 const REQUIRE_SERVER = ROLE === "background";
 const STATUS_KEY = "toilet-pi";
+const LAUNCH_REQUEST_ID = process.env.TOILET_PI_LAUNCH_REQUEST_ID || null;
 const MAX_HISTORY_MESSAGES = Number.parseInt(process.env.TOILET_PI_HISTORY_LIMIT || "200", 10);
 const MAX_MESSAGE_TEXT = Number.parseInt(process.env.TOILET_PI_MESSAGE_LIMIT || "4000", 10);
 
@@ -92,6 +93,7 @@ export default function (pi: ExtensionAPI) {
 			type: "hello",
 			role: ROLE,
 			hostId: HOST_ID,
+			launchRequestId: LAUNCH_REQUEST_ID,
 			sessionGuid: ctx.sessionManager.getSessionId(),
 			sessionFile: ctx.sessionManager.getSessionFile() || null,
 			sessionName: getSessionName(ctx),
