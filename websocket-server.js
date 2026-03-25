@@ -1,547 +1,719 @@
-/**
- * WebSocket Server + Web UI for toilet-pi
- *
- * This server provides:
- * - WebSocket endpoint for pi extension connection
- * - HTTP server for mobile-first web UI
- * - Session tracking in memory (no disk persistence)
- */
-
-import { WebSocketServer } from "ws";
 import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
+import path from "node:path";
+import { WebSocketServer, WebSocket } from "ws";
 
-const WS_PORT = Number.parseInt(process.env.WS_PORT || "3456", 10);
-const HTTP_PORT = Number.parseInt(process.env.HTTP_PORT || "3457", 10);
-const TOKEN = process.env.TOKEN; // Optional authentication
+const PORT = Number.parseInt(process.env.PORT || "3457", 10);
+const WS_PATH = "/ws";
+const PUBLIC_DIR = fileURLToPath(new URL("./public/", import.meta.url));
 
-// In-memory session storage
-const sessions = new Map(); // sessionId -> { messages: [], connected: false, cwd: null, model: null }
-const extensionClients = new Set(); // WebSocket connections from pi extensions
-const webClients = new Set(); // WebSocket connections from web UI
+const hosts = new Map();
+const hostCatalogs = new Map();
+const sessions = new Map();
+const webClients = new Map();
+const clients = new Map();
 
-// HTML for mobile-first web UI
-const HTML = `<!DOCTYPE html>
-<html lang="en">
-<head>
-	<meta charset="UTF-8">
-	<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-	<title>Toilet-Pi</title>
-	<style>
-		* { box-sizing: border-box; margin: 0; padding: 0; }
-		body {
-			font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-			background: #0d1117; color: #c9d1d9;
-			height: 100vh; height: 100dvh;
-			display: flex; flex-direction: column;
-		}
-		.header {
-			background: #161b22; padding: 12px 16px;
-			border-bottom: 1px solid #30363d;
-			display: flex; justify-content: space-between; align-items: center;
-		}
-		.header h1 { font-size: 18px; font-weight: 600; }
-		.header-left { display: flex; align-items: center; gap: 8px; }
-		.status { font-size: 12px; padding: 4px 8px; border-radius: 12px; }
-		.status.connected { background: #238636; color: #fff; }
-		.status.disconnected { background: #da3633; color: #fff; }
-		.session-info { font-size: 11px; color: #8b949e; }
-		.busy-dot {
-			width: 8px; height: 8px; border-radius: 50%;
-			background: #e3b341; display: none;
-		}
-		.busy-dot.active {
-			display: inline-block;
-			animation: pulse 1.2s ease-in-out infinite;
-		}
-		@keyframes pulse { 0%, 100% { opacity: 0.3; } 50% { opacity: 1; } }
-		.messages {
-			flex: 1; overflow-y: auto; padding: 12px;
-			display: flex; flex-direction: column; gap: 8px;
-		}
-		.message {
-			padding: 10px 12px; border-radius: 8px; max-width: 100%;
-			word-wrap: break-word; font-size: 14px; line-height: 1.4;
-			white-space: pre-wrap;
-		}
-		.message.user { background: #1f6feb; color: #fff; align-self: flex-end; }
-		.message.assistant { background: #21262d; border: 1px solid #30363d; align-self: flex-start; }
-		.message.assistant.streaming { border: 1px dashed #58a6ff; opacity: 0.9; }
-		.message.assistant.streaming::after {
-			content: '\\u258b'; animation: blink 0.7s step-end infinite;
-		}
-		@keyframes blink { 50% { opacity: 0; } }
-		.message.system { background: #21262d; color: #8b949e; font-style: italic; font-size: 12px; align-self: center; }
-		.message.tool { background: #21262d; border-left: 3px solid #a371f7; padding-left: 10px; font-size: 12px; }
-		.message.tool-running {
-			background: #21262d; border-left: 3px solid #e3b341;
-			padding-left: 10px; font-size: 12px; color: #e3b341;
-		}
-		.message.error { background: #21262d; border-left: 3px solid #da3633; padding-left: 10px; color: #ffa198; }
-		.tool-content { max-height: 120px; overflow: hidden; }
-		.tool-content.expanded { max-height: none; }
-		.tool-expand { color: #58a6ff; font-size: 11px; cursor: pointer; margin-top: 4px; }
-		.input-area {
-			background: #161b22; padding: 12px;
-			border-top: 1px solid #30363d; display: flex; gap: 8px;
-		}
-		#message-input {
-			flex: 1; background: #0d1117; border: 1px solid #30363d;
-			border-radius: 8px; padding: 10px 12px;
-			color: #c9d1d9; font-size: 14px; outline: none;
-		}
-		#message-input:focus { border-color: #58a6ff; }
-		.btn { padding: 10px 16px; border-radius: 8px; border: none; font-size: 14px; font-weight: 600; cursor: pointer; }
-		.btn-send { background: #238636; color: #fff; }
-		.btn-send:disabled { background: #30363d; color: #6e7681; cursor: not-allowed; }
-		.btn-abort { background: #da3633; color: #fff; padding: 8px 12px; font-size: 12px; }
-		.btn-abort:disabled { background: #30363d; color: #6e7681; cursor: not-allowed; }
-		.empty { text-align: center; color: #6e7681; padding: 40px 20px; }
-		.loading { text-align: center; color: #8b949e; padding: 20px; }
-		.timestamp { font-size: 10px; color: #6e7681; margin-bottom: 4px; }
-		@keyframes spin { to { transform: rotate(360deg); } }
-		.spinner { display: inline-block; animation: spin 1.5s linear infinite; }
-	</style>
-</head>
-<body>
-	<div class="header">
-		<div>
-			<div class="header-left">
-				<h1>Toilet-Pi</h1>
-				<span class="busy-dot" id="busy-dot"></span>
-			</div>
-			<div class="session-info" id="session-info">Not connected</div>
-		</div>
-		<div>
-			<span class="status disconnected" id="connection-status">Disconnected</span>
-		</div>
-	</div>
-	<div class="messages" id="messages">
-		<div class="empty">Waiting for pi to connect...</div>
-	</div>
-	<div class="input-area">
-		<button class="btn btn-abort" id="abort-btn" disabled>Abort</button>
-		<input type="text" id="message-input" placeholder="Type a message..." autocomplete="off" />
-		<button class="btn btn-send" id="send-btn" disabled>Send</button>
-	</div>
-	<script>
-		const params = new URLSearchParams(location.search);
-		const token = params.get('token');
-		const wsParams = token ? '?web&token=' + encodeURIComponent(token) : '?web';
-		let WS_URL;
-		if (location.hostname === 'localhost' || location.hostname === '127.0.0.1') {
-			WS_URL = 'ws://localhost:${WS_PORT}' + wsParams;
-		} else {
-			const wsProtocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-			WS_URL = wsProtocol + '//' + location.host + wsParams;
-		}
-		let ws = null;
-		let currentSessionId = null;
-		let streamingDiv = null;
-		const activeTools = new Map();
-
-		const messagesEl = document.getElementById('messages');
-		const messageInput = document.getElementById('message-input');
-		const sendBtn = document.getElementById('send-btn');
-		const abortBtn = document.getElementById('abort-btn');
-		const statusEl = document.getElementById('connection-status');
-		const sessionInfoEl = document.getElementById('session-info');
-		const busyDot = document.getElementById('busy-dot');
-
-		function scrollToBottom() {
-			messagesEl.scrollTop = messagesEl.scrollHeight;
-		}
-
-		function clearEmpty() {
-			const el = messagesEl.querySelector('.empty, .loading');
-			if (el) el.remove();
-		}
-
-		function escapeHtml(text) {
-			const d = document.createElement('div');
-			d.textContent = text;
-			return d.innerHTML;
-		}
-
-		function extractText(message) {
-			return message.content?.map(c => c.type === 'text' ? c.text : '[image]').join('') || '';
-		}
-
-		function addMessage(type, content, timestamp) {
-			clearEmpty();
-			const msg = document.createElement('div');
-			msg.className = 'message ' + type;
-
-			if (timestamp) {
-				const ts = document.createElement('div');
-				ts.className = 'timestamp';
-				ts.textContent = new Date(timestamp).toLocaleTimeString();
-				msg.appendChild(ts);
-			}
-
-			const textEl = document.createElement('span');
-			textEl.textContent = content;
-			msg.appendChild(textEl);
-
-			messagesEl.appendChild(msg);
-			scrollToBottom();
-			return msg;
-		}
-
-		function addToolResult(toolName, content, isError, toolCallId) {
-			clearEmpty();
-			// Remove tool-running indicator if exists
-			if (toolCallId) {
-				const running = activeTools.get(toolCallId);
-				if (running) { running.remove(); activeTools.delete(toolCallId); }
-			}
-			const msg = document.createElement('div');
-			msg.className = 'message ' + (isError ? 'error' : 'tool');
-
-			const label = document.createElement('strong');
-			label.textContent = toolName + ': ';
-			msg.appendChild(label);
-
-			const contentDiv = document.createElement('div');
-			contentDiv.className = 'tool-content';
-			contentDiv.textContent = content;
-			msg.appendChild(contentDiv);
-
-			// Expandable for long content
-			if (content.length > 300) {
-				const expand = document.createElement('div');
-				expand.className = 'tool-expand';
-				expand.textContent = 'Show more';
-				expand.onclick = () => {
-					contentDiv.classList.toggle('expanded');
-					expand.textContent = contentDiv.classList.contains('expanded') ? 'Show less' : 'Show more';
-				};
-				msg.appendChild(expand);
-			}
-
-			messagesEl.appendChild(msg);
-			scrollToBottom();
-		}
-
-		function updateConnection(connected) {
-			statusEl.textContent = connected ? 'Connected' : 'Disconnected';
-			statusEl.className = 'status ' + (connected ? 'connected' : 'disconnected');
-			sendBtn.disabled = !connected;
-			abortBtn.disabled = !connected;
-		}
-
-		function connect() {
-			ws = new WebSocket(WS_URL);
-			ws.onopen = () => {
-				updateConnection(true);
-				messagesEl.innerHTML = '<div class="loading">Connected. Waiting for session...</div>';
-			};
-			ws.onclose = () => {
-				updateConnection(false);
-				busyDot.classList.remove('active');
-				streamingDiv = null;
-				activeTools.clear();
-				setTimeout(connect, 3000);
-			};
-			ws.onerror = () => {};
-			ws.onmessage = (e) => {
-				try { handleMessage(JSON.parse(e.data)); } catch {}
-			};
-		}
-
-		function handleMessage(msg) {
-			switch (msg.type) {
-				case 'session_start':
-					currentSessionId = msg.sessionId;
-					sessionInfoEl.textContent = msg.model ? msg.cwd + ' \\u2022 ' + msg.model : msg.cwd;
-					messagesEl.innerHTML = '<div class="empty">No messages yet</div>';
-					streamingDiv = null;
-					activeTools.clear();
-					break;
-
-				case 'message': {
-					clearEmpty();
-					const role = msg.message.role;
-					const content = extractText(msg.message);
-					if (streamingDiv && role !== 'user') {
-						// Replace streaming div with final message
-						streamingDiv.className = 'message assistant';
-						streamingDiv.textContent = content;
-						streamingDiv = null;
-					} else {
-						addMessage(role === 'user' ? 'user' : 'assistant', content, msg.message.timestamp);
-					}
-					break;
-				}
-
-				case 'tool_result': {
-					const content = msg.content?.map(c => c.type === 'text' ? c.text : '[image]').join('') || '';
-					addToolResult(msg.toolName, content, msg.isError, msg.toolCallId);
-					break;
-				}
-
-				case 'message_start':
-					if (msg.role === 'assistant') {
-						clearEmpty();
-						streamingDiv = document.createElement('div');
-						streamingDiv.className = 'message assistant streaming';
-						messagesEl.appendChild(streamingDiv);
-						scrollToBottom();
-					}
-					break;
-
-				case 'message_update':
-					if (streamingDiv) {
-						streamingDiv.textContent = msg.text;
-						scrollToBottom();
-					}
-					break;
-
-				case 'message_end':
-					if (streamingDiv) {
-						streamingDiv.classList.remove('streaming');
-					}
-					break;
-
-				case 'tool_execution_start': {
-					clearEmpty();
-					const el = document.createElement('div');
-					el.className = 'message tool-running';
-					el.innerHTML = '<span class="spinner">\\u2699</span> Running <strong>' + escapeHtml(msg.toolName) + '</strong>...';
-					messagesEl.appendChild(el);
-					activeTools.set(msg.toolCallId, el);
-					scrollToBottom();
-					break;
-				}
-
-				case 'tool_execution_end': {
-					const el = activeTools.get(msg.toolCallId);
-					if (el) {
-						el.className = 'message ' + (msg.isError ? 'error' : 'tool');
-						el.innerHTML = (msg.isError ? '\\u2717 ' : '\\u2713 ') + '<strong>' + escapeHtml(msg.toolName) + '</strong> ' + (msg.isError ? 'failed' : 'done');
-					}
-					break;
-				}
-
-				case 'agent_start':
-					busyDot.classList.add('active');
-					break;
-
-				case 'agent_end':
-					busyDot.classList.remove('active');
-					break;
-
-				case 'model_select': {
-					const parts = sessionInfoEl.textContent.split(' \\u2022 ');
-					if (parts.length >= 1) {
-						sessionInfoEl.textContent = parts[0] + ' \\u2022 ' + msg.modelId;
-					}
-					break;
-				}
-			}
-		}
-
-		sendBtn.onclick = () => {
-			const text = messageInput.value.trim();
-			if (!text || !ws) return;
-			ws.send(JSON.stringify({ type: 'message', content: text }));
-			addMessage('user', text);
-			messageInput.value = '';
-		};
-
-		abortBtn.onclick = () => {
-			if (ws) ws.send(JSON.stringify({ type: 'abort' }));
-		};
-
-		messageInput.onkeypress = (e) => {
-			if (e.key === 'Enter') sendBtn.onclick();
-		};
-
-		connect();
-	</script>
-</body>
-</html>`;
-
-// WebSocket server for extension connections
-const wss = new WebSocketServer({ port: WS_PORT });
-
-console.log("=".repeat(60));
-console.log("Toilet-Pi Server");
-console.log("=".repeat(60));
-console.log(`WebSocket: ws://localhost:${WS_PORT}`);
-console.log(`Web UI: http://localhost:${HTTP_PORT}`);
-console.log(`Authentication: ${TOKEN ? "Enabled (TOKEN required)" : "Disabled"}`);
-console.log("=".repeat(60));
-
-wss.on("connection", (ws, req) => {
-	const url = new URL(req.url || "", `http://${req.headers.host}`);
-	const isWebClient = url.searchParams.has("web");
-	const clientIp = req.socket.remoteAddress;
-
-	// Check authentication token if set
-	if (TOKEN) {
-		const clientToken = url.searchParams.get("token");
-		if (clientToken !== TOKEN) {
-			console.log(`[${new Date().toISOString()}] Rejected connection: invalid token`);
-			ws.send(JSON.stringify({ error: "Invalid token" }));
-			ws.close(1008, "Invalid token");
+const server = createServer(async (req, res) => {
+	try {
+		const url = new URL(req.url || "/", `http://${req.headers.host || `localhost:${PORT}`}`);
+		const filePath = resolvePublicPath(url.pathname);
+		if (!filePath) {
+			res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+			res.end("Not found");
 			return;
 		}
-	}
 
-	if (isWebClient) {
-		// Web UI client
-		webClients.add(ws);
-		console.log(`[${new Date().toISOString()}] Web UI connected from ${clientIp}`);
-
-		// Send current session state
-		for (const [sessionId, session] of sessions) {
-			if (session.connected) {
-				ws.send(JSON.stringify({
-					type: "session_start",
-					sessionId,
-					cwd: session.cwd,
-					model: session.model,
-				}));
-				for (const msg of session.messages) {
-					ws.send(JSON.stringify(msg));
-				}
-			}
-		}
-
-		ws.on("message", (data) => {
-			try {
-				const msg = JSON.parse(data.toString());
-
-				// Forward message/abort from web UI to extension
-				for (const extWs of extensionClients) {
-					if (extWs.readyState === 1) {
-						extWs.send(data);
-					}
-				}
-			} catch (error) {
-				console.error("Invalid message from web UI:", error);
-			}
-		});
-
-		ws.on("close", () => {
-			webClients.delete(ws);
-			console.log(`[${new Date().toISOString()}] Web UI disconnected`);
-		});
-	} else {
-		// pi extension client
-		extensionClients.add(ws);
-		console.log(`[${new Date().toISOString()}] Extension connected from ${clientIp}`);
-
-		ws.on("message", (data) => {
-			try {
-				const msg = JSON.parse(data.toString());
-
-				if (msg.type === "session_start") {
-					// Register session
-					sessions.set(msg.sessionId, {
-						messages: [],
-						connected: true,
-						cwd: msg.cwd,
-						model: msg.model,
-					});
-					console.log(`[${new Date().toISOString()}] Session started: ${msg.sessionId}`);
-					broadcastToWebClients(msg);
-				} else if (msg.type === "message" || msg.type === "tool_result") {
-					// Store and broadcast persistent messages
-					const session = sessions.get(msg.sessionId);
-					if (session) {
-						session.messages.push(msg);
-						broadcastToWebClients(msg);
-					}
-				} else if (msg.type === "model_select") {
-					// Update session model and broadcast
-					const session = sessions.get(msg.sessionId);
-					if (session) session.model = msg.modelId;
-					broadcastToWebClients(msg);
-				} else {
-					// Broadcast ephemeral/streaming events without storing
-					// (message_start, message_update, message_end,
-					//  tool_execution_start, tool_execution_end,
-					//  agent_start, agent_end)
-					broadcastToWebClients(msg);
-				}
-			} catch (error) {
-				console.error("Invalid message from extension:", error);
-			}
-		});
-
-		ws.on("close", () => {
-			extensionClients.delete(ws);
-			console.log(`[${new Date().toISOString()}] Extension disconnected`);
-			// Mark sessions as disconnected
-			for (const [sessionId, session] of sessions) {
-				if (session.connected) {
-					session.connected = false;
-					console.log(`[${new Date().toISOString()}] Session ${sessionId} marked as disconnected`);
-				}
-			}
-		});
-	}
-
-	ws.on("error", (error) => {
-		console.error(`[${new Date().toISOString()}] Client error:`, error);
-	});
-});
-
-wss.on("error", (error) => {
-	console.error("WebSocket server error:", error);
-	process.exit(1);
-});
-
-// Broadcast to all web UI clients
-function broadcastToWebClients(message) {
-	for (const ws of webClients) {
-		if (ws.readyState === 1) {
-			ws.send(JSON.stringify(message));
-		}
-	}
-}
-
-// HTTP server for web UI
-const httpServer = createServer((req, res) => {
-	if (req.url === "/" || req.url?.startsWith("/?")) {
-		res.writeHead(200, { "Content-Type": "text/html" });
-		res.end(HTML);
-	} else {
-		res.writeHead(404);
+		const content = await readFile(filePath);
+		res.writeHead(200, { "Content-Type": getContentType(filePath) });
+		res.end(content);
+	} catch {
+		res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
 		res.end("Not found");
 	}
 });
 
-httpServer.listen(HTTP_PORT, () => {
-	console.log(`HTTP server listening on http://localhost:${HTTP_PORT}`);
+const wss = new WebSocketServer({ noServer: true });
+
+server.on("upgrade", (req, socket, head) => {
+	const url = new URL(req.url || "/", `http://${req.headers.host || `localhost:${PORT}`}`);
+	if (url.pathname !== WS_PATH) {
+		socket.write("HTTP/1.1 404 Not Found\r\n\r\n");
+		socket.destroy();
+		return;
+	}
+
+	wss.handleUpgrade(req, socket, head, (ws) => {
+		wss.emit("connection", ws, req);
+	});
 });
 
-// Graceful shutdown
-let isShuttingDown = false;
+wss.on("connection", (ws, req) => {
+	const remote = req.socket.remoteAddress || "unknown";
+	log(`client connected from ${remote}`);
 
-const shutdown = (signal) => {
-	if (isShuttingDown) return;
-	isShuttingDown = true;
-	console.log(`${signal} received, closing servers...`);
+	ws.on("message", async (data) => {
+		let message;
+		try {
+			message = JSON.parse(data.toString());
+		} catch {
+			send(ws, { type: "error", message: "Invalid JSON" });
+			return;
+		}
 
-	// Close all client connections
-	for (const ws of extensionClients) ws.terminate();
-	for (const ws of webClients) ws.terminate();
+		if (!clients.has(ws) && message.type !== "hello") {
+			send(ws, { type: "error", message: "Send hello first" });
+			return;
+		}
 
+		if (message.type === "hello") {
+			handleHello(ws, message);
+			return;
+		}
+
+		const client = clients.get(ws);
+		if (!client) return;
+
+		if (client.role === "web") {
+			handleWebMessage(ws, message);
+			return;
+		}
+
+		if (client.role === "host-supervisor") {
+			handleHostMessage(ws, message);
+			return;
+		}
+
+		handleRunnerMessage(ws, message, client);
+	});
+
+	ws.on("close", () => {
+		handleClose(ws);
+	});
+
+	ws.on("error", (error) => {
+		log(`socket error: ${error.message}`);
+	});
+});
+
+server.listen(PORT, () => {
+	console.log("=".repeat(60));
+	console.log("Toilet-Pi v2 Server");
+	console.log("=".repeat(60));
+	console.log(`Web UI: http://localhost:${PORT}`);
+	console.log(`WebSocket: ws://localhost:${PORT}${WS_PATH}`);
+	console.log("State: in-memory only");
+	console.log("=".repeat(60));
+});
+
+function handleHello(ws, message) {
+	const role = message.role;
+	if (!["web", "host-supervisor", "interactive", "background"].includes(role)) {
+		send(ws, { type: "error", message: `Unknown role: ${role}` });
+		ws.close(1008, "Unknown role");
+		return;
+	}
+
+	if (role === "web") {
+		clients.set(ws, { role: "web" });
+		webClients.set(ws, { attachedSessionGuid: null });
+		sendOverview(ws);
+		return;
+	}
+
+	if (role === "host-supervisor") {
+		clients.set(ws, {
+			role,
+			hostId: message.hostId,
+		});
+		hosts.set(message.hostId, {
+			hostId: message.hostId,
+			hostname: message.hostname || message.hostId,
+			platform: message.platform || null,
+			pid: message.pid || null,
+			conn: ws,
+			connectedAt: Date.now(),
+		});
+		broadcastOverview();
+		return;
+	}
+
+	if (!message.sessionGuid) {
+		send(ws, { type: "error", message: "Missing sessionGuid" });
+		ws.close(1008, "Missing sessionGuid");
+		return;
+	}
+
+	clients.set(ws, {
+		role,
+		hostId: message.hostId || null,
+		sessionGuid: message.sessionGuid,
+	});
+	registerRunner(ws, message);
+}
+
+function handleWebMessage(ws, message) {
+	if (message.type === "attach") {
+		const state = webClients.get(ws);
+		if (state) state.attachedSessionGuid = message.sessionGuid || null;
+		send(ws, {
+			type: "session_snapshot",
+			session: buildSessionSnapshot(message.sessionGuid),
+		});
+		return;
+	}
+
+	if (message.type === "input") {
+		const session = sessions.get(message.sessionGuid);
+		const target = getOwnerConnection(session);
+		if (!target) {
+			send(ws, { type: "error", message: "Session is not currently owned by an active runner" });
+			return;
+		}
+		send(target, { type: "input", text: String(message.text || "") });
+		return;
+	}
+
+	if (message.type === "abort") {
+		const session = sessions.get(message.sessionGuid);
+		const target = getOwnerConnection(session);
+		if (!target) {
+			send(ws, { type: "error", message: "Session is not currently owned by an active runner" });
+			return;
+		}
+		send(target, { type: "abort" });
+		return;
+	}
+
+	if (message.type === "start_background_session") {
+		const host = hosts.get(message.hostId);
+		if (!host?.conn || !isOpen(host.conn)) {
+			send(ws, { type: "error", message: `Host ${message.hostId} is not connected` });
+			return;
+		}
+
+		send(host.conn, {
+			type: "start_background_session",
+			hostId: message.hostId,
+			sessionGuid: message.sessionGuid,
+			sessionFile: message.sessionFile || null,
+			cwd: message.cwd || null,
+		});
+		return;
+	}
+
+	if (message.type === "refresh_host_sessions") {
+		const host = hosts.get(message.hostId);
+		if (!host?.conn || !isOpen(host.conn)) {
+			send(ws, { type: "error", message: `Host ${message.hostId} is not connected` });
+			return;
+		}
+		send(host.conn, { type: "list_sessions" });
+		return;
+	}
+}
+
+function handleHostMessage(_ws, message) {
+	if (message.type === "host_sessions") {
+		hostCatalogs.set(message.hostId, {
+			hostId: message.hostId,
+			updatedAt: Date.now(),
+			sessions: Array.isArray(message.sessions) ? message.sessions : [],
+		});
+		broadcastOverview();
+		return;
+	}
+
+	if (message.type === "runner_status") {
+		if (message.sessionGuid) {
+			const session = getOrCreateSession(message.sessionGuid);
+			session.hostId = message.hostId || session.hostId;
+			session.runnerStatus = message.status || null;
+			session.updatedAt = Date.now();
+		}
+
+		broadcastOverview();
+		broadcastNotice({
+			type: "notice",
+			level: message.status === "error" ? "error" : "info",
+			message: formatRunnerStatus(message),
+		});
+		return;
+	}
+}
+
+function handleRunnerMessage(ws, message, client) {
+	const session = sessions.get(client.sessionGuid);
+	if (!session) return;
+
+	if (message.type === "released") {
+		if (client.role === "background" && session.backgroundConn === ws) {
+			session.backgroundConn = null;
+			session.busy = false;
+			session.streamingText = null;
+			session.activeTools.clear();
+			promoteSessionOwner(session);
+			try {
+				ws.close(1000, "released");
+			} catch {
+				// Ignore.
+			}
+			broadcastOverview();
+			notifySessionMeta(session.sessionGuid);
+		}
+		return;
+	}
+
+	if (message.type !== "session_event") return;
+	if (message.sessionGuid && message.sessionGuid !== client.sessionGuid) return;
+
+	applySessionEvent(session, message.event);
+	sendToAttached(session.sessionGuid, {
+		type: "session_event",
+		sessionGuid: session.sessionGuid,
+		event: message.event,
+	});
+
+	if (["message", "busy", "model", "tool_start", "tool_end"].includes(message.event?.type)) {
+		notifySessionMeta(session.sessionGuid);
+	}
+}
+
+function registerRunner(ws, message) {
+	const session = getOrCreateSession(message.sessionGuid);
+	if (message.role === "interactive") {
+		replaceConnection(session, "interactiveConn", ws);
+		session.pendingInteractiveConn = ws;
+	} else {
+		replaceConnection(session, "backgroundConn", ws);
+	}
+
+	session.hostId = message.hostId || session.hostId;
+	session.sessionFile = message.sessionFile || session.sessionFile;
+	session.sessionName = message.sessionName || session.sessionName;
+	session.cwd = message.cwd || session.cwd;
+	session.model = message.model || session.model;
+	session.busy = !!message.busy;
+	session.history = Array.isArray(message.history) ? message.history : session.history;
+	session.streamingText = typeof message.streamingText === "string" ? message.streamingText : null;
+	session.runnerStatus = null;
+	session.updatedAt = Date.now();
+	clearFinishedTools(session);
+
+	if (message.role === "interactive") {
+		if (session.backgroundConn && isOpen(session.backgroundConn)) {
+			session.owner = "background";
+			send(session.backgroundConn, { type: "abort_and_release" });
+		} else {
+			session.pendingInteractiveConn = null;
+			session.owner = "interactive";
+		}
+	} else {
+		if ((session.interactiveConn && isOpen(session.interactiveConn))
+			|| (session.pendingInteractiveConn && isOpen(session.pendingInteractiveConn))) {
+			session.owner = "interactive";
+			send(ws, { type: "abort_and_release" });
+		} else {
+			session.owner = "background";
+		}
+	}
+
+	broadcastOverview();
+	notifySessionMeta(session.sessionGuid);
+}
+
+function replaceConnection(session, key, ws) {
+	const previous = session[key];
+	if (previous && previous !== ws && isOpen(previous)) {
+		try {
+			previous.close(1000, "replaced");
+		} catch {
+			// Ignore.
+		}
+	}
+	session[key] = ws;
+}
+
+function applySessionEvent(session, event) {
+	if (!event || typeof event !== "object") return;
+	session.updatedAt = Date.now();
+
+	switch (event.type) {
+		case "message":
+			if (event.message) session.history.push(event.message);
+			if (event.message?.role === "assistant") session.streamingText = null;
+			break;
+
+		case "assistant_stream_start":
+			session.streamingText = "";
+			break;
+
+		case "assistant_stream_update":
+			session.streamingText = typeof event.text === "string" ? event.text : "";
+			break;
+
+		case "assistant_stream_end":
+			break;
+
+		case "tool_start":
+			if (event.toolCallId) {
+				session.activeTools.set(event.toolCallId, {
+					toolCallId: event.toolCallId,
+					toolName: event.toolName || "tool",
+				});
+			}
+			break;
+
+		case "tool_end":
+			if (event.toolCallId) session.activeTools.delete(event.toolCallId);
+			break;
+
+		case "busy":
+			session.busy = !!event.busy;
+			if (!session.busy) {
+				session.streamingText = null;
+				session.activeTools.clear();
+			}
+			break;
+
+		case "model":
+			session.model = event.modelId || null;
+			break;
+
+		case "session_name":
+			session.sessionName = event.sessionName || null;
+			break;
+	}
+}
+
+function promoteSessionOwner(session) {
+	if (session.pendingInteractiveConn && isOpen(session.pendingInteractiveConn)) {
+		session.interactiveConn = session.pendingInteractiveConn;
+		session.pendingInteractiveConn = null;
+		session.owner = "interactive";
+		return;
+	}
+
+	if (session.interactiveConn && isOpen(session.interactiveConn)) {
+		session.owner = "interactive";
+		return;
+	}
+
+	if (session.backgroundConn && isOpen(session.backgroundConn)) {
+		session.owner = "background";
+		return;
+	}
+
+	session.owner = null;
+}
+
+function handleClose(ws) {
+	const client = clients.get(ws);
+	clients.delete(ws);
+
+	if (!client) return;
+
+	if (client.role === "web") {
+		webClients.delete(ws);
+		return;
+	}
+
+	if (client.role === "host-supervisor") {
+		const host = hosts.get(client.hostId);
+		if (host?.conn === ws) hosts.delete(client.hostId);
+		broadcastOverview();
+		return;
+	}
+
+	const session = sessions.get(client.sessionGuid);
+	if (!session) return;
+
+	if (client.role === "interactive") {
+		if (session.interactiveConn === ws) session.interactiveConn = null;
+		if (session.pendingInteractiveConn === ws) session.pendingInteractiveConn = null;
+	} else if (client.role === "background") {
+		if (session.backgroundConn === ws) session.backgroundConn = null;
+	}
+
+	if (!session.interactiveConn && session.pendingInteractiveConn) {
+		session.pendingInteractiveConn = null;
+	}
+
+	if (client.role === "background") {
+		session.busy = false;
+		session.streamingText = null;
+		session.activeTools.clear();
+	}
+
+	promoteSessionOwner(session);
+	broadcastOverview();
+	notifySessionMeta(session.sessionGuid);
+}
+
+function getOrCreateSession(sessionGuid) {
+	let session = sessions.get(sessionGuid);
+	if (!session) {
+		session = {
+			sessionGuid,
+			interactiveConn: null,
+			backgroundConn: null,
+			pendingInteractiveConn: null,
+			owner: null,
+			hostId: null,
+			sessionFile: null,
+			sessionName: null,
+			cwd: null,
+			model: null,
+			busy: false,
+			history: [],
+			streamingText: null,
+			activeTools: new Map(),
+			runnerStatus: null,
+			updatedAt: Date.now(),
+		};
+		sessions.set(sessionGuid, session);
+	}
+	return session;
+}
+
+function buildSessionSnapshot(sessionGuid) {
+	const session = sessionGuid ? sessions.get(sessionGuid) : null;
+	if (!session) {
+		return {
+			sessionGuid: sessionGuid || null,
+			owner: null,
+			hostId: null,
+			sessionFile: null,
+			sessionName: null,
+			cwd: null,
+			model: null,
+			busy: false,
+			history: [],
+			streamingText: null,
+			activeTools: [],
+		};
+	}
+
+	return {
+		sessionGuid: session.sessionGuid,
+		owner: session.owner,
+		hostId: session.hostId,
+		sessionFile: session.sessionFile,
+		sessionName: session.sessionName,
+		cwd: session.cwd,
+		model: session.model,
+		busy: session.busy,
+		history: session.history,
+		streamingText: session.streamingText,
+		activeTools: Array.from(session.activeTools.values()),
+	};
+}
+
+function notifySessionMeta(sessionGuid) {
+	const session = sessions.get(sessionGuid);
+	if (!session) return;
+	sendToAttached(sessionGuid, {
+		type: "session_meta",
+		sessionGuid,
+		owner: session.owner,
+		hostId: session.hostId,
+		sessionFile: session.sessionFile,
+		sessionName: session.sessionName,
+		cwd: session.cwd,
+		model: session.model,
+		busy: session.busy,
+	});
+}
+
+function sendToAttached(sessionGuid, payload) {
+	for (const [ws, state] of webClients) {
+		if (state.attachedSessionGuid === sessionGuid) send(ws, payload);
+	}
+}
+
+function broadcastNotice(payload) {
+	for (const ws of webClients.keys()) {
+		send(ws, payload);
+	}
+}
+
+function sendOverview(ws) {
+	send(ws, {
+		type: "overview",
+		hosts: buildOverviewHosts(),
+	});
+}
+
+function broadcastOverview() {
+	const payload = {
+		type: "overview",
+		hosts: buildOverviewHosts(),
+	};
+	for (const ws of webClients.keys()) {
+		send(ws, payload);
+	}
+}
+
+function buildOverviewHosts() {
+	const hostIds = new Set([...hosts.keys(), ...hostCatalogs.keys()]);
+	for (const session of sessions.values()) {
+		if (session.hostId) hostIds.add(session.hostId);
+	}
+
+	const list = [];
+	for (const hostId of hostIds) {
+		const host = hosts.get(hostId);
+		const catalog = hostCatalogs.get(hostId);
+		const merged = new Map();
+
+		for (const entry of catalog?.sessions || []) {
+			merged.set(entry.sessionGuid, {
+				sessionGuid: entry.sessionGuid,
+				sessionFile: entry.sessionFile || null,
+				sessionName: entry.sessionName || null,
+				cwd: entry.cwd || null,
+				preview: entry.preview || null,
+				updatedAt: entry.updatedAt || 0,
+				owner: null,
+				busy: false,
+				model: null,
+				runnerStatus: null,
+			});
+		}
+
+		for (const session of sessions.values()) {
+			if (session.hostId !== hostId) continue;
+			const current = merged.get(session.sessionGuid) || { sessionGuid: session.sessionGuid };
+			merged.set(session.sessionGuid, {
+				...current,
+				sessionGuid: session.sessionGuid,
+				sessionFile: session.sessionFile || current.sessionFile || null,
+				sessionName: session.sessionName || current.sessionName || null,
+				cwd: session.cwd || current.cwd || null,
+				preview: getSessionPreview(session) || current.preview || null,
+				updatedAt: session.updatedAt || current.updatedAt || 0,
+				owner: session.owner,
+				busy: session.busy,
+				model: session.model,
+				runnerStatus: session.runnerStatus || null,
+			});
+		}
+
+		const sessionsForHost = Array.from(merged.values()).sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+		list.push({
+			hostId,
+			hostname: host?.hostname || hostId,
+			platform: host?.platform || null,
+			connected: !!host,
+			sessions: sessionsForHost,
+		});
+	}
+
+	list.sort((a, b) => a.hostname.localeCompare(b.hostname));
+	return list;
+}
+
+function getSessionPreview(session) {
+	for (const message of session.history) {
+		if (message.role === "user" && message.text) return message.text;
+	}
+	return null;
+}
+
+function getOwnerConnection(session) {
+	if (!session) return null;
+	if (session.owner === "interactive" && isOpen(session.interactiveConn)) return session.interactiveConn;
+	if (session.owner === "background" && isOpen(session.backgroundConn)) return session.backgroundConn;
+	return null;
+}
+
+function clearFinishedTools(session) {
+	if (!(session.activeTools instanceof Map)) {
+		session.activeTools = new Map();
+	}
+}
+
+function send(ws, payload) {
+	if (!isOpen(ws)) return;
+	ws.send(JSON.stringify(payload));
+}
+
+function isOpen(ws) {
+	return ws?.readyState === WebSocket.OPEN;
+}
+
+function formatRunnerStatus(message) {
+	if (message.status === "starting") {
+		return `Starting background runner for ${message.sessionGuid}`;
+	}
+	if (message.status === "already-running") {
+		return `Background runner already active for ${message.sessionGuid}`;
+	}
+	if (message.status === "error") {
+		return `Background runner error for ${message.sessionGuid}: ${message.error}`;
+	}
+	if (message.status === "exited") {
+		return `Background runner exited for ${message.sessionGuid}`;
+	}
+	return `Runner status for ${message.sessionGuid}: ${message.status}`;
+}
+
+function resolvePublicPath(requestPath) {
+	const pathname = requestPath === "/" ? "/index.html" : requestPath;
+	const fullPath = path.normalize(path.join(PUBLIC_DIR, pathname));
+	if (!fullPath.startsWith(PUBLIC_DIR)) return null;
+	return fullPath;
+}
+
+function getContentType(filePath) {
+	if (filePath.endsWith(".html")) return "text/html; charset=utf-8";
+	if (filePath.endsWith(".js")) return "application/javascript; charset=utf-8";
+	if (filePath.endsWith(".css")) return "text/css; charset=utf-8";
+	if (filePath.endsWith(".json")) return "application/json; charset=utf-8";
+	return "text/plain; charset=utf-8";
+}
+
+function log(message) {
+	console.log(`[${new Date().toISOString()}] ${message}`);
+}
+
+let shuttingDown = false;
+
+function shutdown(signal) {
+	if (shuttingDown) return;
+	shuttingDown = true;
+	console.log(`${signal} received, shutting down server...`);
+	for (const ws of webClients.keys()) {
+		try {
+			ws.close();
+		} catch {
+			// Ignore.
+		}
+	}
+	for (const host of hosts.values()) {
+		try {
+			host.conn.close();
+		} catch {
+			// Ignore.
+		}
+	}
+	for (const [ws, client] of clients) {
+		if (client.role === "interactive" || client.role === "background") {
+			try {
+				ws.close();
+			} catch {
+				// Ignore.
+			}
+		}
+	}
 	wss.close(() => {
-		httpServer.close(() => {
-			console.log("Servers closed");
+		server.close(() => {
+			console.log("Server closed");
 			process.exit(0);
 		});
 	});
+	setTimeout(() => process.exit(1), 1000);
+}
 
-	setTimeout(() => {
-		console.log("Forcing exit");
-		process.exit(1);
-	}, 1000);
-};
-
-process.on("SIGTERM", () => shutdown("SIGTERM"));
 process.on("SIGINT", () => shutdown("SIGINT"));
+process.on("SIGTERM", () => shutdown("SIGTERM"));

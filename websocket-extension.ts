@@ -1,313 +1,453 @@
-/**
- * WebSocket Client Extension for pi
- *
- * Connects pi to the toilet-pi server, enabling:
- * - Live message streaming to web UI
- * - Sending messages from web UI (appears as user-typed)
- * - Aborting operations from web UI
- *
- * =============================================
- * HOW IT WORKS
- * =============================================
- *
- * This extension connects to the toilet-pi server and:
- *
- * 1. Sends session info (sessionId, cwd, model) when connected
- * 2. Sends all messages (user, assistant, tool results) to server
- * 3. Receives message/abort commands from web UI
- *
- * =============================================
- * MESSAGE FLOW
- * =============================================
- *
- * Phone (web UI) → Server → Extension → pi Agent
- * Extension → Server → Phone (web UI)
- *
- * Forwarding messages TO web UI:
- * - turn_end event → Extension sends to server → Server broadcasts to web UI
- * - tool_result event → Extension sends to server → Server broadcasts to web UI
- *
- * Receiving commands FROM web UI:
- * - User sends message → Server → Extension → pi.sendMessage()
- * - User clicks abort → Server → Extension → ctx.abort()
- *
- * =============================================
- * USAGE
- * =============================================
- *
- * 1. Start the server:
- *    cd ~/Projects/toilet-pi && npm start
- *
- * 2. Run pi with the extension:
- *    pi -e ~/Projects/toilet-pi/websocket-extension.ts
- *
- * 3. Open web UI:
- *    http://localhost:3457
- *
- * 4. Use from anywhere (phone, etc.)
- *    - ngrok: ngrok http 3457
- *    - cloudflared: cloudflared tunnel --url http://localhost:3457
- *    - Local: http://192.168.1.XX:3457
- *
- * =============================================
- * CONFIGURATION
- * =============================================
- *
- * Set custom WebSocket URL:
- *    PI_WS_URL=ws://your-server:3456 pi -e ~/Projects/toilet-pi/websocket-extension.ts
- *
- * Set server token (for authentication):
- *    TOKEN=your-token npm start
- *    Then access: http://localhost:3457?token=your-token
- */
-
+import os from "node:os";
 import { WebSocket } from "ws";
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 
-const WS_URL = process.env.PI_WS_URL || "ws://localhost:3456";
+const SERVER_URL = process.env.TOILET_PI_SERVER_URL || "ws://localhost:3457/ws";
+const HOST_ID = process.env.TOILET_PI_HOST_ID || os.hostname();
+const ROLE = process.env.TOILET_PI_ROLE === "background" ? "background" : "interactive";
+const REQUIRE_SERVER = ROLE === "background";
+const STATUS_KEY = "toilet-pi";
+const MAX_HISTORY_MESSAGES = Number.parseInt(process.env.TOILET_PI_HISTORY_LIMIT || "200", 10);
+const MAX_MESSAGE_TEXT = Number.parseInt(process.env.TOILET_PI_MESSAGE_LIMIT || "4000", 10);
 
-interface WSMessage {
-	type: "message" | "abort";
-	content?: string;
+interface ServerMessage {
+	type: "input" | "abort" | "abort_and_release";
+	text?: string;
 }
+
+interface WebMessage {
+	role: "user" | "assistant";
+	timestamp?: number;
+	text: string;
+	stopReason?: string;
+}
+
+interface WebToolResultMessage {
+	role: "toolResult";
+	timestamp?: number;
+	toolCallId?: string;
+	toolName: string;
+	text: string;
+	isError: boolean;
+}
+
+type SanitizedMessage = WebMessage | WebToolResultMessage;
 
 export default function (pi: ExtensionAPI) {
 	let ws: WebSocket | null = null;
-	let reconnectTimeout: NodeJS.Timeout | null = null;
+	let reconnectTimer: NodeJS.Timeout | null = null;
 	let ctx: ExtensionContext | null = null;
-	let retryCount = 0;
+	let currentSessionGuid: string | null = null;
+	let lastStreamText: string | null = null;
+	let reconnectAttempt = 0;
+	let shuttingDown = false;
+	let releasing = false;
 
-	const sendToServer = (data: unknown) => {
-		if (ws?.readyState === WebSocket.OPEN) {
-			ws.send(JSON.stringify(data));
-		}
-	};
+	function isOpen() {
+		return ws?.readyState === WebSocket.OPEN;
+	}
 
-	const updateStatus = (status: string, connected = false) => {
-		if (!ctx?.hasUI) return;
+	function updateStatus(status: string, connected = false) {
+		if (!ctx?.hasUI || ROLE === "background") return;
 		const theme = ctx.ui.theme;
 		const icon = connected ? theme.fg("success", "●") : theme.fg("warning", "○");
-		// Short form to fit on footer line
-		ctx.ui.setStatus("ws", `${icon} WS:${status}`);
-	};
+		ctx.ui.setStatus(STATUS_KEY, `${icon} WS:${status}`);
+	}
 
-	const connect = () => {
-		// Clear any existing reconnect timeout
-		if (reconnectTimeout) {
-			clearTimeout(reconnectTimeout);
-			reconnectTimeout = null;
-		}
-
-		updateStatus(`connecting... (attempt ${retryCount + 1})`, false);
-
+	function send(payload: unknown) {
+		if (!isOpen()) return;
 		try {
-			ws = new WebSocket(WS_URL);
-
-			ws.on("open", () => {
-				retryCount = 0; // Reset retry count on successful connection
-				updateStatus("connected", true);
-
-				// Send session info when connected
-				if (ctx) {
-					const sessionId = ctx.sessionManager.getSessionFile() ?? "ephemeral";
-					sendToServer({
-						type: "session_start",
-						sessionId,
-						cwd: ctx.cwd,
-						model: ctx.model?.id,
-					});
-
-					// Send existing messages
-					const entries = ctx.sessionManager.getEntries();
-					for (const entry of entries) {
-						if (entry.type === "message") {
-							sendToServer({
-								type: "message",
-								sessionId,
-								message: entry.message,
-							});
-						}
-					}
-				}
-			});
-
-			ws.on("message", async (data: Buffer) => {
-				try {
-					const msg: WSMessage = JSON.parse(data.toString());
-
-					if (msg.type === "abort") {
-						// Abort current agent operation
-						ctx?.abort();
-					} else if (msg.type === "message" && msg.content) {
-						// Send user message to agent
-						pi.sendMessage(
-							{
-								customType: "websocket-message",
-								content: msg.content,
-								display: true,
-							},
-							{ triggerTurn: true }, // Wake up agent if idle
-						);
-					}
-				} catch {
-					// Invalid message, silently ignore
-				}
-			});
-
-			ws.on("error", () => {
-				// Silently ignore connection errors
-				ws = null;
-				scheduleReconnect();
-			});
-
-			ws.on("close", () => {
-				ws = null;
-				updateStatus(`retry ${retryCount + 1}`, false);
-				scheduleReconnect();
-			});
+			ws?.send(JSON.stringify(payload));
 		} catch {
-			// Silently ignore connection errors
-			ws = null;
-			scheduleReconnect();
+			// Best effort only. Never block pi on server send.
 		}
-	};
+	}
 
-	const scheduleReconnect = () => {
-		if (reconnectTimeout) return; // Already scheduled
-		reconnectTimeout = setTimeout(() => {
-			reconnectTimeout = null;
-			retryCount++;
+	function getSessionGuid(context: ExtensionContext | null = ctx) {
+		return context?.sessionManager.getSessionId() || null;
+	}
+
+	function getSessionName(context: ExtensionContext | null = ctx) {
+		try {
+			return context?.sessionManager.getSessionName() || null;
+		} catch {
+			return null;
+		}
+	}
+
+	function buildHistory(context: ExtensionContext) {
+		const branch = context.sessionManager.getBranch();
+		const history: SanitizedMessage[] = [];
+		for (const entry of branch.slice(-MAX_HISTORY_MESSAGES)) {
+			if (entry.type !== "message") continue;
+			const message = sanitizeMessage(entry.message);
+			if (message) history.push(message);
+		}
+		return history;
+	}
+
+	function sendHello() {
+		if (!ctx) return;
+		send({
+			type: "hello",
+			role: ROLE,
+			hostId: HOST_ID,
+			sessionGuid: ctx.sessionManager.getSessionId(),
+			sessionFile: ctx.sessionManager.getSessionFile() || null,
+			sessionName: getSessionName(ctx),
+			cwd: ctx.sessionManager.getCwd(),
+			model: ctx.model?.id || null,
+			busy: !ctx.isIdle(),
+			streamingText: lastStreamText,
+			history: buildHistory(ctx),
+		});
+	}
+
+	function connect() {
+		if (!ctx || shuttingDown) return;
+		if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
+
+		if (reconnectTimer) {
+			clearTimeout(reconnectTimer);
+			reconnectTimer = null;
+		}
+
+		updateStatus(`connecting ${reconnectAttempt > 0 ? `(${reconnectAttempt + 1})` : ""}`.trim(), false);
+		ws = new WebSocket(SERVER_URL);
+
+		ws.on("open", () => {
+			reconnectAttempt = 0;
+			updateStatus(`${ROLE}`, true);
+			sendHello();
+		});
+
+		ws.on("message", async (data: Buffer) => {
+			let message: ServerMessage;
+			try {
+				message = JSON.parse(data.toString());
+			} catch {
+				return;
+			}
+			await handleServerMessage(message);
+		});
+
+		ws.on("close", async () => {
+			ws = null;
+			if (shuttingDown) return;
+			updateStatus("disconnected", false);
+			if (REQUIRE_SERVER) {
+				await shutdownBackgroundProcess("server disconnected");
+				return;
+			}
+			scheduleReconnect();
+		});
+
+		ws.on("error", () => {
+			// The close handler handles reconnect/exit behavior.
+		});
+	}
+
+	function scheduleReconnect() {
+		if (reconnectTimer || shuttingDown) return;
+		reconnectTimer = setTimeout(() => {
+			reconnectTimer = null;
+			reconnectAttempt += 1;
 			connect();
-		}, 5000); // Reconnect after 5 seconds
-	};
+		}, 3000);
+	}
+
+	function reconnectForCurrentSession(context: ExtensionContext) {
+		ctx = context;
+		currentSessionGuid = getSessionGuid(context);
+		lastStreamText = null;
+		if (reconnectTimer) {
+			clearTimeout(reconnectTimer);
+			reconnectTimer = null;
+		}
+		if (ws) {
+			try {
+				ws.removeAllListeners();
+				ws.close(1000, "session changed");
+			} catch {
+				// Ignore.
+			}
+			ws = null;
+		}
+		connect();
+	}
+
+	async function handleServerMessage(message: ServerMessage) {
+		if (!ctx) return;
+
+		if (message.type === "abort") {
+			await Promise.resolve(ctx.abort());
+			return;
+		}
+
+		if (message.type === "abort_and_release") {
+			if (ROLE === "background") {
+				await abortAndRelease();
+			} else {
+				await Promise.resolve(ctx.abort());
+			}
+			return;
+		}
+
+		if (message.type === "input" && message.text) {
+			await dispatchIncomingInput(message.text);
+		}
+	}
+
+	async function dispatchIncomingInput(text: string) {
+		if (!ctx) return;
+		try {
+			if (ctx.isIdle()) {
+				pi.sendUserMessage(text);
+			} else {
+				pi.sendUserMessage(text, { deliverAs: "steer" });
+			}
+		} catch {
+			// Best effort. If the message cannot be injected we silently ignore it.
+		}
+	}
+
+	async function abortAndRelease() {
+		if (!ctx || releasing) return;
+		releasing = true;
+		try {
+			await Promise.resolve(ctx.abort());
+			await waitUntilIdle(ctx, 5000);
+			send({
+				type: "released",
+				sessionGuid: getSessionGuid(ctx),
+			});
+			await sleep(100);
+			await shutdownBackgroundProcess("released");
+		} finally {
+			releasing = false;
+		}
+	}
+
+	async function shutdownBackgroundProcess(_reason: string) {
+		if (!ctx || shuttingDown) return;
+		shuttingDown = true;
+		if (reconnectTimer) {
+			clearTimeout(reconnectTimer);
+			reconnectTimer = null;
+		}
+		try {
+			await Promise.resolve(ctx.abort());
+		} catch {
+			// Ignore.
+		}
+		try {
+			await waitUntilIdle(ctx, 1500);
+		} catch {
+			// Ignore.
+		}
+		ctx.shutdown();
+	}
+
+	function emitSessionEvent(event: Record<string, unknown>) {
+		const sessionGuid = getSessionGuid(ctx);
+		if (!sessionGuid) return;
+		send({
+			type: "session_event",
+			sessionGuid,
+			event,
+		});
+	}
 
 	pi.on("session_start", async (_event, context) => {
 		ctx = context;
-		updateStatus("connecting...", false);
+		currentSessionGuid = getSessionGuid(context);
+		lastStreamText = null;
+		shuttingDown = false;
+		updateStatus("connecting", false);
 		connect();
 	});
 
-	// Forward all messages to server
-	pi.on("turn_end", async (event, context) => {
-		sendToServer({
-			type: "message",
-			sessionId: context.sessionManager.getSessionFile() ?? "ephemeral",
-			message: event.message,
-		});
+	pi.on("session_switch", async (_event, context) => {
+		reconnectForCurrentSession(context);
 	});
 
-	pi.on("tool_result", async (event, context) => {
-		sendToServer({
-			type: "tool_result",
-			sessionId: context.sessionManager.getSessionFile() ?? "ephemeral",
-			toolCallId: event.toolCallId,
-			toolName: event.toolName,
-			content: event.content,
-			isError: event.isError,
-		});
+	pi.on("session_fork", async (_event, context) => {
+		reconnectForCurrentSession(context);
 	});
 
-	// === Streaming events for live web UI updates ===
+	pi.on("agent_start", async () => {
+		emitSessionEvent({ type: "busy", busy: true });
+	});
+
+	pi.on("agent_end", async () => {
+		emitSessionEvent({ type: "busy", busy: false });
+		lastStreamText = null;
+	});
+
+	pi.on("message_start", async (event) => {
+		if (event.message.role === "assistant") {
+			lastStreamText = "";
+			emitSessionEvent({ type: "assistant_stream_start" });
+		}
+	});
 
 	let lastUpdateTime = 0;
-
-	pi.on("agent_start", async (_event, context) => {
-		sendToServer({
-			type: "agent_start",
-			sessionId: context.sessionManager.getSessionFile() ?? "ephemeral",
-		});
-	});
-
-	pi.on("agent_end", async (_event, context) => {
-		sendToServer({
-			type: "agent_end",
-			sessionId: context.sessionManager.getSessionFile() ?? "ephemeral",
-		});
-	});
-
-	pi.on("message_start", async (event, context) => {
-		sendToServer({
-			type: "message_start",
-			sessionId: context.sessionManager.getSessionFile() ?? "ephemeral",
-			role: event.message.role,
-		});
-	});
-
-	pi.on("message_update", async (event, context) => {
+	pi.on("message_update", async (event) => {
+		if (event.message.role !== "assistant") return;
 		const now = Date.now();
-		if (now - lastUpdateTime < 150) return;
+		if (now - lastUpdateTime < 120) return;
 		lastUpdateTime = now;
-
-		const content = event.message.content;
-		const text = Array.isArray(content)
-			? content.filter((c: any) => c.type === "text").map((c: any) => c.text).join("")
-			: "";
-		sendToServer({
-			type: "message_update",
-			sessionId: context.sessionManager.getSessionFile() ?? "ephemeral",
-			text,
-		});
+		lastStreamText = extractAssistantText(event.message.content);
+		emitSessionEvent({ type: "assistant_stream_update", text: lastStreamText || "" });
 	});
 
-	pi.on("message_end", async (_event, context) => {
-		sendToServer({
-			type: "message_end",
-			sessionId: context.sessionManager.getSessionFile() ?? "ephemeral",
-		});
+	pi.on("message_end", async (event) => {
+		if (event.message.role === "assistant") {
+			emitSessionEvent({ type: "assistant_stream_end" });
+		}
+		const message = sanitizeMessage(event.message);
+		if (message) emitSessionEvent({ type: "message", message });
+		if (event.message.role === "assistant") lastStreamText = null;
+		if (getSessionGuid() !== currentSessionGuid) {
+			currentSessionGuid = getSessionGuid();
+			sendHello();
+		}
 	});
 
-	pi.on("tool_execution_start", async (event, context) => {
-		sendToServer({
-			type: "tool_execution_start",
-			sessionId: context.sessionManager.getSessionFile() ?? "ephemeral",
+	pi.on("tool_execution_start", async (event) => {
+		emitSessionEvent({
+			type: "tool_start",
 			toolCallId: event.toolCallId,
 			toolName: event.toolName,
 		});
 	});
 
-	pi.on("tool_execution_end", async (event, context) => {
-		sendToServer({
-			type: "tool_execution_end",
-			sessionId: context.sessionManager.getSessionFile() ?? "ephemeral",
+	pi.on("tool_execution_end", async (event) => {
+		emitSessionEvent({
+			type: "tool_end",
 			toolCallId: event.toolCallId,
 			toolName: event.toolName,
 			isError: event.isError,
 		});
 	});
 
-	pi.on("model_select", async (event, context) => {
-		sendToServer({
-			type: "model_select",
-			sessionId: context.sessionManager.getSessionFile() ?? "ephemeral",
+	pi.on("model_select", async (event) => {
+		emitSessionEvent({
+			type: "model",
 			modelId: event.model.id,
 		});
 	});
 
 	pi.on("session_shutdown", async () => {
-		if (reconnectTimeout) {
-			clearTimeout(reconnectTimeout);
-		}
+		if (reconnectTimer) clearTimeout(reconnectTimer);
 		if (ws) {
-			ws.close();
+			try {
+				ws.close();
+			} catch {
+				// Ignore.
+			}
 			ws = null;
 		}
 		if (ctx?.hasUI) {
-			ctx.ui.setStatus("ws", undefined); // Clear status
+			ctx.ui.setStatus(STATUS_KEY, undefined);
 		}
 	});
 
-	// Custom command to show WebSocket status
 	pi.registerCommand("ws", {
-		description: "Show WebSocket connection status",
+		description: "Show Toilet-Pi connection status",
 		handler: async (_args, context) => {
 			if (!context.hasUI) return;
-
-			const status = ws?.readyState === WebSocket.OPEN
-				? "connected"
-				: ws?.readyState === WebSocket.CONNECTING
-					? "connecting..."
-					: "disconnected";
-			context.ui.notify(`WebSocket: ${status} (${WS_URL})`, "info");
+			const status = isOpen() ? "connected" : ws?.readyState === WebSocket.CONNECTING ? "connecting" : "disconnected";
+			context.ui.notify(`Toilet-Pi ${ROLE}: ${status} (${SERVER_URL})`, "info");
 		},
 	});
+}
+
+function sanitizeMessage(message: any): SanitizedMessage | null {
+	if (!message || typeof message !== "object") return null;
+
+	if (message.role === "user") {
+		const text = extractUserText(message.content);
+		if (!text) return null;
+		return {
+			role: "user",
+			timestamp: message.timestamp,
+			text,
+		};
+	}
+
+	if (message.role === "assistant") {
+		const text = extractAssistantText(message.content);
+		if (!text && message.stopReason === "toolUse") return null;
+		return {
+			role: "assistant",
+			timestamp: message.timestamp,
+			text: text || `[${message.stopReason || "done"}]`,
+			stopReason: message.stopReason,
+		};
+	}
+
+	if (message.role === "toolResult") {
+		return {
+			role: "toolResult",
+			timestamp: message.timestamp,
+			toolCallId: message.toolCallId,
+			toolName: message.toolName || "tool",
+			text: extractToolResultText(message.content),
+			isError: !!message.isError,
+		};
+	}
+
+	return null;
+}
+
+function extractUserText(content: any) {
+	if (typeof content === "string") return normalizeText(content);
+	if (!Array.isArray(content)) return "";
+	return normalizeText(content.map(extractContentPart).filter(Boolean).join(""));
+}
+
+function extractAssistantText(content: any) {
+	if (!Array.isArray(content)) return "";
+	return normalizeText(
+		content
+			.filter((part: any) => part?.type === "text")
+			.map((part: any) => part.text || "")
+			.join(""),
+	);
+}
+
+function extractToolResultText(content: any) {
+	if (!Array.isArray(content)) return "";
+	return normalizeText(content.map(extractContentPart).filter(Boolean).join(""));
+}
+
+function extractContentPart(part: any) {
+	if (!part || typeof part !== "object") return "";
+	if (part.type === "text") return part.text || "";
+	if (part.type === "image") return "\n[image]\n";
+	return "";
+}
+
+function normalizeText(text: string) {
+	const normalized = String(text || "").replace(/\r\n/g, "\n").trim();
+	if (!normalized) return "";
+	return truncateText(normalized);
+}
+
+function truncateText(text: string) {
+	if (text.length <= MAX_MESSAGE_TEXT) return text;
+	return `${text.slice(0, MAX_MESSAGE_TEXT)}\n\n[truncated for remote view]`;
+}
+
+async function waitUntilIdle(ctx: ExtensionContext, timeoutMs: number) {
+	const start = Date.now();
+	while (!ctx.isIdle()) {
+		if (Date.now() - start > timeoutMs) return;
+		await sleep(50);
+	}
+}
+
+function sleep(ms: number) {
+	return new Promise((resolve) => setTimeout(resolve, ms));
 }

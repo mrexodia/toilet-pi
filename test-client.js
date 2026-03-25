@@ -1,32 +1,43 @@
-/**
- * Simple WebSocket test client
- *
- * Connects to the WebSocket server and lets you send messages.
- */
-
 import { WebSocket } from "ws";
 
-const WS_URL = process.env.WS_URL || "ws://localhost:3456";
-const TOKEN = process.env.TOKEN;
+const SERVER_URL = process.env.TOILET_PI_SERVER_URL || "ws://localhost:3457/ws";
+let currentSessionGuid = null;
+let shouldQuitOnOpen = false;
 
-const url = TOKEN ? `${WS_URL}?token=${TOKEN}` : WS_URL;
+const ws = new WebSocket(SERVER_URL);
 
-const ws = new WebSocket(url);
+function isOpen() {
+	return ws.readyState === WebSocket.OPEN;
+}
+
+function send(message) {
+	if (!isOpen()) {
+		console.log("Socket is not open yet");
+		return;
+	}
+	ws.send(JSON.stringify(message));
+}
 
 ws.on("open", () => {
-	console.log(`Connected to ${url}`);
-	console.log("Type commands (one line at a time):");
-	console.log('  message <text>  - Send a message');
-	console.log('  abort           - Abort current operation');
-	console.log('  quit            - Exit');
+	console.log(`Connected to ${SERVER_URL}`);
+	send({ type: "hello", role: "web" });
+	console.log("Commands:");
+	console.log("  attach <sessionGuid>");
+	console.log("  input <text>");
+	console.log("  abort");
+	console.log("  start <hostId> <sessionGuid>");
+	console.log("  refresh <hostId>");
+	console.log("  quit");
+
+	if (shouldQuitOnOpen) ws.close();
 });
 
 ws.on("message", (data) => {
 	try {
-		const msg = JSON.parse(data.toString());
-		console.log("Received:", JSON.stringify(msg, null, 2));
+		const message = JSON.parse(data.toString());
+		console.log(JSON.stringify(message, null, 2));
 	} catch {
-		console.log("Received:", data.toString());
+		console.log(data.toString());
 	}
 });
 
@@ -48,16 +59,48 @@ process.stdin.on("readable", () => {
 		if (!line) continue;
 
 		const [command, ...rest] = line.split(" ");
-		const content = rest.join(" ");
-
 		if (command === "quit") {
-			ws.close();
-		} else if (command === "message" && content) {
-			ws.send(JSON.stringify({ type: "message", content }));
-		} else if (command === "abort") {
-			ws.send(JSON.stringify({ type: "abort" }));
-		} else {
-			console.log("Unknown command. Use: message <text>, abort, or quit");
+			if (isOpen()) ws.close();
+			else shouldQuitOnOpen = true;
+			continue;
 		}
+
+		if (command === "attach") {
+			currentSessionGuid = rest[0] || null;
+			send({ type: "attach", sessionGuid: currentSessionGuid });
+			continue;
+		}
+
+		if (command === "input") {
+			if (!currentSessionGuid) {
+				console.log("Attach to a session first");
+				continue;
+			}
+			send({ type: "input", sessionGuid: currentSessionGuid, text: rest.join(" ") });
+			continue;
+		}
+
+		if (command === "abort") {
+			if (!currentSessionGuid) {
+				console.log("Attach to a session first");
+				continue;
+			}
+			send({ type: "abort", sessionGuid: currentSessionGuid });
+			continue;
+		}
+
+		if (command === "start") {
+			const [hostId, sessionGuid] = rest;
+			send({ type: "start_background_session", hostId, sessionGuid });
+			continue;
+		}
+
+		if (command === "refresh") {
+			const [hostId] = rest;
+			send({ type: "refresh_host_sessions", hostId });
+			continue;
+		}
+
+		console.log("Unknown command");
 	}
 });

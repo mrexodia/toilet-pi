@@ -1,13 +1,14 @@
 {
   "name": "toilet-pi",
-  "version": "1.0.0",
-  "description": "Remote control pi from the toilet via WebSocket",
+  "version": "2.0.0",
+  "description": "Remote control pi sessions from a central web UI",
   "main": "websocket-server.js",
   "type": "module",
   "scripts": {
     "start": "node websocket-server.js",
-    "client": "node test-client.js",
-    "web": "node websocket-server.js"
+    "server": "node websocket-server.js",
+    "supervisor": "node supervisor.js",
+    "client": "node test-client.js"
   },
   "dependencies": {
     "ws": "^8.18.0"
@@ -15,7 +16,8 @@
   "keywords": [
     "pi",
     "websocket",
-    "remote-control"
+    "remote-control",
+    "daemon"
   ],
   "author": "",
   "license": "MIT"
