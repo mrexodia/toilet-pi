@@ -188,6 +188,8 @@
 			align-items: center;
 			justify-content: space-between;
 			gap: 12px;
+			min-width: 0;
+			overflow: hidden;
 		}
 
 		.sidebar-header h1,
@@ -223,6 +225,8 @@
 		.sidebar-body {
 			min-height: 0;
 			overflow-y: auto;
+			-webkit-overflow-scrolling: touch;
+			overscroll-behavior: contain;
 			padding: 12px;
 			display: flex;
 			flex-direction: column;
@@ -242,6 +246,7 @@
 			border: 1px solid var(--border);
 			border-radius: 14px;
 			width: 100%;
+			flex: 0 0 auto;
 		}
 
 		.list-item {
@@ -284,13 +289,19 @@
 
 		.item-subtitle,
 		.item-preview,
-		.project-subtitle,
+		.project-host,
+		.project-path,
 		.session-mini-subtitle {
 			font-size: 12px;
 			color: var(--muted);
 			white-space: nowrap;
 			overflow: hidden;
 			text-overflow: ellipsis;
+		}
+
+		.project-path {
+			font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+			font-size: 11px;
 		}
 
 		.item-badges,
@@ -340,18 +351,41 @@
 
 		.main {
 			min-width: 0;
+			max-width: 100%;
 			min-height: 0;
+			overflow-x: hidden;
 			display: grid;
 			grid-template-rows: auto auto minmax(0, 1fr) auto;
+		}
+
+		.main > * {
+			min-width: 0;
+			max-width: 100%;
 		}
 
 		.main-header {
 			background: rgba(13, 17, 23, 0.72);
 			backdrop-filter: blur(10px);
+			overflow: hidden;
 		}
 
 		.header-copy {
 			min-width: 0;
+			flex: 1 1 auto;
+			overflow: hidden;
+		}
+
+		.header-title-row {
+			display: flex;
+			align-items: center;
+			gap: 10px;
+			min-width: 0;
+			overflow: hidden;
+		}
+
+		.header-title-row h2 {
+			min-width: 0;
+			flex: 1 1 auto;
 		}
 
 		.header-copy h2,
@@ -367,6 +401,7 @@
 			align-items: center;
 			gap: 8px;
 			flex-wrap: wrap;
+			flex: 0 0 auto;
 		}
 
 		.menu-button,
@@ -391,7 +426,9 @@
 
 		.messages-scroller {
 			min-height: 0;
+			min-width: 0;
 			overflow-y: auto;
+			overflow-x: hidden;
 			padding: 16px;
 			display: flex;
 			flex-direction: column;
@@ -407,29 +444,47 @@
 			max-width: 420px;
 		}
 
+		.message-row {
+			display: flex;
+			width: 100%;
+			min-width: 0;
+		}
+
+		.message-row.user {
+			justify-content: flex-end;
+		}
+
+		.message-row.assistant,
+		.message-row.tool {
+			justify-content: flex-start;
+		}
+
+		.message-row.system {
+			justify-content: center;
+		}
+
 		.message {
-			max-width: min(880px, 100%);
+			max-width: min(880px, calc(100% - 24px));
+			min-width: 0;
 			padding: 11px 13px;
 			border-radius: 14px;
 			line-height: 1.5;
 			white-space: pre-wrap;
 			word-break: break-word;
+			overflow-wrap: anywhere;
 		}
 
 		.message.user {
-			align-self: flex-end;
 			background: var(--blue);
 			color: white;
 		}
 
 		.message.assistant {
-			align-self: flex-start;
 			background: var(--panel-3);
 			border: 1px solid var(--border);
 		}
 
 		.message.tool {
-			align-self: flex-start;
 			background: var(--panel-3);
 			border-left: 3px solid var(--purple);
 		}
@@ -439,7 +494,7 @@
 		}
 
 		.message.system {
-			align-self: center;
+			max-width: 100%;
 			padding: 0;
 			font-size: 12px;
 			color: var(--muted);
@@ -588,7 +643,7 @@
 			<div class="main-header">
 				<div class="main-header-top">
 					<div class="header-copy">
-						<div style="display:flex;align-items:center;gap:10px;">
+						<div class="header-title-row">
 							<button id="menu-btn" class="icon-button subtle menu-button" aria-label="Open sidebar">☰</button>
 							<h2 id="session-title">No session selected</h2>
 						</div>

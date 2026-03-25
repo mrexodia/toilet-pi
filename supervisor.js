@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import os from "node:os";
 import path from "node:path";
 import { WebSocket } from "ws";
-import { getDefaultSessionDir, scanSessions } from "./session-scanner.js";
+import { findSessionFile, getDefaultSessionDir, readSessionSnapshot, scanSessions } from "./session-scanner.js";
 
 const SERVER_URL = process.env.TOILET_PI_SERVER_URL || "ws://localhost:3457/ws";
 const HOST_ID = process.env.TOILET_PI_HOST_ID || os.hostname();
@@ -102,6 +102,11 @@ function connect() {
 
 		if (message.type === "start_background_session") {
 			startBackgroundRunner(message);
+			return;
+		}
+
+		if (message.type === "read_session_snapshot") {
+			await sendSessionSnapshot(message);
 		}
 	});
 
@@ -114,6 +119,53 @@ function connect() {
 	ws.on("error", (error) => {
 		log(`socket error: ${error.message}`);
 	});
+}
+
+async function sendSessionSnapshot(message) {
+	const sessionGuid = typeof message.sessionGuid === "string" ? message.sessionGuid : null;
+	let sessionFile = typeof message.sessionFile === "string" ? message.sessionFile : null;
+
+	if (!sessionFile && sessionGuid) {
+		sessionFile = await findSessionFile(sessionGuid, SESSION_DIR);
+	}
+
+	if (!sessionFile) {
+		send({
+			type: "session_snapshot_error",
+			hostId: HOST_ID,
+			sessionGuid,
+			message: "Session file not found",
+		});
+		return;
+	}
+
+	try {
+		const session = await readSessionSnapshot(sessionFile);
+		if (!session) {
+			send({
+				type: "session_snapshot_error",
+				hostId: HOST_ID,
+				sessionGuid,
+				message: "Failed to parse session history",
+			});
+			return;
+		}
+
+		send({
+			type: "session_snapshot_data",
+			hostId: HOST_ID,
+			session,
+		});
+		return;
+	} catch (error) {
+		send({
+			type: "session_snapshot_error",
+			hostId: HOST_ID,
+			sessionGuid,
+			message: error instanceof Error ? error.message : "Failed to load session history",
+		});
+		return;
+	}
 }
 
 function startBackgroundRunner(message) {

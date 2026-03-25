@@ -13,6 +13,7 @@ const hostCatalogs = new Map();
 const sessions = new Map();
 const webClients = new Map();
 const clients = new Map();
+const pendingSessionSnapshotLoads = new Map();
 
 const server = createServer(async (req, res) => {
 	try {
@@ -75,12 +76,12 @@ wss.on("connection", (ws, req) => {
 		if (!client) return;
 
 		if (client.role === "web") {
-			handleWebMessage(ws, message);
+			await handleWebMessage(ws, message);
 			return;
 		}
 
 		if (client.role === "host-supervisor") {
-			handleHostMessage(ws, message);
+			await handleHostMessage(ws, message);
 			return;
 		}
 
@@ -157,14 +158,18 @@ function handleHello(ws, message) {
 	registerRunner(ws, message);
 }
 
-function handleWebMessage(ws, message) {
+async function handleWebMessage(ws, message) {
 	if (message.type === "attach") {
+		const sessionGuid = typeof message.sessionGuid === "string" ? message.sessionGuid : null;
 		const state = webClients.get(ws);
-		if (state) state.attachedSessionGuid = message.sessionGuid || null;
+		if (state) state.attachedSessionGuid = sessionGuid;
 		send(ws, {
 			type: "session_snapshot",
-			session: buildSessionSnapshot(message.sessionGuid),
+			session: buildSessionSnapshot(sessionGuid),
 		});
+		if (sessionGuid) {
+			await requestSessionSnapshotFromHost(sessionGuid);
+		}
 		return;
 	}
 
@@ -262,7 +267,7 @@ function handleWebMessage(ws, message) {
 	}
 }
 
-function handleHostMessage(_ws, message) {
+async function handleHostMessage(_ws, message) {
 	if (message.type === "host_sessions") {
 		hostCatalogs.set(message.hostId, {
 			hostId: message.hostId,
@@ -270,6 +275,21 @@ function handleHostMessage(_ws, message) {
 			sessions: Array.isArray(message.sessions) ? message.sessions : [],
 		});
 		broadcastOverview();
+		return;
+	}
+
+	if (message.type === "session_snapshot_data") {
+		mergeLoadedSessionSnapshot(message.hostId, message.session);
+		return;
+	}
+
+	if (message.type === "session_snapshot_error") {
+		clearPendingSessionSnapshotLoad(message.sessionGuid);
+		sendToAttached(message.sessionGuid, {
+			type: "notice",
+			level: "error",
+			message: message.message || "Failed to load session history",
+		});
 		return;
 	}
 
@@ -641,6 +661,64 @@ function notifySessionMeta(sessionGuid) {
 		model: session.model,
 		busy: session.busy,
 	});
+}
+
+async function requestSessionSnapshotFromHost(sessionGuid) {
+	if (!sessionGuid) return false;
+	const session = getKnownSession(sessionGuid);
+	if (!session || session.history.length > 0) return false;
+	if (pendingSessionSnapshotLoads.has(sessionGuid)) return true;
+
+	const found = findCatalogSession(sessionGuid);
+	const hostId = session.hostId || found?.hostId || null;
+	const host = hostId ? hosts.get(hostId) : null;
+	if (!host?.conn || !isOpen(host.conn)) return false;
+
+	const timeout = setTimeout(() => {
+		pendingSessionSnapshotLoads.delete(sessionGuid);
+	}, 10000);
+	pendingSessionSnapshotLoads.set(sessionGuid, timeout);
+
+	send(host.conn, {
+		type: "read_session_snapshot",
+		sessionGuid,
+		sessionFile: session.sessionFile || found?.session?.sessionFile || null,
+	});
+	return true;
+}
+
+function clearPendingSessionSnapshotLoad(sessionGuid) {
+	const timeout = pendingSessionSnapshotLoads.get(sessionGuid);
+	if (timeout) clearTimeout(timeout);
+	pendingSessionSnapshotLoads.delete(sessionGuid);
+}
+
+function mergeLoadedSessionSnapshot(hostId, snapshot) {
+	const sessionGuid = snapshot?.sessionGuid;
+	if (!sessionGuid) return;
+	clearPendingSessionSnapshotLoad(sessionGuid);
+
+	const session = getOrCreateSession(sessionGuid);
+	session.hostId = hostId || session.hostId;
+	session.sessionFile = snapshot.sessionFile || session.sessionFile;
+	session.sessionName = snapshot.sessionName || session.sessionName;
+	session.cwd = snapshot.cwd || session.cwd;
+	session.model = snapshot.model || session.model;
+
+	const loadedHistory = Array.isArray(snapshot.history) ? snapshot.history : [];
+	if (session.history.length === 0 || loadedHistory.length > session.history.length) {
+		session.history = loadedHistory;
+	}
+
+	session.preview = getSessionPreview({ history: session.history }) || session.preview;
+	session.updatedAt = Math.max(session.updatedAt || 0, snapshot.updatedAt || 0, Date.now());
+
+	sendToAttached(sessionGuid, {
+		type: "session_snapshot",
+		session: buildSessionSnapshot(sessionGuid),
+	});
+	broadcastOverview();
+	notifySessionMeta(sessionGuid);
 }
 
 function sendToAttached(sessionGuid, payload) {

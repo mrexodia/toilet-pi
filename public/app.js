@@ -93,6 +93,7 @@ function handleMessage(message) {
 			break;
 
 		case "session_snapshot":
+			if ((message.session?.sessionGuid || null) !== currentSessionGuid) break;
 			currentSession = normalizeSession(message.session);
 			hydrateCurrentSessionFromOverview();
 			renderSession({ forceScroll: true });
@@ -278,7 +279,10 @@ function renderProjectBrowser() {
 		const main = document.createElement("div");
 		main.className = "project-main";
 		main.appendChild(makeLine("project-title", basenamePath(project.cwd)));
-		main.appendChild(makeLine("project-subtitle", `${project.hostname} • ${project.cwd}`));
+		main.appendChild(makeLine("project-host", project.hostname));
+		const projectPathEl = makeLine("project-path", project.cwd);
+		projectPathEl.title = project.cwd;
+		main.appendChild(projectPathEl);
 		header.appendChild(main);
 
 		const actions = document.createElement("div");
@@ -456,13 +460,18 @@ function renderAssistantStream(text) {
 }
 
 function renderSystemMessage(text) {
+	const row = document.createElement("div");
+	row.className = "message-row system";
 	const el = document.createElement("div");
 	el.className = "message system";
 	el.textContent = text;
-	return el;
+	row.appendChild(el);
+	return row;
 }
 
 function buildMessageElement(className, text, timestamp) {
+	const row = document.createElement("div");
+	row.className = `message-row ${className}`;
 	const el = document.createElement("div");
 	el.className = `message ${className}`;
 	if (timestamp) {
@@ -474,7 +483,8 @@ function buildMessageElement(className, text, timestamp) {
 	const textEl = document.createElement("div");
 	textEl.textContent = text || "";
 	el.appendChild(textEl);
-	return el;
+	row.appendChild(el);
+	return row;
 }
 
 function updateHeader() {
@@ -492,12 +502,12 @@ function updateHeader() {
 	const owner = currentSession.owner || summary?.owner || "inactive";
 	const busy = currentSession.busy ? " • busy" : "";
 	const model = currentSession.model || summary?.model || "no model";
-	const title = currentSession.sessionName || summary?.sessionName || summary?.preview || shortId(currentSessionGuid);
+	const title = clampText(currentSession.sessionName || summary?.sessionName || summary?.preview || shortId(currentSessionGuid), 120);
 	const hostname = summary?.hostname || hostLabel;
 
-		sessionTitleEl.textContent = title;
-		sessionSubtitleEl.textContent = `${hostname} • ${owner}${busy} • ${model}`;
-		sessionPathEl.textContent = currentSession.cwd || summary?.cwd || currentSessionGuid;
+	sessionTitleEl.textContent = title;
+	sessionSubtitleEl.textContent = `${hostname} • ${owner}${busy} • ${model}`;
+	sessionPathEl.textContent = currentSession.cwd || summary?.cwd || currentSessionGuid;
 }
 
 function updateControls() {
@@ -639,7 +649,13 @@ function findSessionSummary(sessionGuid) {
 }
 
 function getSessionTitle(session) {
-	return session.sessionName || session.preview || shortId(session.sessionGuid);
+	return clampText(session.sessionName || session.preview || shortId(session.sessionGuid), 120);
+}
+
+function clampText(value, max = 120) {
+	const text = String(value || "").trim();
+	if (text.length <= max) return text;
+	return `${text.slice(0, Math.max(0, max - 1))}…`;
 }
 
 function showNotice(message, level = "info", autoHide = true) {
