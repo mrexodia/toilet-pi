@@ -178,7 +178,6 @@ function updateSidebarSummary() {
 function flattenSessions() {
 	const list = [];
 	for (const host of hosts) {
-		if (!host.connected) continue;
 		for (const session of host.sessions || []) {
 			list.push({
 				...session,
@@ -235,7 +234,7 @@ function renderBrowserList() {
 function renderSessionBrowser() {
 	const sessions = flattenSessions();
 	if (sessions.length === 0) {
-		browserListEl.appendChild(renderEmpty("No sessions visible yet. Start the host supervisor on a machine to discover local pi sessions."));
+		browserListEl.appendChild(renderEmpty("No sessions visible yet. Start pi with the websocket extension, or run the host supervisor to discover inactive local sessions."));
 		return;
 	}
 
@@ -243,7 +242,13 @@ function renderSessionBrowser() {
 		const row = document.createElement("button");
 		row.type = "button";
 		row.className = `list-item ${session.sessionGuid === currentSessionGuid ? "active" : ""}`;
-		row.onclick = () => attachSession(session.sessionGuid, { hostId: session.hostId, cwd: session.cwd, closeSidebar: true });
+		row.onclick = () => attachSession(session.sessionGuid, {
+			hostId: session.hostId,
+			hostname: session.hostname,
+			cwd: session.cwd,
+			hostConnected: session.hostConnected,
+			closeSidebar: true,
+		});
 
 		const main = document.createElement("div");
 		main.className = "item-main";
@@ -266,7 +271,7 @@ function renderSessionBrowser() {
 function renderProjectBrowser() {
 	const projects = buildProjects();
 	if (projects.length === 0) {
-		browserListEl.appendChild(renderEmpty("No project folders are visible yet. Once the supervisor discovers sessions, they will be grouped here by project."));
+		browserListEl.appendChild(renderEmpty("No project folders are visible yet. Live sessions and supervisor-discovered sessions will appear here grouped by project."));
 		return;
 	}
 
@@ -311,7 +316,13 @@ function renderProjectBrowser() {
 			const row = document.createElement("button");
 			row.type = "button";
 			row.className = `session-mini ${session.sessionGuid === currentSessionGuid ? "active" : ""}`;
-			row.onclick = () => attachSession(session.sessionGuid, { hostId: session.hostId, cwd: session.cwd, closeSidebar: true });
+			row.onclick = () => attachSession(session.sessionGuid, {
+				hostId: session.hostId,
+				hostname: session.hostname,
+				cwd: session.cwd,
+				hostConnected: session.hostConnected,
+				closeSidebar: true,
+			});
 
 			const itemMain = document.createElement("div");
 			itemMain.className = "session-mini-main";
@@ -341,7 +352,7 @@ function renderEmpty(text) {
 
 function buildSessionBadges(session) {
 	const badges = [];
-	if (!session.hostConnected) {
+	if (!session.hostConnected && !session.owner) {
 		badges.push(createBadge("offline", "disconnected"));
 	}
 	badges.push(createBadge(session.owner || "inactive", session.owner || "inactive"));
@@ -366,16 +377,21 @@ function makeLine(className, text) {
 function attachSession(sessionGuid, context = {}) {
 	currentSessionGuid = sessionGuid;
 	selectedProjectContext = context.hostId && context.cwd
-		? { hostId: context.hostId, hostname: context.hostname || context.hostId, cwd: context.cwd, hostConnected: true }
+		? {
+			hostId: context.hostId,
+			hostname: context.hostname || context.hostId,
+			cwd: context.cwd,
+			hostConnected: !!context.hostConnected,
+		}
 		: selectedProjectContext;
-		currentSession = createEmptySession(sessionGuid);
-		hydrateCurrentSessionFromOverview();
-		renderBrowserList();
-		renderSession({ forceScroll: true });
-		updateHeader();
-		updateControls();
-		send({ type: "attach", sessionGuid });
-		if (context.closeSidebar) closeSidebar();
+	currentSession = createEmptySession(sessionGuid);
+	hydrateCurrentSessionFromOverview();
+	renderBrowserList();
+	renderSession({ forceScroll: true });
+	updateHeader();
+	updateControls();
+	send({ type: "attach", sessionGuid });
+	if (context.closeSidebar) closeSidebar();
 }
 
 function hydrateCurrentSessionFromOverview() {
