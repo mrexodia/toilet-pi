@@ -222,7 +222,7 @@ The background runner should be a real pi subprocess, not SDK code.
 Use:
 
 ```bash
-pi --mode rpc ... -e /path/to/websocket-extension.ts
+pi --mode rpc ... -e /path/to/extension.ts
 ```
 
 Reasons:

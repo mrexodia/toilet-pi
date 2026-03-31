@@ -2,11 +2,16 @@
   "name": "toilet-pi",
   "version": "2.0.0",
   "description": "Remote control pi sessions from a central web UI",
-  "main": "websocket-server.js",
+  "main": "server.js",
   "type": "module",
+  "pi": {
+    "extensions": [
+      "./extension.ts"
+    ]
+  },
   "scripts": {
-    "start": "node websocket-server.js",
-    "server": "node websocket-server.js",
+    "start": "node server.js",
+    "server": "node server.js",
     "supervisor": "node supervisor.js",
     "client": "node test-client.js"
   },
@@ -15,6 +20,7 @@
   },
   "keywords": [
     "pi",
+    "pi-package",
     "websocket",
     "remote-control",
     "daemon"

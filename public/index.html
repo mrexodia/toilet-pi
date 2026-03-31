@@ -83,12 +83,15 @@
 
 		button.icon-button {
 			width: 40px;
+			min-width: 40px;
 			height: 40px;
+			min-height: 40px;
 			padding: 0;
 			display: inline-flex;
 			align-items: center;
 			justify-content: center;
 			font-size: 18px;
+			flex: 0 0 auto;
 		}
 
 		input {
@@ -151,6 +154,11 @@
 		.badge.busy {
 			background: var(--yellow-soft);
 			color: #f2cc60;
+		}
+
+		.badge.queued {
+			background: rgba(121, 192, 255, 0.12);
+			color: #a5d6ff;
 		}
 
 		.app-shell {
@@ -404,6 +412,12 @@
 			flex: 0 0 auto;
 		}
 
+		.header-actions .active {
+			background: var(--blue-soft);
+			border-color: rgba(121, 192, 255, 0.25);
+			color: #79c0ff;
+		}
+
 		.menu-button,
 		.sidebar-close {
 			display: none;
@@ -433,7 +447,6 @@
 			display: flex;
 			flex-direction: column;
 			gap: 10px;
-			scroll-behavior: smooth;
 		}
 
 		.messages-empty {
@@ -479,6 +492,12 @@
 			color: white;
 		}
 
+		.message.user.queued {
+			background: rgba(31, 111, 235, 0.2);
+			border: 1px dashed rgba(121, 192, 255, 0.45);
+			color: #cfe8ff;
+		}
+
 		.message.assistant {
 			background: var(--panel-3);
 			border: 1px solid var(--border);
@@ -491,6 +510,29 @@
 
 		.message.tool.error {
 			border-left-color: var(--red);
+		}
+
+		.tool-header,
+		.tool-body {
+			font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+		}
+
+		.tool-header {
+			font-weight: 700;
+			margin-bottom: 10px;
+		}
+
+		.tool-body {
+			white-space: pre-wrap;
+			word-break: break-word;
+			overflow-wrap: anywhere;
+		}
+
+		.tool-footer {
+			margin-top: 10px;
+			font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+			font-size: 12px;
+			color: var(--muted);
 		}
 
 		.message.system {
@@ -579,6 +621,11 @@
 				display: inline-flex;
 			}
 
+			body.sidebar-open .menu-button {
+				visibility: hidden;
+				pointer-events: none;
+			}
+
 			.main-header,
 			.composer,
 			.notice-bar,
@@ -598,9 +645,18 @@
 		}
 
 		@media (max-width: 560px) {
+			.main-header-top {
+				flex-direction: column;
+				align-items: stretch;
+			}
+
+			.header-copy {
+				width: 100%;
+			}
+
 			.header-actions {
 				width: 100%;
-				justify-content: space-between;
+				justify-content: flex-end;
 			}
 
 			.composer {
@@ -651,6 +707,7 @@
 						<div id="session-path" class="header-path"></div>
 					</div>
 					<div class="header-actions">
+						<button id="tools-expand-btn" class="subtle" title="Toggle tool output expansion (Ctrl+O)">Expand Tools</button>
 						<button id="new-session-btn">New Session</button>
 					</div>
 				</div>

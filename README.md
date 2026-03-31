@@ -52,7 +52,7 @@ It:
 
 ### 3. Interactive pi + extension
 
-Normal pi sessions can load `websocket-extension.ts`.
+Normal pi sessions can load `extension.ts`.
 
 Those sessions:
 
@@ -135,8 +135,8 @@ Current capabilities:
 
 ## Files
 
-- `websocket-server.js` - central HTTP/WebSocket server
-- `websocket-extension.ts` - pi extension used by interactive and background pi
+- `server.js` - central HTTP/WebSocket server
+- `extension.ts` - Toilet-Pi pi extension used by interactive and background pi, and the package entrypoint for `pi install`
 - `supervisor.js` - one-per-machine supervisor
 - `session-scanner.js` - scans local pi session files
 - `public/` - browser UI
@@ -173,11 +173,29 @@ cd ~/Projects/toilet-pi
 npm run supervisor
 ```
 
-### 4. Start pi interactively with the extension
+### 4. Install and run the pi extension
+
+Recommended: install this repo as a local pi package, then start `pi` normally:
 
 ```bash
-pi -e ~/Projects/toilet-pi/websocket-extension.ts
+pi install ~/Projects/toilet-pi
+pi
 ```
+
+To install it only for the current project instead of globally:
+
+```bash
+cd /path/to/your/project
+pi install -l ~/Projects/toilet-pi
+```
+
+For one-off testing without installing, load the extension file directly:
+
+```bash
+pi -e ~/Projects/toilet-pi/extension.ts
+```
+
+Because local-path installs are used in place, changes in this checkout are picked up after restarting pi or running `/reload`.
 
 ### 5. Use the web UI
 
@@ -204,10 +222,16 @@ npm start
 npm run supervisor
 ```
 
-### Interactive pi
+### Interactive pi (installed package)
 
 ```bash
-pi -e ~/Projects/toilet-pi/websocket-extension.ts
+pi
+```
+
+### Interactive pi (direct from repo, no install)
+
+```bash
+pi -e ~/Projects/toilet-pi/extension.ts
 ```
 
 ### Raw debug client
@@ -246,7 +270,7 @@ Debug client commands:
 - `TOILET_PI_PI_COMMAND`
   - default: `pi`
 - `TOILET_PI_EXTENSION_PATH`
-  - default: local `websocket-extension.ts`
+  - default: local `extension.ts`
 - `TOILET_PI_SCAN_INTERVAL_MS`
   - default: `15000`
 

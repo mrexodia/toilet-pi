@@ -9,6 +9,8 @@ let currentView = "sessions";
 let currentSessionGuid = null;
 let currentSession = createEmptySession(null);
 let selectedProjectContext = null;
+let toolsExpanded = false;
+let stickToBottom = true;
 const pendingLaunchRequests = new Map();
 
 const bodyEl = document.body;
@@ -23,6 +25,7 @@ const sidebarCloseBtnEl = document.getElementById("sidebar-close");
 const sessionTitleEl = document.getElementById("session-title");
 const sessionSubtitleEl = document.getElementById("session-subtitle");
 const sessionPathEl = document.getElementById("session-path");
+const toolsExpandBtnEl = document.getElementById("tools-expand-btn");
 const newSessionBtnEl = document.getElementById("new-session-btn");
 const noticeBarEl = document.getElementById("notice-bar");
 const messagesEl = document.getElementById("messages");
@@ -92,19 +95,24 @@ function handleMessage(message) {
 			updateControls();
 			break;
 
-		case "session_snapshot":
+		case "session_snapshot": {
 			if ((message.session?.sessionGuid || null) !== currentSessionGuid) break;
+			const shouldScroll = currentSession.history.length === 0
+				&& currentSession.queuedInputs.length === 0
+				&& !currentSession.streamingText
+				&& currentSession.activeTools.length === 0;
 			currentSession = normalizeSession(message.session);
 			hydrateCurrentSessionFromOverview();
-			renderSession({ forceScroll: true });
+			renderSession({ forceScroll: shouldScroll });
 			updateHeader();
 			updateControls();
 			break;
+		}
 
 		case "session_event":
 			if (message.sessionGuid !== currentSessionGuid) return;
 			applySessionEvent(currentSession, message.event);
-			renderSession({ forceScroll: true });
+			renderSession();
 			updateHeader();
 			updateControls();
 			break;
@@ -357,6 +365,7 @@ function buildSessionBadges(session) {
 	}
 	badges.push(createBadge(session.owner || "inactive", session.owner || "inactive"));
 	if (session.busy) badges.push(createBadge("busy", "busy"));
+	if (session.queuedInputCount > 0) badges.push(createBadge(`${session.queuedInputCount} queued`, "queued"));
 	return badges;
 }
 
@@ -412,6 +421,7 @@ function hydrateCurrentSessionFromOverview() {
 
 function renderSession({ forceScroll = false } = {}) {
 	const previousDistanceFromBottom = messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight;
+	const shouldStick = forceScroll || stickToBottom;
 	messagesEl.innerHTML = "";
 
 	if (!currentSessionGuid) {
@@ -424,8 +434,12 @@ function renderSession({ forceScroll = false } = {}) {
 		fragments.push(renderMessage(message));
 	}
 
+	for (const queuedInput of currentSession.queuedInputs) {
+		fragments.push(renderQueuedInput(queuedInput));
+	}
+
 	for (const tool of currentSession.activeTools) {
-		fragments.push(renderSystemMessage(`Running ${tool.toolName}…`));
+		fragments.push(renderActiveTool(tool));
 	}
 
 	if (currentSession.streamingText) {
@@ -442,9 +456,8 @@ function renderSession({ forceScroll = false } = {}) {
 	}
 
 	requestAnimationFrame(() => {
-		const shouldStick = forceScroll || previousDistanceFromBottom < 140;
 		if (shouldStick) {
-			messagesEl.scrollTop = messagesEl.scrollHeight;
+			scrollMessagesToBottom();
 		} else {
 			messagesEl.scrollTop = Math.max(0, messagesEl.scrollHeight - messagesEl.clientHeight - previousDistanceFromBottom);
 		}
@@ -463,16 +476,197 @@ function renderMessage(message) {
 		return buildMessageElement("user", message.text || "", message.timestamp);
 	}
 	if (message.role === "assistant") {
-		return buildMessageElement("assistant", message.text || "", message.timestamp);
+		return buildMessageElement(
+			"assistant",
+			message.text || "",
+			message.timestamp,
+			getAssistantMessageStatus(message),
+		);
 	}
 	if (message.role === "toolResult") {
-		return buildMessageElement(`tool ${message.isError ? "error" : ""}`.trim(), `${message.toolName}:\n${message.text || ""}`, message.timestamp);
+		return renderToolMessage(message);
 	}
 	return renderSystemMessage(message.text || "");
 }
 
+function renderQueuedInput(queuedInput) {
+	return buildMessageElement("user queued", queuedInput?.text || "", queuedInput?.timestamp || null, "queued");
+}
+
+function renderToolMessage(message) {
+	return buildToolElement(message, {
+		timestamp: message?.timestamp || null,
+		status: toolsExpanded ? "expanded" : "collapsed",
+		isError: !!message?.isError,
+		isActive: false,
+	});
+}
+
+function renderActiveTool(tool) {
+	return buildToolElement(tool, {
+		timestamp: null,
+		status: "running",
+		isError: false,
+		isActive: true,
+	});
+}
+
+function buildToolElement(tool, options = {}) {
+	const row = document.createElement("div");
+	row.className = "message-row tool";
+
+	const el = document.createElement("div");
+	el.className = `message tool ${options.isError ? "error" : ""}`.trim();
+
+	if (options.timestamp || options.status) {
+		const ts = document.createElement("div");
+		ts.className = "timestamp";
+		const parts = [];
+		if (options.timestamp) parts.push(new Date(options.timestamp).toLocaleTimeString());
+		if (options.status) parts.push(options.status);
+		ts.textContent = parts.join(" • ");
+		el.appendChild(ts);
+	}
+
+	const headerEl = document.createElement("div");
+	headerEl.className = "tool-header";
+	headerEl.textContent = formatToolHeader(tool);
+	el.appendChild(headerEl);
+
+	const body = formatToolBody(tool, options.isActive);
+	if (body) {
+		const bodyEl = document.createElement("div");
+		bodyEl.className = "tool-body";
+		bodyEl.textContent = body;
+		el.appendChild(bodyEl);
+	}
+
+	const footer = formatToolFooter(tool, options.isActive);
+	if (footer) {
+		const footerEl = document.createElement("div");
+		footerEl.className = "tool-footer";
+		footerEl.textContent = footer;
+		el.appendChild(footerEl);
+	}
+
+	row.appendChild(el);
+	return row;
+}
+
+function formatToolHeader(tool) {
+	const toolName = String(tool?.toolName || "tool").toLowerCase();
+	const args = tool?.args || {};
+	const details = tool?.details || {};
+	const path = shortenToolPath(args.file_path ?? args.path);
+
+	switch (toolName) {
+		case "bash": {
+			const command = String(args.command || "...");
+			const timeout = args.timeout ? ` (timeout ${args.timeout}s)` : "";
+			return `$ ${command}${timeout}`;
+		}
+		case "read": {
+			let suffix = "";
+			if (args.offset !== undefined || args.limit !== undefined) {
+				const start = Number(args.offset ?? 1);
+				const end = args.limit !== undefined ? start + Number(args.limit) - 1 : "";
+				suffix = `:${start}${end ? `-${end}` : ""}`;
+			}
+			return `read ${path || "..."}${suffix}`;
+		}
+		case "write":
+			return `write ${path || "..."}`;
+		case "edit": {
+			const firstChangedLine = details?.firstChangedLine ? `:${details.firstChangedLine}` : "";
+			return `edit ${path || "..."}${firstChangedLine}`;
+		}
+		case "ls":
+			return `ls ${shortenToolPath(args.path || ".")}${args.limit !== undefined ? ` (limit ${args.limit})` : ""}`;
+		case "find":
+			return `find ${args.pattern || ""} in ${shortenToolPath(args.path || ".")}${args.limit !== undefined ? ` (limit ${args.limit})` : ""}`;
+		case "grep": {
+			const glob = args.glob ? ` (${args.glob})` : "";
+			const limit = args.limit !== undefined ? ` limit ${args.limit}` : "";
+			return `grep /${args.pattern || ""}/ in ${shortenToolPath(args.path || ".")}${glob}${limit}`;
+		}
+		default:
+			return String(tool?.toolName || "tool");
+	}
+}
+
+function formatToolBody(tool, isActive = false) {
+	if (isActive) return "";
+
+	const toolName = String(tool?.toolName || "tool").toLowerCase();
+	const details = tool?.details || {};
+	let text = "";
+
+	if (toolName === "edit" && typeof details?.diff === "string" && details.diff) {
+		text = details.diff;
+	} else {
+		text = String(tool?.text || "");
+	}
+
+	if (!text) return "(no output)";
+	if (toolsExpanded) return text;
+
+	const lines = text.split("\n");
+	const maxLines = getToolPreviewLines(toolName);
+	const visibleLines = lines.slice(0, maxLines);
+	const remaining = lines.length - visibleLines.length;
+	let output = visibleLines.join("\n");
+	if (remaining > 0) {
+		const label = toolName === "bash" ? "earlier lines" : "more lines";
+		output += `\n... (${remaining} ${label}, Ctrl+O to expand)`;
+	}
+	return output;
+}
+
+function formatToolFooter(tool, isActive = false) {
+	if (isActive) return "";
+	const durationMs = Number(tool?.durationMs || 0);
+	if (!durationMs) return "";
+	return `Took ${(durationMs / 1000).toFixed(1)}s`;
+}
+
+function getToolPreviewLines(toolName) {
+	switch (String(toolName || "").toLowerCase()) {
+		case "bash":
+			return 5;
+		case "grep":
+			return 15;
+		case "ls":
+		case "find":
+			return 20;
+		case "edit":
+			return 20;
+		case "read":
+		case "write":
+		default:
+			return 10;
+	}
+}
+
+function shortenToolPath(value) {
+	const path = String(value || "");
+	return path || "";
+}
+
 function renderAssistantStream(text) {
 	return buildMessageElement("assistant streaming", text || "", null);
+}
+
+function getAssistantMessageStatus(message) {
+	switch (message?.stopReason) {
+		case "aborted":
+			return "aborted";
+		case "error":
+			return "error";
+		case "length":
+			return "truncated";
+		default:
+			return "";
+	}
 }
 
 function renderSystemMessage(text) {
@@ -485,15 +679,18 @@ function renderSystemMessage(text) {
 	return row;
 }
 
-function buildMessageElement(className, text, timestamp) {
+function buildMessageElement(className, text, timestamp, status = "") {
 	const row = document.createElement("div");
 	row.className = `message-row ${className}`;
 	const el = document.createElement("div");
 	el.className = `message ${className}`;
-	if (timestamp) {
+	if (timestamp || status) {
 		const ts = document.createElement("div");
 		ts.className = "timestamp";
-		ts.textContent = new Date(timestamp).toLocaleTimeString();
+		const parts = [];
+		if (timestamp) parts.push(new Date(timestamp).toLocaleTimeString());
+		if (status) parts.push(status);
+		ts.textContent = parts.join(" • ");
 		el.appendChild(ts);
 	}
 	const textEl = document.createElement("div");
@@ -501,6 +698,15 @@ function buildMessageElement(className, text, timestamp) {
 	el.appendChild(textEl);
 	row.appendChild(el);
 	return row;
+}
+
+function isNearBottom() {
+	return messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight <= 24;
+}
+
+function scrollMessagesToBottom() {
+	messagesEl.scrollTop = messagesEl.scrollHeight;
+	stickToBottom = true;
 }
 
 function updateHeader() {
@@ -517,19 +723,20 @@ function updateHeader() {
 	const hostLabel = currentSession.hostId || summary?.hostId || "unknown host";
 	const owner = currentSession.owner || summary?.owner || "inactive";
 	const busy = currentSession.busy ? " • busy" : "";
+	const queuedCount = currentSession.queuedInputs.length || summary?.queuedInputCount || 0;
+	const queued = queuedCount ? ` • ${queuedCount} queued` : "";
 	const model = currentSession.model || summary?.model || "no model";
 	const title = clampText(currentSession.sessionName || summary?.sessionName || summary?.preview || shortId(currentSessionGuid), 120);
 	const hostname = summary?.hostname || hostLabel;
 
 	sessionTitleEl.textContent = title;
-	sessionSubtitleEl.textContent = `${hostname} • ${owner}${busy} • ${model}`;
+	sessionSubtitleEl.textContent = `${hostname} • ${owner}${busy}${queued} • ${model}`;
 	sessionPathEl.textContent = currentSession.cwd || summary?.cwd || currentSessionGuid;
 }
 
 function updateControls() {
 	const connected = ws?.readyState === WebSocket.OPEN;
 	const summary = currentSessionGuid ? findSessionSummary(currentSessionGuid) : null;
-	const session = summary || currentSession;
 	const hasOwner = !!(currentSession.owner || summary?.owner);
 	const canAutoStart = !!(summary && summary.hostConnected && (summary.sessionFile || summary.sessionGuid));
 	const launchContext = getCurrentLaunchContext();
@@ -537,6 +744,8 @@ function updateControls() {
 	sendBtnEl.disabled = !(connected && currentSessionGuid && (hasOwner || canAutoStart));
 	abortBtnEl.disabled = !(connected && currentSessionGuid && hasOwner);
 	newSessionBtnEl.disabled = !(connected && launchContext && launchContext.hostConnected && launchContext.cwd && launchContext.cwd !== "(unknown project)");
+	toolsExpandBtnEl.classList.toggle("active", toolsExpanded);
+	toolsExpandBtnEl.textContent = toolsExpanded ? "Collapse Tools" : "Expand Tools";
 
 	messageInputEl.placeholder = hasOwner
 		? "Send a live message to the active session…"
@@ -597,7 +806,13 @@ function applySessionEvent(session, event) {
 			break;
 
 		case "tool_start":
-			if (event.toolCallId) upsertTool(session, { toolCallId: event.toolCallId, toolName: event.toolName || "tool" });
+			if (event.toolCallId) {
+				upsertTool(session, {
+					toolCallId: event.toolCallId,
+					toolName: event.toolName || "tool",
+					args: event.args,
+				});
+			}
 			break;
 
 		case "tool_end":
@@ -609,6 +824,22 @@ function applySessionEvent(session, event) {
 			if (!session.busy) {
 				session.streamingText = null;
 				session.activeTools = [];
+			}
+			break;
+
+		case "queued_input_add":
+			if (event.queuedInput?.inputId) {
+				const existingIndex = session.queuedInputs.findIndex((entry) => entry.inputId === event.queuedInput.inputId);
+				if (existingIndex >= 0) session.queuedInputs[existingIndex] = event.queuedInput;
+				else session.queuedInputs.push(event.queuedInput);
+			}
+			break;
+
+		case "queued_input_remove":
+			if (event.inputId) {
+				session.queuedInputs = session.queuedInputs.filter((entry) => entry.inputId !== event.inputId);
+			} else {
+				session.queuedInputs.shift();
 			}
 			break;
 
@@ -641,6 +872,7 @@ function createEmptySession(sessionGuid) {
 		history: [],
 		streamingText: null,
 		activeTools: [],
+		queuedInputs: [],
 	};
 }
 
@@ -657,6 +889,7 @@ function normalizeSession(session) {
 		history: Array.isArray(session?.history) ? session.history : [],
 		streamingText: typeof session?.streamingText === "string" ? session.streamingText : null,
 		activeTools: Array.isArray(session?.activeTools) ? session.activeTools : [],
+		queuedInputs: Array.isArray(session?.queuedInputs) ? session.queuedInputs : [],
 	};
 }
 
@@ -727,6 +960,13 @@ function closeSidebar() {
 	bodyEl.classList.remove("sidebar-open");
 }
 
+function toggleToolsExpanded() {
+	toolsExpanded = !toolsExpanded;
+	renderSession();
+	updateControls();
+	showNotice(toolsExpanded ? "Tool output expanded" : "Tool output collapsed", "info");
+}
+
 function updateViewButtons() {
 	viewSessionsBtnEl.classList.toggle("active", currentView === "sessions");
 	viewProjectsBtnEl.classList.toggle("active", currentView === "projects");
@@ -747,6 +987,7 @@ viewProjectsBtnEl.onclick = () => {
 menuBtnEl.onclick = () => openSidebar();
 sidebarCloseBtnEl.onclick = () => closeSidebar();
 sidebarScrimEl.onclick = () => closeSidebar();
+toolsExpandBtnEl.onclick = () => toggleToolsExpanded();
 
 newSessionBtnEl.onclick = () => {
 	const context = getCurrentLaunchContext();
@@ -777,6 +1018,20 @@ messageInputEl.onkeydown = (event) => {
 	}
 };
 
+messagesEl.addEventListener("scroll", () => {
+	stickToBottom = isNearBottom();
+});
+
+window.addEventListener("keydown", (event) => {
+	if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "o") {
+		event.preventDefault();
+		toggleToolsExpanded();
+	}
+});
+
 window.addEventListener("resize", () => {
 	if (!MOBILE_MEDIA.matches) closeSidebar();
+	if (stickToBottom) {
+		requestAnimationFrame(() => scrollMessagesToBottom());
+	}
 });

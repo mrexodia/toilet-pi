@@ -27,10 +27,26 @@ npm run supervisor
 
 This advertises local pi session files and lets the web UI start background pi runners when needed.
 
-## 4. Run pi interactively with the extension
+## 4. Install and run the pi extension
+
+Recommended: install this repo as a local pi package, then start `pi` normally:
 
 ```bash
-pi -e ~/Projects/toilet-pi/websocket-extension.ts
+pi install ~/Projects/toilet-pi
+pi
+```
+
+Project-local install:
+
+```bash
+cd /path/to/your/project
+pi install --local ~/Projects/toilet-pi
+```
+
+One-off testing without installing:
+
+```bash
+pi -e ~/Projects/toilet-pi/extension.ts
 ```
 
 ## 5. Use the web UI
