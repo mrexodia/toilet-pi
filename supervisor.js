@@ -23,12 +23,24 @@ const EXTENSION_PATH =
   process.env.TOILET_PI_EXTENSION_PATH ||
   fileURLToPath(new URL("./extension.ts", import.meta.url));
 const PROJECT_DIR = path.dirname(fileURLToPath(import.meta.url));
+const CHILD_SHUTDOWN_GRACE_MS = Number.parseInt(
+  process.env.TOILET_PI_CHILD_SHUTDOWN_GRACE_MS || "3000",
+  10,
+);
+const CHILD_SHUTDOWN_FORCE_MS = Number.parseInt(
+  process.env.TOILET_PI_CHILD_SHUTDOWN_FORCE_MS || "8000",
+  10,
+);
+const USE_PROCESS_GROUPS = process.platform !== "win32";
 
 const children = new Map();
 let ws = null;
 let reconnectTimer = null;
 let shuttingDown = false;
 let catalogTimer = null;
+let shutdownForceTimer = null;
+let shutdownExitTimer = null;
+let shutdownFinished = false;
 
 function log(message) {
   console.log(`[supervisor ${HOST_ID}] ${message}`);
@@ -39,8 +51,21 @@ function isOpen(socket) {
 }
 
 function send(message) {
-  if (!isOpen(ws)) return;
-  ws.send(JSON.stringify(message));
+  if (!isOpen(ws)) return false;
+  try {
+    ws.send(JSON.stringify(message));
+    return true;
+  } catch (error) {
+    log(
+      `socket send failed: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    try {
+      ws.close();
+    } catch {
+      // Ignore.
+    }
+    return false;
+  }
 }
 
 async function sendSessionCatalog() {
@@ -187,6 +212,8 @@ async function sendSessionSnapshot(message) {
 }
 
 function startBackgroundRunner(message) {
+  if (shuttingDown) return;
+
   const requestId = message.requestId || null;
   const createNew = !!message.createNew;
   const sessionRef = !createNew
@@ -236,6 +263,7 @@ function startBackgroundRunner(message) {
   const child = spawn(PI_COMMAND, args, {
     cwd: message.cwd || PROJECT_DIR,
     stdio: ["pipe", "pipe", "pipe"],
+    detached: USE_PROCESS_GROUPS,
     env: {
       ...process.env,
       TOILET_PI_SERVER_URL: SERVER_URL,
@@ -251,6 +279,7 @@ function startBackgroundRunner(message) {
     sessionGuid: message.sessionGuid || null,
     requestId,
     createNew,
+    useProcessGroup: USE_PROCESS_GROUPS,
   });
 
   send({
@@ -301,18 +330,59 @@ function startBackgroundRunner(message) {
       signal,
     });
     sendSessionCatalog().catch(() => {});
+    maybeFinishShutdown();
   });
 }
 
-function killChildren() {
-  for (const [key, record] of children) {
-    log(`stopping background runner for ${key}`);
+function signalChild(record, signal) {
+  const child = record?.child;
+  if (!child || child.exitCode !== null) return false;
+
+  if (signal !== "SIGKILL") {
     try {
-      record.child.kill("SIGTERM");
+      child.stdin?.end();
     } catch {
       // Ignore.
     }
   }
+
+  try {
+    if (record.useProcessGroup && child.pid) {
+      process.kill(-child.pid, signal);
+    } else {
+      child.kill(signal);
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function signalChildren(signal) {
+  let activeChildren = 0;
+  for (const [key, record] of children) {
+    if (!record?.child || record.child.exitCode !== null) continue;
+    activeChildren += 1;
+    log(
+      `${signal === "SIGTERM" ? "stopping" : "force killing"} background runner for ${key}`,
+    );
+    signalChild(record, signal);
+  }
+  return activeChildren;
+}
+
+function finishShutdown(exitCode) {
+  if (shutdownFinished) return;
+  shutdownFinished = true;
+  if (shutdownForceTimer) clearTimeout(shutdownForceTimer);
+  if (shutdownExitTimer) clearTimeout(shutdownExitTimer);
+  process.exit(exitCode);
+}
+
+function maybeFinishShutdown() {
+  if (!shuttingDown || shutdownFinished) return;
+  if (children.size > 0) return;
+  finishShutdown(0);
 }
 
 function shutdown(signal) {
@@ -321,7 +391,6 @@ function shutdown(signal) {
   if (reconnectTimer) clearTimeout(reconnectTimer);
   clearCatalogTimer();
   log(`${signal} received, shutting down`);
-  killChildren();
   if (ws) {
     try {
       ws.close();
@@ -329,7 +398,29 @@ function shutdown(signal) {
       // Ignore.
     }
   }
-  setTimeout(() => process.exit(0), 250);
+
+  const activeChildren = signalChildren("SIGTERM");
+  if (activeChildren === 0) {
+    finishShutdown(0);
+    return;
+  }
+
+  shutdownForceTimer = setTimeout(() => {
+    const remaining = signalChildren("SIGKILL");
+    if (remaining > 0) {
+      log(`forced shutdown for ${remaining} background runner(s)`);
+    }
+    maybeFinishShutdown();
+  }, CHILD_SHUTDOWN_GRACE_MS);
+
+  shutdownExitTimer = setTimeout(() => {
+    if (children.size > 0) {
+      log(`timed out waiting for ${children.size} background runner(s) to exit`);
+      finishShutdown(1);
+      return;
+    }
+    finishShutdown(0);
+  }, CHILD_SHUTDOWN_FORCE_MS);
 }
 
 process.on("SIGINT", () => shutdown("SIGINT"));

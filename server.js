@@ -7,6 +7,15 @@ import { WebSocketServer, WebSocket } from "ws";
 const PORT = Number.parseInt(process.env.PORT || "3457", 10);
 const WS_PATH = "/ws";
 const PUBLIC_DIR = fileURLToPath(new URL("./public/", import.meta.url));
+const MAX_SESSION_HISTORY = Math.max(
+  1,
+  Number.parseInt(
+    process.env.TOILET_PI_SERVER_HISTORY_LIMIT ||
+      process.env.TOILET_PI_HISTORY_LIMIT ||
+      "200",
+    10,
+  ) || 200,
+);
 
 const hosts = new Map();
 const hostCatalogs = new Map();
@@ -426,7 +435,7 @@ function registerRunner(ws, message) {
   session.model = message.model || session.model;
   session.busy = !!message.busy;
   session.history = Array.isArray(message.history)
-    ? message.history
+    ? message.history.slice(-MAX_SESSION_HISTORY)
     : session.history;
   session.streamingText =
     typeof message.streamingText === "string" ? message.streamingText : null;
@@ -487,7 +496,10 @@ function applySessionEvent(session, event) {
 
   switch (event.type) {
     case "message":
-      if (event.message) session.history.push(event.message);
+      if (event.message) {
+        session.history.push(event.message);
+        trimSessionHistory(session);
+      }
       if (event.message?.role === "user" && event.message.remoteInputId) {
         removeQueuedInput(session, event.message.remoteInputId);
       }
@@ -579,6 +591,8 @@ function handleClose(ws) {
   if (client.role === "host-supervisor") {
     const host = hosts.get(client.hostId);
     if (host?.conn === ws) hosts.delete(client.hostId);
+    hostCatalogs.delete(client.hostId);
+    pruneInactiveSessionsForHost(client.hostId);
     broadcastOverview();
     broadcastNotice({
       type: "notice",
@@ -613,8 +627,9 @@ function handleClose(ws) {
 
   promoteSessionOwner(session);
   deliverPendingInputs(session);
+  const removed = maybeRemoveSession(session);
   broadcastOverview();
-  notifySessionMeta(session.sessionGuid);
+  if (!removed) notifySessionMeta(session.sessionGuid);
 
   const roleLabel =
     client.role === "interactive" ? "Interactive session" : "Background runner";
@@ -681,24 +696,26 @@ function createSessionState(sessionGuid) {
   };
 }
 
+function buildEmptySessionSnapshot(sessionGuid) {
+  return {
+    sessionGuid: sessionGuid || null,
+    owner: null,
+    hostId: null,
+    sessionFile: null,
+    sessionName: null,
+    cwd: null,
+    model: null,
+    busy: false,
+    history: [],
+    streamingText: null,
+    activeTools: [],
+    queuedInputs: [],
+  };
+}
+
 function buildSessionSnapshot(sessionGuid) {
   const session = getKnownSession(sessionGuid);
-  if (!session) {
-    return {
-      sessionGuid: sessionGuid || null,
-      owner: null,
-      hostId: null,
-      sessionFile: null,
-      sessionName: null,
-      cwd: null,
-      model: null,
-      busy: false,
-      history: [],
-      streamingText: null,
-      activeTools: [],
-      queuedInputs: [],
-    };
-  }
+  if (!session) return buildEmptySessionSnapshot(sessionGuid);
 
   return {
     sessionGuid: session.sessionGuid,
@@ -714,6 +731,49 @@ function buildSessionSnapshot(sessionGuid) {
     activeTools: Array.from(session.activeTools.values()),
     queuedInputs: session.queuedInputs,
   };
+}
+
+function trimSessionHistory(session) {
+  if (!Array.isArray(session.history) || session.history.length <= MAX_SESSION_HISTORY) {
+    return;
+  }
+  session.history.splice(0, session.history.length - MAX_SESSION_HISTORY);
+}
+
+function hasConnectedSupervisor(hostId) {
+  if (!hostId) return false;
+  const host = hosts.get(hostId);
+  return !!host?.conn && isOpen(host.conn);
+}
+
+function maybeRemoveSession(session) {
+  if (!session) return false;
+  if (session.owner) return false;
+  if (
+    (session.interactiveConn && isOpen(session.interactiveConn)) ||
+    (session.backgroundConn && isOpen(session.backgroundConn)) ||
+    (session.pendingInteractiveConn && isOpen(session.pendingInteractiveConn))
+  ) {
+    return false;
+  }
+  if (hasConnectedSupervisor(session.hostId)) return false;
+
+  clearPendingSessionSnapshotLoad(session.sessionGuid);
+  sessions.delete(session.sessionGuid);
+  sendToAttached(session.sessionGuid, {
+    type: "session_snapshot",
+    session: buildEmptySessionSnapshot(session.sessionGuid),
+  });
+  log(`pruned inactive session without supervisor: ${session.sessionGuid}`);
+  return true;
+}
+
+function pruneInactiveSessionsForHost(hostId) {
+  if (!hostId) return;
+  for (const session of Array.from(sessions.values())) {
+    if (session.hostId !== hostId) continue;
+    maybeRemoveSession(session);
+  }
 }
 
 function notifySessionMeta(sessionGuid) {
@@ -779,7 +839,7 @@ function mergeLoadedSessionSnapshot(hostId, snapshot) {
     session.history.length === 0 ||
     loadedHistory.length > session.history.length
   ) {
-    session.history = loadedHistory;
+    session.history = loadedHistory.slice(-MAX_SESSION_HISTORY);
   }
 
   session.preview =
@@ -978,8 +1038,21 @@ function formatSessionLabel(session) {
 }
 
 function send(ws, payload) {
-  if (!isOpen(ws)) return;
-  ws.send(JSON.stringify(payload));
+  if (!isOpen(ws)) return false;
+  try {
+    ws.send(JSON.stringify(payload));
+    return true;
+  } catch (error) {
+    log(
+      `socket send failed: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    try {
+      ws.close();
+    } catch {
+      // Ignore.
+    }
+    return false;
+  }
 }
 
 function isOpen(ws) {
