@@ -202,30 +202,6 @@ export default function (pi: ExtensionAPI) {
     }, 3000);
   }
 
-  function reconnectForCurrentSession(context: ExtensionContext) {
-    ctx = context;
-    currentSessionGuid = getSessionGuid(context);
-    lastStreamText = null;
-    pendingAssistantAbortMessage = false;
-    pendingRemoteInputIds.length = 0;
-    pendingToolCalls.clear();
-    completedToolCalls.clear();
-    if (reconnectTimer) {
-      clearTimeout(reconnectTimer);
-      reconnectTimer = null;
-    }
-    if (ws) {
-      try {
-        ws.removeAllListeners();
-        ws.close(1000, "session changed");
-      } catch {
-        // Ignore.
-      }
-      ws = null;
-    }
-    connect();
-  }
-
   async function handleServerMessage(message: ServerMessage) {
     if (!ctx) return;
 
@@ -325,14 +301,6 @@ export default function (pi: ExtensionAPI) {
     shuttingDown = false;
     updateStatus("connecting", false);
     connect();
-  });
-
-  pi.on("session_switch", async (_event, context) => {
-    reconnectForCurrentSession(context);
-  });
-
-  pi.on("session_fork", async (_event, context) => {
-    reconnectForCurrentSession(context);
   });
 
   pi.on("agent_start", async () => {
@@ -455,18 +423,32 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("session_shutdown", async () => {
-    if (reconnectTimer) clearTimeout(reconnectTimer);
+    shuttingDown = true;
+    releasing = false;
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+    }
     if (ws) {
+      const socket = ws;
+      ws = null;
       try {
-        ws.close();
+        socket.removeAllListeners();
+        socket.close(1000, "session shutdown");
       } catch {
         // Ignore.
       }
-      ws = null;
     }
     if (ctx?.hasUI) {
       ctx.ui.setStatus(STATUS_KEY, undefined);
     }
+    currentSessionGuid = null;
+    lastStreamText = null;
+    pendingAssistantAbortMessage = false;
+    pendingRemoteInputIds.length = 0;
+    pendingToolCalls.clear();
+    completedToolCalls.clear();
+    ctx = null;
   });
 
   pi.registerCommand("ws", {
