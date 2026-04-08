@@ -13,13 +13,26 @@ npm install
 npm start
 ```
 
-Open:
+The server prints:
+
+- an **Admin URL** with `#token=...` for the browser
+- a **Connect URL** with `?token=...` for `/toilet-pi`
+
+Open the **Admin URL** in your browser.
+
+## 3. Configure pi and start the host supervisor
+
+Inside pi, run `/toilet-pi` and paste the **Connect URL** printed by the server.
+
+Or skip the prompt:
 
 ```text
-http://localhost:3457
+/toilet-pi ws://your-server/ws?token=...
 ```
 
-## 3. Start the host supervisor
+That writes config to `~/.pi/agent/toilet-pi.json` (respecting `PI_CODING_AGENT_DIR` if set).
+
+Then start the host supervisor:
 
 ```bash
 npm run supervisor
@@ -67,11 +80,14 @@ Useful behaviors:
 
 - Web UI: `http://localhost:3457`
 - WebSocket: `ws://localhost:3457/ws`
+- Local config file: `~/.pi/agent/toilet-pi.json`
 
 ## Useful environment variables
 
 ```bash
-TOILET_PI_SERVER_URL=ws://your-server:3457/ws
+PI_CODING_AGENT_DIR=~/.pi/agent
+TOILET_PI_PUBLIC_URL=https://your-server
+TOILET_PI_SERVER_URL=ws://your-server/ws?token=...   # optional override
 TOILET_PI_HOST_ID=my-machine
 TOILET_PI_SESSION_DIR=/custom/pi/sessions
 TOILET_PI_PI_COMMAND=/path/to/pi

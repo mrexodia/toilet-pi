@@ -4,9 +4,14 @@ import type {
   ExtensionAPI,
   ExtensionContext,
 } from "@mariozechner/pi-coding-agent";
+import {
+  buildConnectUrl,
+  parseToiletPiInput,
+  readToiletPiConfig,
+  toBrowserBaseUrl,
+  writeToiletPiConfig,
+} from "./toilet-pi-config.js";
 
-const SERVER_URL = process.env.TOILET_PI_SERVER_URL || "ws://localhost:3457/ws";
-const MOBILE_URL = getMobileUrl(SERVER_URL);
 const HOST_ID = process.env.TOILET_PI_HOST_ID || os.hostname();
 const ROLE =
   process.env.TOILET_PI_ROLE === "background" ? "background" : "interactive";
@@ -69,6 +74,7 @@ export default function (pi: ExtensionAPI) {
   let shuttingDown = false;
   let releasing = false;
   let pendingAssistantAbortMessage = false;
+  let connectionConfig: { serverUrl: string; token: string } | null = null;
   const pendingRemoteInputIds: string[] = [];
   const pendingToolCalls = new Map<string, ToolCallInfo>();
   const completedToolCalls = new Map<string, ToolCallInfo>();
@@ -77,14 +83,38 @@ export default function (pi: ExtensionAPI) {
     return ws?.readyState === WebSocket.OPEN;
   }
 
+  async function loadConnectionConfig() {
+    if (process.env.TOILET_PI_SERVER_URL) {
+      try {
+        return parseToiletPiInput(process.env.TOILET_PI_SERVER_URL);
+      } catch {
+        return null;
+      }
+    }
+    return readToiletPiConfig();
+  }
+
+  function getConnectUrl() {
+    return connectionConfig ? buildConnectUrl(connectionConfig) : null;
+  }
+
+  function getMobileUrl() {
+    return connectionConfig ? toBrowserBaseUrl(connectionConfig.serverUrl) : null;
+  }
+
   function updateStatus(status: string, connected = false) {
     if (!ctx?.hasUI || ROLE === "background") return;
     const theme = ctx.ui.theme;
     const icon = connected
       ? theme.fg("success", "●")
       : theme.fg("warning", "○");
-    const mobileSuffix = connected && MOBILE_URL ? ` · ${MOBILE_URL}` : "";
-    ctx.ui.setStatus(STATUS_KEY, `${icon} WS:${status}${mobileSuffix}`);
+    if (status === "unconfigured") {
+      ctx.ui.setStatus(STATUS_KEY, `${icon} toilet-pi: unconfigured · /toilet-pi`);
+      return;
+    }
+    const mobileUrl = getMobileUrl();
+    const mobileSuffix = connected && mobileUrl ? ` · ${mobileUrl}` : "";
+    ctx.ui.setStatus(STATUS_KEY, `${icon} toilet-pi:${status}${mobileSuffix}`);
   }
 
   function send(payload: unknown) {
@@ -141,14 +171,37 @@ export default function (pi: ExtensionAPI) {
     });
   }
 
-  function connect() {
+  function closeSocket(reason = "reset") {
+    if (!ws) return;
+    const socket = ws;
+    ws = null;
+    try {
+      socket.removeAllListeners();
+      socket.close(1000, reason);
+    } catch {
+      // Ignore.
+    }
+  }
+
+  async function connect(force = false) {
     if (!ctx || shuttingDown) return;
+
+    connectionConfig = await loadConnectionConfig();
+    const connectUrl = getConnectUrl();
+    if (!connectUrl) {
+      updateStatus("unconfigured", false);
+      if (REQUIRE_SERVER) ctx.shutdown();
+      return;
+    }
+
+    if (force) closeSocket("reconfigure");
     if (
       ws &&
       (ws.readyState === WebSocket.OPEN ||
         ws.readyState === WebSocket.CONNECTING)
-    )
+    ) {
       return;
+    }
 
     if (reconnectTimer) {
       clearTimeout(reconnectTimer);
@@ -159,7 +212,7 @@ export default function (pi: ExtensionAPI) {
       `connecting ${reconnectAttempt > 0 ? `(${reconnectAttempt + 1})` : ""}`.trim(),
       false,
     );
-    ws = new WebSocket(SERVER_URL);
+    ws = new WebSocket(connectUrl);
 
     ws.on("open", () => {
       reconnectAttempt = 0;
@@ -200,6 +253,75 @@ export default function (pi: ExtensionAPI) {
       reconnectAttempt += 1;
       connect();
     }, 3000);
+  }
+
+  async function verifyConnectionConfig(config: {
+    serverUrl: string;
+    token: string;
+  }) {
+    const connectUrl = buildConnectUrl(config);
+    await new Promise<void>((resolve, reject) => {
+      const socket = new WebSocket(connectUrl);
+      let finished = false;
+      const timeout = setTimeout(() => {
+        finish(new Error("Timed out connecting to toilet-pi server"));
+      }, 5000);
+
+      function cleanup() {
+        clearTimeout(timeout);
+        socket.removeAllListeners();
+        try {
+          socket.close();
+        } catch {
+          // Ignore.
+        }
+      }
+
+      function finish(error?: Error) {
+        if (finished) return;
+        finished = true;
+        cleanup();
+        if (error) reject(error);
+        else resolve();
+      }
+
+      socket.on("open", () => finish());
+      socket.on("unexpected-response", (_request, response) => {
+        finish(
+          new Error(
+            `toilet-pi server rejected the URL (${response.statusCode || "unknown"})`,
+          ),
+        );
+      });
+      socket.on("error", (error) => {
+        finish(new Error(error.message || "Could not connect to toilet-pi server"));
+      });
+      socket.on("close", () => {
+        if (!finished) finish(new Error("toilet-pi server closed the connection"));
+      });
+    });
+  }
+
+  async function configureToiletPi(input: string, context: ExtensionContext) {
+    const config = parseToiletPiInput(input);
+    await verifyConnectionConfig(config);
+    connectionConfig = await writeToiletPiConfig(config);
+    reconnectAttempt = 0;
+    shuttingDown = false;
+    await connect(true);
+    if (context.hasUI) {
+      context.ui.notify(`toilet-pi configured for ${connectionConfig.serverUrl}`, "info");
+    }
+  }
+
+  async function promptForToiletPiUrl(context: ExtensionContext) {
+    if (!context.hasUI) return;
+    const input = await context.ui.input(
+      "Paste your toilet-pi URL",
+      getConnectUrl() || "wss://host/ws?token=...",
+    );
+    if (!input?.trim()) return;
+    await configureToiletPi(input, context);
   }
 
   async function handleServerMessage(message: ServerMessage) {
@@ -299,8 +421,14 @@ export default function (pi: ExtensionAPI) {
     pendingToolCalls.clear();
     completedToolCalls.clear();
     shuttingDown = false;
-    updateStatus("connecting", false);
-    connect();
+    connectionConfig = await loadConnectionConfig();
+    if (connectionConfig) {
+      updateStatus("connecting", false);
+      await connect();
+      return;
+    }
+    updateStatus("unconfigured", false);
+    if (REQUIRE_SERVER) context.shutdown();
   });
 
   pi.on("agent_start", async () => {
@@ -429,16 +557,7 @@ export default function (pi: ExtensionAPI) {
       clearTimeout(reconnectTimer);
       reconnectTimer = null;
     }
-    if (ws) {
-      const socket = ws;
-      ws = null;
-      try {
-        socket.removeAllListeners();
-        socket.close(1000, "session shutdown");
-      } catch {
-        // Ignore.
-      }
-    }
+    closeSocket("session shutdown");
     if (ctx?.hasUI) {
       ctx.ui.setStatus(STATUS_KEY, undefined);
     }
@@ -451,45 +570,45 @@ export default function (pi: ExtensionAPI) {
     ctx = null;
   });
 
+  pi.registerCommand("toilet-pi", {
+    description: "Configure toilet-pi for this machine",
+    handler: async (args, context) => {
+      try {
+        if (args.trim()) {
+          await configureToiletPi(args.trim(), context);
+          return;
+        }
+        await promptForToiletPiUrl(context);
+      } catch (error) {
+        if (!context.hasUI) return;
+        context.ui.notify(
+          error instanceof Error ? error.message : "Failed to configure toilet-pi",
+          "error",
+        );
+      }
+    },
+  });
+
   pi.registerCommand("ws", {
-    description: "Show Toilet-Pi connection status",
+    description: "Show toilet-pi connection status",
     handler: async (_args, context) => {
       if (!context.hasUI) return;
-      const status = isOpen()
-        ? "connected"
-        : ws?.readyState === WebSocket.CONNECTING
-          ? "connecting"
-          : "disconnected";
-      const mobileSuffix = MOBILE_URL ? ` · mobile: ${MOBILE_URL}` : "";
+      const status = connectionConfig
+        ? isOpen()
+          ? "connected"
+          : ws?.readyState === WebSocket.CONNECTING
+            ? "connecting"
+            : "disconnected"
+        : "unconfigured";
+      const mobileUrl = getMobileUrl();
       context.ui.notify(
-        `Toilet-Pi ${ROLE}: ${status} (${SERVER_URL})${mobileSuffix}`,
+        connectionConfig
+          ? `toilet-pi ${ROLE}: ${status} (${connectionConfig.serverUrl})${mobileUrl ? ` · mobile: ${mobileUrl}` : ""}`
+          : "toilet-pi is not configured yet. Run /toilet-pi.",
         "info",
       );
     },
   });
-}
-
-function getMobileUrl(serverUrl: string) {
-  try {
-    const url = new URL(serverUrl);
-    if (url.protocol === "ws:") url.protocol = "http:";
-    if (url.protocol === "wss:") url.protocol = "https:";
-    if (url.pathname === "/ws") {
-      url.pathname = "/";
-    } else if (url.pathname.endsWith("/ws")) {
-      url.pathname = url.pathname.slice(0, -3) || "/";
-    }
-    url.search = "";
-    url.hash = "";
-    return url.pathname === "/"
-      ? url.origin
-      : `${url.origin}${url.pathname.replace(/\/$/, "")}`;
-  } catch {
-    return serverUrl
-      .replace(/^ws:\/\//, "http://")
-      .replace(/^wss:\/\//, "https://")
-      .replace(/\/ws$/, "");
-  }
 }
 
 function sanitizeMessage(

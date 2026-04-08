@@ -1,5 +1,5 @@
-const WS_URL = `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`;
 const MOBILE_MEDIA = window.matchMedia("(max-width: 900px)");
+const TOKEN_STORAGE_KEY = "toilet-pi.token";
 
 let ws = null;
 let reconnectTimer = null;
@@ -11,6 +11,8 @@ let currentSession = createEmptySession(null);
 let selectedProjectContext = null;
 let toolsExpanded = false;
 let stickToBottom = true;
+let installationSecretsVisible = false;
+let authToken = loadAuthToken();
 const pendingLaunchRequests = new Map();
 
 const bodyEl = document.body;
@@ -18,6 +20,10 @@ const sidebarSummaryEl = document.getElementById("sidebar-summary");
 const sidebarScrimEl = document.getElementById("sidebar-scrim");
 const connectionStatusEl = document.getElementById("connection-status");
 const browserListEl = document.getElementById("browser-list");
+const installationPanelEl = document.getElementById("installation-panel");
+const installationBtnEl = document.getElementById("installation-btn");
+const installationModalScrimEl = document.getElementById("installation-modal-scrim");
+const installationCloseBtnEl = document.getElementById("installation-close-btn");
 const viewSessionsBtnEl = document.getElementById("view-sessions-btn");
 const viewProjectsBtnEl = document.getElementById("view-projects-btn");
 const menuBtnEl = document.getElementById("menu-btn");
@@ -33,6 +39,7 @@ const messageInputEl = document.getElementById("message-input");
 const sendBtnEl = document.getElementById("send-btn");
 const abortBtnEl = document.getElementById("abort-btn");
 
+renderInstallation();
 connect();
 renderBrowserList();
 renderSession({ forceScroll: true });
@@ -40,8 +47,44 @@ updateHeader();
 updateControls();
 updateViewButtons();
 
+function loadAuthToken() {
+	const hashParams = new URLSearchParams(location.hash.startsWith("#") ? location.hash.slice(1) : location.hash);
+	const tokenFromHash = hashParams.get("token")?.trim() || null;
+	if (tokenFromHash) {
+		localStorage.setItem(TOKEN_STORAGE_KEY, tokenFromHash);
+		history.replaceState(null, "", `${location.pathname}${location.search}`);
+		return tokenFromHash;
+	}
+	const stored = localStorage.getItem(TOKEN_STORAGE_KEY)?.trim();
+	return stored || null;
+}
+
+function getWebSocketUrl() {
+	if (!authToken) return null;
+	const url = new URL(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`);
+	url.searchParams.set("token", authToken);
+	return url.toString();
+}
+
+function getAdminUrl() {
+	if (!authToken) return null;
+	const url = new URL(`${location.origin}${location.pathname}`);
+	url.hash = new URLSearchParams({ token: authToken }).toString();
+	return url.toString();
+}
+
+function getConnectUrl() {
+	return getWebSocketUrl();
+}
+
 function connect() {
-	ws = new WebSocket(WS_URL);
+	const wsUrl = getWebSocketUrl();
+	if (!wsUrl) {
+		setConnection(false);
+		return;
+	}
+
+	ws = new WebSocket(wsUrl);
 
 	ws.onopen = () => {
 		setConnection(true);
@@ -70,7 +113,7 @@ function connect() {
 }
 
 function scheduleReconnect() {
-	if (reconnectTimer) return;
+	if (!authToken || reconnectTimer) return;
 	reconnectTimer = setTimeout(() => {
 		reconnectTimer = null;
 		connect();
@@ -166,14 +209,19 @@ function handleMessage(message) {
 }
 
 function setConnection(connected) {
-	connectionStatusEl.textContent = connected ? "Connected" : "Disconnected";
+	connectionStatusEl.textContent = connected ? "Connected" : authToken ? "Disconnected" : "Unauthenticated";
 	connectionStatusEl.className = `status-pill ${connected ? "connected" : "disconnected"}`;
 	updateSidebarSummary();
+	renderInstallation();
 	updateControls();
-	if (!connected) showNotice("Disconnected from server. Reconnecting…", "error", false);
+	if (!connected && authToken) showNotice("Disconnected from server. Reconnecting…", "error", false);
 }
 
 function updateSidebarSummary() {
+	if (!authToken) {
+		sidebarSummaryEl.textContent = "Open your toilet-pi admin URL to authenticate.";
+		return;
+	}
 	const connectedHosts = hosts.filter((host) => host.connected).length;
 	const sessionCount = flattenSessions().length;
 	if (ws?.readyState === WebSocket.OPEN) {
@@ -181,6 +229,68 @@ function updateSidebarSummary() {
 	} else {
 		sidebarSummaryEl.textContent = "Waiting for server…";
 	}
+}
+
+function renderInstallation() {
+	if (!installationPanelEl) return;
+	const adminUrl = getAdminUrl();
+	const connectUrl = getConnectUrl();
+	if (!authToken) {
+		installationPanelEl.innerHTML = "";
+		const hint = document.createElement("div");
+		hint.className = "install-hint";
+		hint.textContent = "Open the toilet-pi admin URL printed by the server. It contains #token=... and authenticates this browser automatically.";
+		installationPanelEl.appendChild(hint);
+		return;
+	}
+
+	installationPanelEl.innerHTML = "";
+	const copy = document.createElement("div");
+	copy.className = "install-copy";
+	copy.textContent = "Install the extension package, then register the client inside pi using the connect URL below.";
+	const actions = document.createElement("div");
+	actions.className = "install-actions";
+	const revealBtn = document.createElement("button");
+	revealBtn.type = "button";
+	revealBtn.textContent = installationSecretsVisible ? "Hide sensitive URLs" : "Reveal sensitive URLs";
+	revealBtn.onclick = () => {
+		installationSecretsVisible = !installationSecretsVisible;
+		renderInstallation();
+	};
+	actions.appendChild(revealBtn);
+	const installCode = document.createElement("pre");
+	installCode.className = "install-code";
+	installCode.textContent = "pi install <toilet-pi-package>\n/toilet-pi " + maskSensitive(connectUrl);
+	const adminCode = document.createElement("pre");
+	adminCode.className = "install-code";
+	adminCode.textContent = `Admin URL\n${maskSensitive(adminUrl)}\n\nConnect URL\n${maskSensitive(connectUrl)}`;
+	const hint = document.createElement("div");
+	hint.className = "install-hint";
+	hint.textContent = installationSecretsVisible
+		? "Sensitive URLs are visible. Hide them before screen sharing."
+		: "Sensitive URLs stay hidden until you explicitly reveal them.";
+	installationPanelEl.appendChild(copy);
+	installationPanelEl.appendChild(actions);
+	installationPanelEl.appendChild(installCode);
+	installationPanelEl.appendChild(adminCode);
+	installationPanelEl.appendChild(hint);
+}
+
+function maskSensitive(value) {
+	if (installationSecretsVisible) return value || "";
+	return value ? value.replace(/token=[^&#\s]+/g, "token=••••••••").replace(/#token=[^&#\s]+/g, "#token=••••••••") : "";
+}
+
+function openInstallationModal() {
+	installationSecretsVisible = false;
+	renderInstallation();
+	bodyEl.classList.add("installation-open");
+}
+
+function closeInstallationModal() {
+	installationSecretsVisible = false;
+	renderInstallation();
+	bodyEl.classList.remove("installation-open");
 }
 
 function flattenSessions() {
@@ -750,7 +860,7 @@ function updateControls() {
 	messageInputEl.placeholder = hasOwner
 		? "Send a live message to the active session…"
 		: currentSessionGuid && canAutoStart
-			? "Send a message — Toilet-Pi will auto-start this session in background…"
+			? "Send a message — toilet-pi will auto-start this session in background…"
 			: "Select a session to send a message…";
 }
 
@@ -987,6 +1097,11 @@ viewProjectsBtnEl.onclick = () => {
 menuBtnEl.onclick = () => openSidebar();
 sidebarCloseBtnEl.onclick = () => closeSidebar();
 sidebarScrimEl.onclick = () => closeSidebar();
+installationBtnEl.onclick = () => openInstallationModal();
+installationCloseBtnEl.onclick = () => closeInstallationModal();
+installationModalScrimEl.onclick = (event) => {
+	if (event.target === installationModalScrimEl) closeInstallationModal();
+};
 toolsExpandBtnEl.onclick = () => toggleToolsExpanded();
 
 newSessionBtnEl.onclick = () => {
@@ -1023,6 +1138,10 @@ messagesEl.addEventListener("scroll", () => {
 });
 
 window.addEventListener("keydown", (event) => {
+	if (event.key === "Escape" && bodyEl.classList.contains("installation-open")) {
+		closeInstallationModal();
+		return;
+	}
 	if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "o") {
 		event.preventDefault();
 		toggleToolsExpanded();

@@ -3,7 +3,7 @@
 <head>
 	<meta charset="UTF-8" />
 	<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-	<title>Toilet-Pi</title>
+	<title>toilet-pi</title>
 	<style>
 		:root {
 			color-scheme: dark;
@@ -246,6 +246,74 @@
 			text-align: center;
 			color: var(--muted);
 			font-size: 13px;
+		}
+
+		.install-modal-scrim {
+			position: fixed;
+			inset: 0;
+			background: rgba(0, 0, 0, 0.62);
+			display: none;
+			align-items: center;
+			justify-content: center;
+			padding: 20px;
+			z-index: 50;
+		}
+
+		body.installation-open .install-modal-scrim {
+			display: flex;
+		}
+
+		.install-card {
+			background: var(--panel-2);
+			border: 1px solid var(--border);
+			border-radius: 16px;
+			padding: 16px;
+			display: flex;
+			flex-direction: column;
+			gap: 12px;
+			width: min(720px, 100%);
+			max-height: min(80vh, 900px);
+			overflow-y: auto;
+			box-shadow: var(--shadow);
+		}
+
+		.install-header {
+			display: flex;
+			align-items: center;
+			justify-content: space-between;
+			gap: 12px;
+		}
+
+		.install-card h3 {
+			margin: 0;
+			font-size: 16px;
+		}
+
+		.install-copy,
+		.install-hint {
+			font-size: 12px;
+			color: var(--muted);
+			line-height: 1.5;
+		}
+
+		.install-actions {
+			display: flex;
+			gap: 8px;
+			flex-wrap: wrap;
+		}
+
+		.install-code {
+			margin: 0;
+			padding: 10px 12px;
+			border-radius: 10px;
+			background: var(--bg);
+			border: 1px solid rgba(48, 54, 61, 0.75);
+			font-size: 11px;
+			line-height: 1.5;
+			white-space: pre-wrap;
+			word-break: break-word;
+			overflow-wrap: anywhere;
+			font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
 		}
 
 		.list-item,
@@ -670,12 +738,22 @@
 	</style>
 </head>
 <body>
+	<div class="install-modal-scrim" id="installation-modal-scrim">
+		<section class="install-card" role="dialog" aria-modal="true" aria-labelledby="installation-modal-title">
+			<div class="install-header">
+				<h3 id="installation-modal-title">Installation</h3>
+				<button id="installation-close-btn" class="icon-button subtle" aria-label="Close installation dialog">✕</button>
+			</div>
+			<div id="installation-panel"></div>
+		</section>
+	</div>
+
 	<div class="app-shell">
 		<aside class="sidebar" id="sidebar">
 			<div class="sidebar-header">
 				<div class="sidebar-title-row">
 					<div>
-						<h1>Toilet-Pi</h1>
+						<h1>toilet-pi</h1>
 						<div class="sidebar-subtitle" id="sidebar-summary">Waiting for server…</div>
 					</div>
 					<div style="display:flex;align-items:center;gap:8px;">
@@ -690,7 +768,9 @@
 				<button id="view-projects-btn" class="tab-button">Projects</button>
 			</div>
 
-			<div class="sidebar-body" id="browser-list"></div>
+			<div class="sidebar-body">
+				<div id="browser-list"></div>
+			</div>
 		</aside>
 
 		<div class="sidebar-scrim" id="sidebar-scrim"></div>
@@ -707,6 +787,7 @@
 						<div id="session-path" class="header-path"></div>
 					</div>
 					<div class="header-actions">
+						<button id="installation-btn" class="subtle">Installation</button>
 						<button id="tools-expand-btn" class="subtle" title="Toggle tool output expansion (Ctrl+O)">Expand Tools</button>
 						<button id="new-session-btn">New Session</button>
 					</div>

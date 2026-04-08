@@ -3,9 +3,18 @@ import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { WebSocketServer, WebSocket } from "ws";
+import {
+  buildAdminUrl,
+  buildConnectUrl,
+  ensureToiletPiServerToken,
+  hasMatchingToken,
+} from "./toilet-pi-config.js";
 
 const PORT = Number.parseInt(process.env.PORT || "3457", 10);
 const WS_PATH = "/ws";
+const PUBLIC_URL = process.env.TOILET_PI_PUBLIC_URL || `http://localhost:${PORT}`;
+const PUBLIC_SERVER_URL = getPublicServerUrl(PUBLIC_URL);
+const SERVER_TOKEN = await ensureToiletPiServerToken();
 const PUBLIC_DIR = fileURLToPath(new URL("./public/", import.meta.url));
 const MAX_SESSION_HISTORY = Math.max(
   1,
@@ -55,6 +64,13 @@ server.on("upgrade", (req, socket, head) => {
   );
   if (url.pathname !== WS_PATH) {
     socket.write("HTTP/1.1 404 Not Found\r\n\r\n");
+    socket.destroy();
+    return;
+  }
+
+  const token = url.searchParams.get("token");
+  if (!hasMatchingToken(SERVER_TOKEN, token)) {
+    socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
     socket.destroy();
     return;
   }
@@ -114,10 +130,14 @@ wss.on("connection", (ws, req) => {
 
 server.listen(PORT, () => {
   console.log("=".repeat(60));
-  console.log("Toilet-Pi v2 Server");
+  console.log("toilet-pi v2 server");
   console.log("=".repeat(60));
-  console.log(`Web UI: http://localhost:${PORT}`);
-  console.log(`WebSocket: ws://localhost:${PORT}${WS_PATH}`);
+  console.log(`Web UI: ${PUBLIC_URL}`);
+  console.log(`WebSocket: ${PUBLIC_SERVER_URL}`);
+  console.log(`Admin URL: ${buildAdminUrl(PUBLIC_SERVER_URL, SERVER_TOKEN)}`);
+  console.log(
+    `Connect URL: ${buildConnectUrl({ serverUrl: PUBLIC_SERVER_URL, token: SERVER_TOKEN })}`,
+  );
   console.log("State: in-memory only");
   console.log("=".repeat(60));
 });
@@ -1134,6 +1154,19 @@ function getContentType(filePath) {
   if (filePath.endsWith(".css")) return "text/css; charset=utf-8";
   if (filePath.endsWith(".json")) return "application/json; charset=utf-8";
   return "text/plain; charset=utf-8";
+}
+
+function getPublicServerUrl(publicUrl) {
+  const url = new URL(publicUrl);
+  if (url.protocol === "http:") url.protocol = "ws:";
+  else if (url.protocol === "https:") url.protocol = "wss:";
+  else if (url.protocol !== "ws:" && url.protocol !== "wss:") {
+    throw new Error("TOILET_PI_PUBLIC_URL must use http://, https://, ws://, or wss://");
+  }
+  url.pathname = WS_PATH;
+  url.search = "";
+  url.hash = "";
+  return url.toString();
 }
 
 function log(message) {

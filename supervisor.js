@@ -5,13 +5,17 @@ import os from "node:os";
 import path from "node:path";
 import { WebSocket } from "ws";
 import {
+  buildConnectUrl,
+  parseToiletPiInput,
+  readToiletPiConfig,
+} from "./toilet-pi-config.js";
+import {
   findSessionFile,
   getDefaultSessionDir,
   readSessionSnapshot,
   scanSessions,
 } from "./session-scanner.js";
 
-const SERVER_URL = process.env.TOILET_PI_SERVER_URL || "ws://localhost:3457/ws";
 const HOST_ID = process.env.TOILET_PI_HOST_ID || os.hostname();
 const PI_COMMAND = process.env.TOILET_PI_PI_COMMAND || "pi";
 const SESSION_DIR = process.env.TOILET_PI_SESSION_DIR || getDefaultSessionDir();
@@ -41,6 +45,7 @@ let catalogTimer = null;
 let shutdownForceTimer = null;
 let shutdownExitTimer = null;
 let shutdownFinished = false;
+let currentConnectUrl = null;
 
 function log(message) {
   console.log(`[supervisor ${HOST_ID}] ${message}`);
@@ -92,15 +97,27 @@ function clearCatalogTimer() {
   catalogTimer = null;
 }
 
-function scheduleReconnect() {
+function scheduleReconnect(delayMs = 3000) {
   if (shuttingDown || reconnectTimer) return;
   reconnectTimer = setTimeout(() => {
     reconnectTimer = null;
     connect();
-  }, 3000);
+  }, delayMs);
 }
 
-function connect() {
+async function loadConnectionConfig() {
+  if (process.env.TOILET_PI_SERVER_URL) {
+    try {
+      return parseToiletPiInput(process.env.TOILET_PI_SERVER_URL);
+    } catch {
+      return null;
+    }
+  }
+
+  return readToiletPiConfig();
+}
+
+async function connect() {
   if (shuttingDown) return;
   if (
     ws &&
@@ -108,8 +125,16 @@ function connect() {
   )
     return;
 
-  log(`connecting to ${SERVER_URL}`);
-  ws = new WebSocket(SERVER_URL);
+  const config = await loadConnectionConfig();
+  if (!config) {
+    currentConnectUrl = null;
+    scheduleReconnect(5000);
+    return;
+  }
+
+  currentConnectUrl = buildConnectUrl(config);
+  log(`connecting to ${config.serverUrl}`);
+  ws = new WebSocket(currentConnectUrl);
 
   ws.on("open", async () => {
     log("connected");
@@ -266,7 +291,7 @@ function startBackgroundRunner(message) {
     detached: USE_PROCESS_GROUPS,
     env: {
       ...process.env,
-      TOILET_PI_SERVER_URL: SERVER_URL,
+      TOILET_PI_SERVER_URL: currentConnectUrl || "",
       TOILET_PI_HOST_ID: HOST_ID,
       TOILET_PI_ROLE: "background",
       TOILET_PI_SESSION_DIR: SESSION_DIR,

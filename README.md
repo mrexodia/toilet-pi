@@ -158,15 +158,26 @@ npm install
 npm start
 ```
 
-Open:
+On startup the server prints two important URLs:
+
+- **Admin URL** - browser URL with `#token=...` for seamless web login
+- **Connect URL** - `ws://` or `wss://` URL with `?token=...` for `/toilet-pi`
+
+Open the **Admin URL** in your browser.
+
+### 3. Configure pi and start the host supervisor
+
+Install the extension package, then inside pi run `/toilet-pi` and paste the **Connect URL** printed by the server.
+
+You can skip the interactive prompt by passing the URL directly:
 
 ```text
-http://localhost:3457
+/toilet-pi ws://your-server/ws?token=...
 ```
 
-### 3. Start the host supervisor
+That writes machine-local config to `~/.pi/agent/toilet-pi.json` (respecting `PI_CODING_AGENT_DIR` if set).
 
-On each machine you want to expose:
+Then start the host supervisor on that same machine:
 
 ```bash
 cd ~/Projects/toilet-pi
@@ -194,6 +205,8 @@ For one-off testing without installing, load the extension file directly:
 ```bash
 pi -e ~/Projects/toilet-pi/extension.ts
 ```
+
+On first run the extension stays unconfigured until you run `/toilet-pi` and give it your **Connect URL**.
 
 Because local-path installs are used in place, changes in this checkout are picked up after restarting pi or running `/reload`.
 
@@ -253,17 +266,19 @@ Debug client commands:
 
 ### Shared
 
-- `TOILET_PI_SERVER_URL`
-  - default: `ws://localhost:3457/ws`
 - `TOILET_PI_HOST_ID`
   - default: hostname
 - `TOILET_PI_SESSION_DIR`
   - default: `~/.pi/agent/sessions`
+- `PI_CODING_AGENT_DIR`
+  - overrides the base pi agent dir used for `~/.pi/agent/*`
 
 ### Server
 
 - `PORT`
   - default: `3457`
+- `TOILET_PI_PUBLIC_URL`
+  - optional public base URL used when printing Admin/Connect URLs on startup
 
 ### Supervisor
 
@@ -276,6 +291,8 @@ Debug client commands:
 
 ### Extension / background runner
 
+- `TOILET_PI_SERVER_URL`
+  - optional full connect URL override, including `?token=...`
 - `TOILET_PI_ROLE`
   - set automatically to `background` for supervisor-launched sessions
 - `TOILET_PI_HISTORY_LIMIT`

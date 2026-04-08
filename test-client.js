@@ -1,6 +1,10 @@
 import { WebSocket } from "ws";
+import { buildConnectUrl, parseToiletPiInput, readToiletPiConfig } from "./toilet-pi-config.js";
 
-const SERVER_URL = process.env.TOILET_PI_SERVER_URL || "ws://localhost:3457/ws";
+const config = process.env.TOILET_PI_SERVER_URL
+  ? parseToiletPiInput(process.env.TOILET_PI_SERVER_URL)
+  : await readToiletPiConfig();
+const SERVER_URL = config ? buildConnectUrl(config) : "ws://localhost:3457/ws";
 let currentSessionGuid = null;
 let shouldQuitOnOpen = false;
 
