@@ -76,6 +76,58 @@ Useful behaviors:
 - starting a new session from **Projects** launches a fresh background pi session in that project
 - resuming a background-owned session locally makes the background runner abort and release ownership
 
+## Cloudflare Workers deploy
+
+You do not need to create the Worker manually in the Cloudflare dashboard first. `wrangler deploy` creates it automatically.
+
+### 1. Log in
+
+```bash
+cd ~/Projects/toilet-pi/server
+npx wrangler login
+```
+
+### 2. Set the shared server token secret
+
+Generate a token:
+
+```bash
+node --input-type=module -e "import { randomBytes } from 'node:crypto'; console.log(randomBytes(32).toString('base64url'))"
+```
+
+Then store it in Cloudflare:
+
+```bash
+cd ~/Projects/toilet-pi/server
+npx wrangler secret put TOILET_PI_SERVER_TOKEN
+```
+
+Paste the generated token when prompted.
+
+### 3. Deploy
+
+From the repo root:
+
+```bash
+cd ~/Projects/toilet-pi
+npm run deploy
+```
+
+### 4. Use the deployed URLs
+
+If Wrangler prints a URL like:
+
+```text
+https://toilet-pi.your-subdomain.workers.dev
+```
+
+then use:
+
+- Admin URL: `https://toilet-pi.your-subdomain.workers.dev/#token=YOUR_TOKEN`
+- Connect URL: `wss://toilet-pi.your-subdomain.workers.dev/ws?token=YOUR_TOKEN`
+
+The Worker infers its public origin automatically from the incoming request, so no extra Cloudflare public URL config is needed.
+
 ## Default URLs
 
 - Web UI: `http://localhost:3457`
@@ -86,8 +138,8 @@ Useful behaviors:
 
 ```bash
 PI_CODING_AGENT_DIR=~/.pi/agent
-TOILET_PI_PUBLIC_URL=https://your-server
-TOILET_PI_SERVER_URL=ws://your-server/ws?token=...   # optional override
+TOILET_PI_PUBLIC_URL=https://your-server            # optional, Node server only
+TOILET_PI_SERVER_URL=ws://your-server/ws?token=...  # optional override
 TOILET_PI_HOST_ID=my-machine
 TOILET_PI_SESSION_DIR=/custom/pi/sessions
 TOILET_PI_PI_COMMAND=/path/to/pi

@@ -248,7 +248,8 @@
 			font-size: 13px;
 		}
 
-		.install-modal-scrim {
+		.install-modal-scrim,
+		.auth-modal-scrim {
 			position: fixed;
 			inset: 0;
 			background: rgba(0, 0, 0, 0.62);
@@ -259,11 +260,13 @@
 			z-index: 50;
 		}
 
-		body.installation-open .install-modal-scrim {
+		body.installation-open .install-modal-scrim,
+		body.auth-open .auth-modal-scrim {
 			display: flex;
 		}
 
-		.install-card {
+		.install-card,
+		.auth-card {
 			background: var(--panel-2);
 			border: 1px solid var(--border);
 			border-radius: 16px;
@@ -290,16 +293,60 @@
 		}
 
 		.install-copy,
-		.install-hint {
+		.install-hint,
+		.auth-copy,
+		.auth-hint {
 			font-size: 12px;
 			color: var(--muted);
 			line-height: 1.5;
 		}
 
-		.install-actions {
+		.install-section {
+			display: flex;
+			flex-direction: column;
+			gap: 10px;
+			padding: 12px;
+			border: 1px solid var(--border);
+			border-radius: 12px;
+			background: rgba(13, 17, 23, 0.45);
+		}
+
+		.install-actions,
+		.auth-actions {
 			display: flex;
 			gap: 8px;
 			flex-wrap: wrap;
+		}
+
+		.auth-form {
+			display: flex;
+			flex-direction: column;
+			gap: 12px;
+		}
+
+		.auth-field {
+			display: flex;
+			flex-direction: column;
+			gap: 6px;
+		}
+
+		.auth-field label {
+			font-size: 12px;
+			font-weight: 600;
+		}
+
+		.auth-field input {
+			width: 100%;
+		}
+
+		.status-pill.clickable {
+			cursor: pointer;
+		}
+
+		.status-pill.clickable:hover,
+		.status-pill.clickable:focus-visible {
+			filter: brightness(1.08);
+			outline: none;
 		}
 
 		.install-code {
@@ -488,7 +535,7 @@
 
 		.menu-button,
 		.sidebar-close {
-			display: none;
+			display: none !important;
 		}
 
 		.notice-bar {
@@ -620,6 +667,59 @@
 			animation: blink 0.8s step-end infinite;
 		}
 
+		.thinking-block {
+			margin-bottom: 10px;
+			padding: 0;
+			border-radius: 10px;
+			background: rgba(137, 87, 229, 0.1);
+			border: 1px solid rgba(137, 87, 229, 0.24);
+			overflow: hidden;
+		}
+
+		.thinking-label {
+			display: flex;
+			align-items: center;
+			justify-content: space-between;
+			gap: 10px;
+			list-style: none;
+			cursor: pointer;
+			padding: 9px 10px;
+			font-size: 10px;
+			font-weight: 700;
+			letter-spacing: 0.04em;
+			text-transform: uppercase;
+			color: #d2a8ff;
+		}
+
+		.thinking-label::-webkit-details-marker {
+			display: none;
+		}
+
+		.thinking-label::after {
+			content: "▾";
+			font-size: 12px;
+			letter-spacing: 0;
+		}
+
+		.thinking-block:not([open]) .thinking-label::after {
+			content: "▸";
+		}
+
+		.thinking-text {
+			padding: 0 10px 10px;
+			font-size: 13px;
+			color: #c6b6f3;
+			white-space: pre-wrap;
+			word-break: break-word;
+			overflow-wrap: anywhere;
+		}
+
+		.message-text {
+			white-space: pre-wrap;
+			word-break: break-word;
+			overflow-wrap: anywhere;
+		}
+
 		.timestamp {
 			font-size: 10px;
 			color: var(--muted);
@@ -686,7 +786,7 @@
 
 			.menu-button,
 			.sidebar-close {
-				display: inline-flex;
+				display: inline-flex !important;
 			}
 
 			body.sidebar-open .menu-button {
@@ -738,6 +838,26 @@
 	</style>
 </head>
 <body>
+	<div class="auth-modal-scrim" id="auth-modal-scrim">
+		<section class="auth-card" role="dialog" aria-modal="true" aria-labelledby="auth-modal-title">
+			<div class="install-header">
+				<h3 id="auth-modal-title">Enter server token</h3>
+				<button id="auth-close-btn" class="icon-button subtle" aria-label="Close token dialog">✕</button>
+			</div>
+			<form id="auth-form" class="auth-form" autocomplete="on">
+				<div class="auth-field">
+					<label for="auth-token-input">Server token</label>
+					<input id="auth-token-input" name="password" type="password" placeholder="Paste token" autocomplete="current-password" spellcheck="false" />
+				</div>
+				<div class="auth-actions">
+					<button id="auth-forget-btn" type="button" class="danger">Forget token</button>
+					<button id="auth-cancel-btn" type="button" class="subtle">Cancel</button>
+					<button type="submit" class="primary">Save token</button>
+				</div>
+			</form>
+		</section>
+	</div>
+
 	<div class="install-modal-scrim" id="installation-modal-scrim">
 		<section class="install-card" role="dialog" aria-modal="true" aria-labelledby="installation-modal-title">
 			<div class="install-header">

@@ -221,6 +221,123 @@ From the browser you can:
 - start a brand-new session in a project
 - abort long-running work
 
+## Deploying the server to Cloudflare Workers
+
+The Cloudflare deployment only hosts the central server and web UI.
+
+You still run these locally on each machine you want to control:
+
+- `npm run supervisor`
+- the `extension.ts` pi extension inside `pi`
+
+### 1. Install dependencies
+
+```bash
+cd ~/Projects/toilet-pi
+npm run setup
+```
+
+### 2. Log in to Cloudflare
+
+```bash
+cd server
+npx wrangler login
+```
+
+You do **not** need to create the Worker manually in the Cloudflare dashboard first. `wrangler deploy` creates it automatically.
+
+### 3. Create a server token
+
+Generate a token and save it somewhere safe. You will use the same token for both the browser admin URL and the pi connect URL.
+
+```bash
+node --input-type=module -e "import { randomBytes } from 'node:crypto'; console.log(randomBytes(32).toString('base64url'))"
+```
+
+Then store it as a Cloudflare secret:
+
+```bash
+cd server
+npx wrangler secret put TOILET_PI_SERVER_TOKEN
+```
+
+Paste the generated token when prompted.
+
+### 4. Deploy
+
+From the repo root:
+
+```bash
+npm run deploy
+```
+
+Or directly from `server/`:
+
+```bash
+npx wrangler deploy
+```
+
+### 5. Open the deployed URLs
+
+After deploy, Wrangler prints your Worker URL, for example:
+
+```text
+https://toilet-pi.your-subdomain.workers.dev
+```
+
+Toilet-Pi infers its public URLs automatically from the request origin, so no Cloudflare public URL config is required.
+
+Use:
+
+- **Admin URL**
+  ```text
+  https://toilet-pi.your-subdomain.workers.dev/#token=YOUR_TOKEN
+  ```
+- **Connect URL**
+  ```text
+  wss://toilet-pi.your-subdomain.workers.dev/ws?token=YOUR_TOKEN
+  ```
+
+Open the **Admin URL** in your browser.
+
+Then inside `pi`, run:
+
+```text
+/toilet-pi wss://toilet-pi.your-subdomain.workers.dev/ws?token=YOUR_TOKEN
+```
+
+Then start the host supervisor on that machine:
+
+```bash
+npm run supervisor
+```
+
+### Cloudflare config used by this repo
+
+`server/wrangler.toml` only needs:
+
+```toml
+name = "toilet-pi"
+main = "src/cloudflare/entry.ts"
+compatibility_date = "2025-04-01"
+
+[assets]
+directory = "./public"
+
+[durable_objects]
+bindings = [
+  { name = "TOILET_PI_HUB", class_name = "ToiletPiHub" }
+]
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["ToiletPiHub"]
+
+[vars]
+TOILET_PI_SERVER_HISTORY_LIMIT = "200"
+# TOILET_PI_SERVER_TOKEN: set via `wrangler secret put`
+```
+
 ## Commands
 
 ### Server
@@ -278,7 +395,7 @@ Debug client commands:
 - `PORT`
   - default: `3457`
 - `TOILET_PI_PUBLIC_URL`
-  - optional public base URL used when printing Admin/Connect URLs on startup
+  - optional Node-only public base URL override used when printing Admin/Connect URLs on startup
 
 ### Supervisor
 

@@ -37,6 +37,7 @@ interface WebMessage {
   role: "user" | "assistant";
   timestamp?: number;
   text: string;
+  thinkingText?: string;
   stopReason?: string;
   remoteInputId?: string;
 }
@@ -70,6 +71,7 @@ export default function (pi: ExtensionAPI) {
   let ctx: ExtensionContext | null = null;
   let currentSessionGuid: string | null = null;
   let lastStreamText: string | null = null;
+  let lastThinkingText: string | null = null;
   let reconnectAttempt = 0;
   let shuttingDown = false;
   let releasing = false;
@@ -167,6 +169,7 @@ export default function (pi: ExtensionAPI) {
       model: ctx.model?.id || null,
       busy: !ctx.isIdle(),
       streamingText: lastStreamText,
+      streamingThinkingText: lastThinkingText,
       history: buildHistory(ctx),
     });
   }
@@ -416,6 +419,7 @@ export default function (pi: ExtensionAPI) {
     ctx = context;
     currentSessionGuid = getSessionGuid(context);
     lastStreamText = null;
+    lastThinkingText = null;
     pendingAssistantAbortMessage = false;
     pendingRemoteInputIds.length = 0;
     pendingToolCalls.clear();
@@ -459,12 +463,14 @@ export default function (pi: ExtensionAPI) {
 
     emitSessionEvent({ type: "busy", busy: false });
     lastStreamText = null;
+    lastThinkingText = null;
   });
 
   pi.on("message_start", async (event) => {
     if (event.message.role === "assistant") {
       pendingAssistantAbortMessage = true;
       lastStreamText = "";
+      lastThinkingText = "";
       emitSessionEvent({ type: "assistant_stream_start" });
     }
   });
@@ -476,9 +482,11 @@ export default function (pi: ExtensionAPI) {
     if (now - lastUpdateTime < 120) return;
     lastUpdateTime = now;
     lastStreamText = extractAssistantText(event.message.content);
+    lastThinkingText = extractAssistantThinkingText(event.message.content);
     emitSessionEvent({
       type: "assistant_stream_update",
       text: lastStreamText || "",
+      thinkingText: lastThinkingText || "",
     });
   });
 
@@ -502,7 +510,10 @@ export default function (pi: ExtensionAPI) {
         completedToolCalls.delete(message.toolCallId);
       }
     }
-    if (event.message.role === "assistant") lastStreamText = null;
+    if (event.message.role === "assistant") {
+      lastStreamText = null;
+      lastThinkingText = null;
+    }
     if (getSessionGuid() !== currentSessionGuid) {
       currentSessionGuid = getSessionGuid();
       sendHello();
@@ -563,6 +574,7 @@ export default function (pi: ExtensionAPI) {
     }
     currentSessionGuid = null;
     lastStreamText = null;
+    lastThinkingText = null;
     pendingAssistantAbortMessage = false;
     pendingRemoteInputIds.length = 0;
     pendingToolCalls.clear();
@@ -630,11 +642,13 @@ function sanitizeMessage(
 
   if (message.role === "assistant") {
     const text = extractAssistantText(message.content);
-    if (!text && message.stopReason === "toolUse") return null;
+    const thinkingText = extractAssistantThinkingText(message.content);
+    if (!text && !thinkingText && message.stopReason === "toolUse") return null;
     return {
       role: "assistant",
       timestamp: message.timestamp,
       text: text || `[${message.stopReason || "done"}]`,
+      thinkingText: thinkingText || undefined,
       stopReason: message.stopReason,
     };
   }
@@ -674,6 +688,16 @@ function extractAssistantText(content: any) {
       .filter((part: any) => part?.type === "text")
       .map((part: any) => part.text || "")
       .join(""),
+  );
+}
+
+function extractAssistantThinkingText(content: any) {
+  if (!Array.isArray(content)) return "";
+  return normalizeText(
+    content
+      .filter((part: any) => part?.type === "thinking")
+      .map((part: any) => part.thinking || "")
+      .join("\n\n"),
   );
 }
 

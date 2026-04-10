@@ -213,11 +213,13 @@ function sanitizeMessage(message, fallbackTimestamp) {
 
   if (message.role === "assistant") {
     const text = extractAssistantText(message.content);
-    if (!text && message.stopReason === "toolUse") return null;
+    const thinkingText = extractAssistantThinkingText(message.content);
+    if (!text && !thinkingText && message.stopReason === "toolUse") return null;
     return {
       role: "assistant",
       timestamp: normalizeTimestamp(message.timestamp || fallbackTimestamp),
       text: text || `[${message.stopReason || "done"}]`,
+      thinkingText: thinkingText || undefined,
       stopReason: message.stopReason,
     };
   }
@@ -270,6 +272,16 @@ function extractAssistantText(content) {
       .filter((part) => part?.type === "text")
       .map((part) => part.text || "")
       .join(""),
+  );
+}
+
+function extractAssistantThinkingText(content) {
+  if (!Array.isArray(content)) return "";
+  return normalizeText(
+    content
+      .filter((part) => part?.type === "thinking")
+      .map((part) => part.thinking || "")
+      .join("\n\n"),
   );
 }
 

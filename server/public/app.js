@@ -11,9 +11,9 @@ let currentSession = createEmptySession(null);
 let selectedProjectContext = null;
 let toolsExpanded = false;
 let stickToBottom = true;
-let installationSecretsVisible = false;
 let authToken = loadAuthToken();
 const pendingLaunchRequests = new Map();
+const collapsedThinkingKeys = new Set();
 
 const bodyEl = document.body;
 const sidebarSummaryEl = document.getElementById("sidebar-summary");
@@ -22,6 +22,12 @@ const connectionStatusEl = document.getElementById("connection-status");
 const browserListEl = document.getElementById("browser-list");
 const installationPanelEl = document.getElementById("installation-panel");
 const installationBtnEl = document.getElementById("installation-btn");
+const authModalScrimEl = document.getElementById("auth-modal-scrim");
+const authFormEl = document.getElementById("auth-form");
+const authTokenInputEl = document.getElementById("auth-token-input");
+const authCloseBtnEl = document.getElementById("auth-close-btn");
+const authCancelBtnEl = document.getElementById("auth-cancel-btn");
+const authForgetBtnEl = document.getElementById("auth-forget-btn");
 const installationModalScrimEl = document.getElementById("installation-modal-scrim");
 const installationCloseBtnEl = document.getElementById("installation-close-btn");
 const viewSessionsBtnEl = document.getElementById("view-sessions-btn");
@@ -59,28 +65,64 @@ function loadAuthToken() {
 	return stored || null;
 }
 
+function persistAuthToken(token) {
+	const normalized = String(token || "").trim() || null;
+	authToken = normalized;
+	if (normalized) localStorage.setItem(TOKEN_STORAGE_KEY, normalized);
+	else localStorage.removeItem(TOKEN_STORAGE_KEY);
+	return normalized;
+}
+
 function getWebSocketUrl() {
 	if (!authToken) return null;
-	const url = new URL(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`);
+	const url = new URL(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}${getWebSocketPathname()}`);
 	url.searchParams.set("token", authToken);
 	return url.toString();
 }
 
-function getAdminUrl() {
-	if (!authToken) return null;
-	const url = new URL(`${location.origin}${location.pathname}`);
-	url.hash = new URLSearchParams({ token: authToken }).toString();
-	return url.toString();
+function getWebSocketPathname() {
+	const publicPathname = normalizePublicPathname(location.pathname || "/");
+	if (publicPathname === "/") return "/ws";
+	return `${publicPathname.replace(/\/+$/, "")}/ws`;
+}
+
+function normalizePublicPathname(pathname) {
+	if (!pathname || pathname === "/") return "/";
+	if (pathname.endsWith("/ws")) return pathname.slice(0, -"/ws".length) || "/";
+	if (pathname.endsWith("/index.html")) return pathname.slice(0, -"/index.html".length) || "/";
+	return pathname;
 }
 
 function getConnectUrl() {
 	return getWebSocketUrl();
 }
 
+function resetConnection(reason = "reset") {
+	if (reconnectTimer) {
+		clearTimeout(reconnectTimer);
+		reconnectTimer = null;
+	}
+	if (!ws) return;
+	const socket = ws;
+	ws = null;
+	socket.onopen = null;
+	socket.onclose = null;
+	socket.onerror = null;
+	socket.onmessage = null;
+	try {
+		socket.close(1000, reason);
+	} catch {
+		// Ignore.
+	}
+}
+
 function connect() {
 	const wsUrl = getWebSocketUrl();
 	if (!wsUrl) {
-		setConnection(false);
+		setConnection(false, true);
+		return;
+	}
+	if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
 		return;
 	}
 
@@ -143,6 +185,7 @@ function handleMessage(message) {
 			const shouldScroll = currentSession.history.length === 0
 				&& currentSession.queuedInputs.length === 0
 				&& !currentSession.streamingText
+				&& !currentSession.streamingThinkingText
 				&& currentSession.activeTools.length === 0;
 			currentSession = normalizeSession(message.session);
 			hydrateCurrentSessionFromOverview();
@@ -208,18 +251,28 @@ function handleMessage(message) {
 	}
 }
 
-function setConnection(connected) {
+function setConnection(connected, suppressNotice = false) {
 	connectionStatusEl.textContent = connected ? "Connected" : authToken ? "Disconnected" : "Unauthenticated";
-	connectionStatusEl.className = `status-pill ${connected ? "connected" : "disconnected"}`;
+	connectionStatusEl.className = `status-pill clickable ${connected ? "connected" : "disconnected"}`;
+	connectionStatusEl.tabIndex = 0;
+	connectionStatusEl.setAttribute("role", "button");
+	connectionStatusEl.title = authToken
+		? connected
+			? "Connected. Click to view or replace the saved token."
+			: "Disconnected. Click to update the saved token."
+		: "Unauthenticated. Click to enter a server token.";
 	updateSidebarSummary();
 	renderInstallation();
 	updateControls();
-	if (!connected && authToken) showNotice("Disconnected from server. Reconnecting…", "error", false);
+	if (connected && noticeBarEl.textContent === "Disconnected from server. Reconnecting…") {
+		clearNotice();
+	}
+	if (!connected && authToken && !suppressNotice) showNotice("Disconnected from server. Reconnecting…", "error", false);
 }
 
 function updateSidebarSummary() {
 	if (!authToken) {
-		sidebarSummaryEl.textContent = "Open your toilet-pi admin URL to authenticate.";
+		sidebarSummaryEl.textContent = "Open your toilet-pi admin URL or click Unauthenticated to enter a token.";
 		return;
 	}
 	const connectedHosts = hosts.filter((host) => host.connected).length;
@@ -233,62 +286,118 @@ function updateSidebarSummary() {
 
 function renderInstallation() {
 	if (!installationPanelEl) return;
-	const adminUrl = getAdminUrl();
 	const connectUrl = getConnectUrl();
-	if (!authToken) {
-		installationPanelEl.innerHTML = "";
-		const hint = document.createElement("div");
-		hint.className = "install-hint";
-		hint.textContent = "Open the toilet-pi admin URL printed by the server. It contains #token=... and authenticates this browser automatically.";
-		installationPanelEl.appendChild(hint);
-		return;
-	}
-
 	installationPanelEl.innerHTML = "";
-	const copy = document.createElement("div");
-	copy.className = "install-copy";
-	copy.textContent = "Install the extension package, then register the client inside pi using the connect URL below.";
-	const actions = document.createElement("div");
-	actions.className = "install-actions";
-	const revealBtn = document.createElement("button");
-	revealBtn.type = "button";
-	revealBtn.textContent = installationSecretsVisible ? "Hide sensitive URLs" : "Reveal sensitive URLs";
-	revealBtn.onclick = () => {
-		installationSecretsVisible = !installationSecretsVisible;
-		renderInstallation();
-	};
-	actions.appendChild(revealBtn);
+
+	const installSection = document.createElement("section");
+	installSection.className = "install-section";
+	const installTitle = document.createElement("div");
+	installTitle.className = "install-copy";
+	installTitle.textContent = "Install package";
+	const installActions = document.createElement("div");
+	installActions.className = "install-actions";
+	const installCopyBtn = document.createElement("button");
+	installCopyBtn.type = "button";
+	installCopyBtn.textContent = "Copy";
+	installCopyBtn.onclick = () => copyText(`pi install git:https://github.com/mrexodia/toilet-pi`);
+	installActions.appendChild(installCopyBtn);
 	const installCode = document.createElement("pre");
 	installCode.className = "install-code";
-	installCode.textContent = "pi install <toilet-pi-package>\n/toilet-pi " + maskSensitive(connectUrl);
-	const adminCode = document.createElement("pre");
-	adminCode.className = "install-code";
-	adminCode.textContent = `Admin URL\n${maskSensitive(adminUrl)}\n\nConnect URL\n${maskSensitive(connectUrl)}`;
-	const hint = document.createElement("div");
-	hint.className = "install-hint";
-	hint.textContent = installationSecretsVisible
-		? "Sensitive URLs are visible. Hide them before screen sharing."
-		: "Sensitive URLs stay hidden until you explicitly reveal them.";
-	installationPanelEl.appendChild(copy);
-	installationPanelEl.appendChild(actions);
-	installationPanelEl.appendChild(installCode);
-	installationPanelEl.appendChild(adminCode);
-	installationPanelEl.appendChild(hint);
+	installCode.textContent = "pi install git:https://github.com/mrexodia/toilet-pi";
+	installSection.appendChild(installTitle);
+	installSection.appendChild(installActions);
+	installSection.appendChild(installCode);
+	installationPanelEl.appendChild(installSection);
+
+	const connectSection = document.createElement("section");
+	connectSection.className = "install-section";
+	const connectTitle = document.createElement("div");
+	connectTitle.className = "install-copy";
+	connectTitle.textContent = "Configure pi";
+	const connectActions = document.createElement("div");
+	connectActions.className = "install-actions";
+	const connectCopyBtn = document.createElement("button");
+	connectCopyBtn.type = "button";
+	connectCopyBtn.textContent = "Copy";
+	connectCopyBtn.disabled = !connectUrl;
+	connectCopyBtn.onclick = () => copyText(`/toilet-pi ${connectUrl || ""}`);
+	connectActions.appendChild(connectCopyBtn);
+	const connectCode = document.createElement("pre");
+	connectCode.className = "install-code";
+	connectCode.textContent = connectUrl ? `/toilet-pi ${connectUrl}` : "/toilet-pi wss://host/ws?token=...";
+	connectSection.appendChild(connectTitle);
+	connectSection.appendChild(connectActions);
+	connectSection.appendChild(connectCode);
+	installationPanelEl.appendChild(connectSection);
 }
 
-function maskSensitive(value) {
-	if (installationSecretsVisible) return value || "";
-	return value ? value.replace(/token=[^&#\s]+/g, "token=••••••••").replace(/#token=[^&#\s]+/g, "#token=••••••••") : "";
+async function copyText(text) {
+	const value = String(text || "");
+	if (!value) return;
+	try {
+		if (navigator.clipboard?.writeText) {
+			await navigator.clipboard.writeText(value);
+		} else {
+			const input = document.createElement("textarea");
+			input.value = value;
+			input.setAttribute("readonly", "true");
+			input.style.position = "fixed";
+			input.style.opacity = "0";
+			document.body.appendChild(input);
+			input.select();
+			document.execCommand("copy");
+			input.remove();
+		}
+		showNotice("Copied", "info");
+	} catch {
+		showNotice("Copy failed", "error");
+	}
+}
+
+function openAuthModal() {
+	closeInstallationModal();
+	if (authTokenInputEl) authTokenInputEl.value = authToken || "";
+	if (authForgetBtnEl) authForgetBtnEl.disabled = !authToken;
+	bodyEl.classList.add("auth-open");
+	requestAnimationFrame(() => authTokenInputEl?.focus());
+}
+
+function closeAuthModal() {
+	bodyEl.classList.remove("auth-open");
+}
+
+function resetAuthState() {
+	hosts = [];
+	currentSessionGuid = null;
+	currentSession = createEmptySession(null);
+	selectedProjectContext = null;
+	pendingLaunchRequests.clear();
+	resetConnection("reauth");
+	setConnection(false, true);
+	renderBrowserList();
+	updateHeader();
+	updateControls();
+	renderSession({ forceScroll: true });
+}
+
+function applyAuthToken(token) {
+	persistAuthToken(token);
+	resetAuthState();
+	if (authToken) connect();
+}
+
+function forgetAuthToken() {
+	persistAuthToken(null);
+	resetAuthState();
 }
 
 function openInstallationModal() {
-	installationSecretsVisible = false;
+	closeAuthModal();
 	renderInstallation();
 	bodyEl.classList.add("installation-open");
 }
 
 function closeInstallationModal() {
-	installationSecretsVisible = false;
 	renderInstallation();
 	bodyEl.classList.remove("installation-open");
 }
@@ -552,8 +661,8 @@ function renderSession({ forceScroll = false } = {}) {
 		fragments.push(renderActiveTool(tool));
 	}
 
-	if (currentSession.streamingText) {
-		fragments.push(renderAssistantStream(currentSession.streamingText));
+	if (currentSession.streamingText || currentSession.streamingThinkingText) {
+		fragments.push(renderAssistantStream(currentSession.streamingText, currentSession.streamingThinkingText));
 	}
 
 	if (fragments.length === 0) {
@@ -591,6 +700,8 @@ function renderMessage(message) {
 			message.text || "",
 			message.timestamp,
 			getAssistantMessageStatus(message),
+			message.thinkingText || "",
+			getThinkingKey(message),
 		);
 	}
 	if (message.role === "toolResult") {
@@ -762,8 +873,8 @@ function shortenToolPath(value) {
 	return path || "";
 }
 
-function renderAssistantStream(text) {
-	return buildMessageElement("assistant streaming", text || "", null);
+function renderAssistantStream(text, thinkingText = "") {
+	return buildMessageElement("assistant streaming", text || "", null, "", thinkingText || "", `stream:${currentSessionGuid || "none"}`);
 }
 
 function getAssistantMessageStatus(message) {
@@ -789,7 +900,7 @@ function renderSystemMessage(text) {
 	return row;
 }
 
-function buildMessageElement(className, text, timestamp, status = "") {
+function buildMessageElement(className, text, timestamp, status = "", thinkingText = "", thinkingKey = "") {
 	const row = document.createElement("div");
 	row.className = `message-row ${className}`;
 	const el = document.createElement("div");
@@ -803,11 +914,44 @@ function buildMessageElement(className, text, timestamp, status = "") {
 		ts.textContent = parts.join(" • ");
 		el.appendChild(ts);
 	}
-	const textEl = document.createElement("div");
-	textEl.textContent = text || "";
-	el.appendChild(textEl);
+	if (thinkingText) {
+		const thinkingEl = document.createElement("details");
+		thinkingEl.className = "thinking-block";
+		thinkingEl.open = !thinkingKey || !collapsedThinkingKeys.has(thinkingKey);
+		if (thinkingKey) {
+			thinkingEl.addEventListener("toggle", () => {
+				if (thinkingEl.open) collapsedThinkingKeys.delete(thinkingKey);
+				else collapsedThinkingKeys.add(thinkingKey);
+			});
+		}
+		const summaryEl = document.createElement("summary");
+		summaryEl.className = "thinking-label";
+		summaryEl.textContent = "Thinking";
+		const textEl = document.createElement("div");
+		textEl.className = "thinking-text";
+		textEl.textContent = thinkingText;
+		thinkingEl.appendChild(summaryEl);
+		thinkingEl.appendChild(textEl);
+		el.appendChild(thinkingEl);
+	}
+	if (text) {
+		const textEl = document.createElement("div");
+		textEl.className = "message-text";
+		textEl.textContent = text || "";
+		el.appendChild(textEl);
+	}
 	row.appendChild(el);
 	return row;
+}
+
+function getThinkingKey(message) {
+	if (!message || typeof message !== "object") return "";
+	return [
+		message.role || "assistant",
+		message.timestamp || "",
+		message.text || "",
+		message.thinkingText || "",
+	].join("|");
 }
 
 function isNearBottom() {
@@ -901,15 +1045,20 @@ function applySessionEvent(session, event) {
 	switch (event.type) {
 		case "message":
 			if (event.message) session.history.push(event.message);
-			if (event.message?.role === "assistant") session.streamingText = null;
+			if (event.message?.role === "assistant") {
+				session.streamingText = null;
+				session.streamingThinkingText = null;
+			}
 			break;
 
 		case "assistant_stream_start":
 			session.streamingText = "";
+			session.streamingThinkingText = "";
 			break;
 
 		case "assistant_stream_update":
 			session.streamingText = event.text || "";
+			session.streamingThinkingText = event.thinkingText || "";
 			break;
 
 		case "assistant_stream_end":
@@ -933,6 +1082,7 @@ function applySessionEvent(session, event) {
 			session.busy = !!event.busy;
 			if (!session.busy) {
 				session.streamingText = null;
+				session.streamingThinkingText = null;
 				session.activeTools = [];
 			}
 			break;
@@ -981,6 +1131,7 @@ function createEmptySession(sessionGuid) {
 		busy: false,
 		history: [],
 		streamingText: null,
+		streamingThinkingText: null,
 		activeTools: [],
 		queuedInputs: [],
 	};
@@ -998,6 +1149,7 @@ function normalizeSession(session) {
 		busy: !!session?.busy,
 		history: Array.isArray(session?.history) ? session.history : [],
 		streamingText: typeof session?.streamingText === "string" ? session.streamingText : null,
+		streamingThinkingText: typeof session?.streamingThinkingText === "string" ? session.streamingThinkingText : null,
 		activeTools: Array.isArray(session?.activeTools) ? session.activeTools : [],
 		queuedInputs: Array.isArray(session?.queuedInputs) ? session.queuedInputs : [],
 	};
@@ -1017,14 +1169,23 @@ function clampText(value, max = 120) {
 	return `${text.slice(0, Math.max(0, max - 1))}…`;
 }
 
+function clearNotice() {
+	if (noticeTimer) {
+		clearTimeout(noticeTimer);
+		noticeTimer = null;
+	}
+	noticeBarEl.textContent = "";
+	noticeBarEl.className = "notice-bar";
+}
+
 function showNotice(message, level = "info", autoHide = true) {
 	if (noticeTimer) clearTimeout(noticeTimer);
+	noticeTimer = null;
 	noticeBarEl.textContent = message;
 	noticeBarEl.className = `notice-bar ${level}`;
 	if (autoHide) {
 		noticeTimer = setTimeout(() => {
-			noticeBarEl.textContent = "";
-			noticeBarEl.className = "notice-bar";
+			clearNotice();
 		}, 3600);
 	}
 }
@@ -1097,6 +1258,35 @@ viewProjectsBtnEl.onclick = () => {
 menuBtnEl.onclick = () => openSidebar();
 sidebarCloseBtnEl.onclick = () => closeSidebar();
 sidebarScrimEl.onclick = () => closeSidebar();
+connectionStatusEl.onclick = () => openAuthModal();
+connectionStatusEl.onkeydown = (event) => {
+	if (event.key === "Enter" || event.key === " ") {
+		event.preventDefault();
+		openAuthModal();
+	}
+};
+authCloseBtnEl.onclick = () => closeAuthModal();
+authCancelBtnEl.onclick = () => closeAuthModal();
+authForgetBtnEl.onclick = () => {
+	forgetAuthToken();
+	closeAuthModal();
+	showNotice("Saved token removed", "info");
+};
+authModalScrimEl.onclick = (event) => {
+	if (event.target === authModalScrimEl) closeAuthModal();
+};
+authFormEl.onsubmit = (event) => {
+	event.preventDefault();
+	const token = authTokenInputEl.value.trim();
+	if (!token) {
+		showNotice("Enter a server token", "error");
+		authTokenInputEl.focus();
+		return;
+	}
+	applyAuthToken(token);
+	closeAuthModal();
+	showNotice("Saved token. Connecting…", "info");
+};
 installationBtnEl.onclick = () => openInstallationModal();
 installationCloseBtnEl.onclick = () => closeInstallationModal();
 installationModalScrimEl.onclick = (event) => {
@@ -1138,6 +1328,10 @@ messagesEl.addEventListener("scroll", () => {
 });
 
 window.addEventListener("keydown", (event) => {
+	if (event.key === "Escape" && bodyEl.classList.contains("auth-open")) {
+		closeAuthModal();
+		return;
+	}
 	if (event.key === "Escape" && bodyEl.classList.contains("installation-open")) {
 		closeInstallationModal();
 		return;

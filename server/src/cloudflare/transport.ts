@@ -1,29 +1,23 @@
 import type { Transport } from '../shared/types.js'
 
-export interface DurableObjectStateLike {
-  getWebSockets(tag?: string): WebSocket[]
-}
-
-export function createCloudflareTransport(state: DurableObjectStateLike): Transport {
-  function getConnection(connId: string): WebSocket | null {
-    return state.getWebSockets(connId)[0] || null
-  }
-
+export function createCloudflareTransport(connections: Map<string, WebSocket>): Transport {
   return {
     send(connId, payload) {
-      const connection = getConnection(connId)
+      const connection = connections.get(connId)
       if (!connection) return false
       try {
         connection.send(JSON.stringify(payload))
         return true
       } catch {
+        connections.delete(connId)
         return false
       }
     },
 
     close(connId, code, reason) {
-      const connection = getConnection(connId)
+      const connection = connections.get(connId)
       if (!connection) return
+      connections.delete(connId)
       try {
         connection.close(code, reason)
       } catch {
@@ -32,7 +26,7 @@ export function createCloudflareTransport(state: DurableObjectStateLike): Transp
     },
 
     isOpen(connId) {
-      return !!getConnection(connId)
+      return connections.has(connId)
     },
   }
 }

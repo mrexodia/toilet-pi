@@ -389,6 +389,7 @@ export function createServerCore(
         session.backgroundConn = null
         session.busy = false
         session.streamingText = null
+        session.streamingThinkingText = null
         session.activeTools.clear()
         session.runnerStatus = 'released'
         promoteSessionOwner(session)
@@ -449,6 +450,8 @@ export function createServerCore(
       : session.history
     session.streamingText =
       typeof message.streamingText === 'string' ? message.streamingText : null
+    session.streamingThinkingText =
+      typeof message.streamingThinkingText === 'string' ? message.streamingThinkingText : null
     session.runnerStatus = 'running'
     session.updatedAt = Date.now()
     clearFinishedTools(session)
@@ -517,15 +520,21 @@ export function createServerCore(
         if (event.message?.role === 'user' && event.message.remoteInputId) {
           removeQueuedInput(session, event.message.remoteInputId)
         }
-        if (event.message?.role === 'assistant') session.streamingText = null
+        if (event.message?.role === 'assistant') {
+          session.streamingText = null
+          session.streamingThinkingText = null
+        }
         break
 
       case 'assistant_stream_start':
         session.streamingText = ''
+        session.streamingThinkingText = ''
         break
 
       case 'assistant_stream_update':
         session.streamingText = typeof event.text === 'string' ? event.text : ''
+        session.streamingThinkingText =
+          typeof event.thinkingText === 'string' ? event.thinkingText : ''
         break
 
       case 'assistant_stream_end':
@@ -549,6 +558,7 @@ export function createServerCore(
         session.busy = !!event.busy
         if (!session.busy) {
           session.streamingText = null
+          session.streamingThinkingText = null
           session.activeTools.clear()
         }
         break
@@ -635,6 +645,7 @@ export function createServerCore(
     if (client.role === 'background') {
       session.busy = false
       session.streamingText = null
+      session.streamingThinkingText = null
       session.activeTools.clear()
       session.runnerStatus = 'exited'
     }
@@ -701,6 +712,7 @@ export function createServerCore(
       busy: false,
       history: [],
       streamingText: null,
+      streamingThinkingText: null,
       activeTools: new Map<string, ActiveTool>(),
       runnerStatus: null,
       pendingInputs: [],
@@ -721,6 +733,7 @@ export function createServerCore(
       busy: false,
       history: [],
       streamingText: null,
+      streamingThinkingText: null,
       activeTools: [],
       queuedInputs: [],
     }
@@ -741,6 +754,7 @@ export function createServerCore(
       busy: session.busy,
       history: session.history,
       streamingText: session.streamingText,
+      streamingThinkingText: session.streamingThinkingText,
       activeTools: Array.from(session.activeTools.values()),
       queuedInputs: session.queuedInputs,
     }

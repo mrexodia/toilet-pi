@@ -13,6 +13,7 @@ export interface AssistantHistoryMessage {
   role: 'assistant'
   timestamp?: number
   text: string
+  thinkingText?: string
   stopReason?: string
 }
 
@@ -56,6 +57,7 @@ export interface SessionSnapshot {
   busy: boolean
   history: SanitizedMessage[]
   streamingText: string | null
+  streamingThinkingText: string | null
   activeTools: ActiveToolSnapshot[]
   queuedInputs: QueuedInput[]
 }
@@ -94,6 +96,7 @@ export interface AssistantStreamStartEvent {
 export interface AssistantStreamUpdateEvent {
   type: 'assistant_stream_update'
   text: string
+  thinkingText?: string | null
 }
 
 export interface AssistantStreamEndEvent {
@@ -205,6 +208,7 @@ export interface HelloRunnerMessage {
   model?: string | null
   busy?: boolean
   streamingText?: string | null
+  streamingThinkingText?: string | null
   history?: SanitizedMessage[]
 }
 

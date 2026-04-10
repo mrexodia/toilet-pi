@@ -97,6 +97,7 @@ export interface SessionState {
   busy: boolean
   history: SanitizedMessage[]
   streamingText: string | null
+  streamingThinkingText: string | null
   activeTools: Map<string, ActiveTool>
   runnerStatus: string | null
   pendingInputs: PendingInput[]
