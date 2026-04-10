@@ -1,0 +1,25 @@
+{
+  "name": "toilet-pi-server",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "tsx src/node/entry.ts",
+    "dev": "tsx --watch src/node/entry.ts",
+    "build": "tsc",
+    "check": "tsc --noEmit",
+    "dev:cf": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.8.3",
+    "vitest": "^3.1.2",
+    "wrangler": "^3.114.0"
+  }
+}

@@ -1,0 +1,21 @@
+name = "toilet-pi"
+main = "src/cloudflare/entry.ts"
+compatibility_date = "2025-04-01"
+
+[assets]
+directory = "./public"
+
+[durable_objects]
+bindings = [
+  { name = "TOILET_PI_HUB", class_name = "ToiletPiHub" }
+]
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["ToiletPiHub"]
+
+[vars]
+TOILET_PI_PUBLIC_URL = ""
+TOILET_PI_WS_PATH = "/ws"
+TOILET_PI_SERVER_HISTORY_LIMIT = "200"
+# TOILET_PI_SERVER_TOKEN: set via `wrangler secret put`

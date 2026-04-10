@@ -135,13 +135,13 @@ Current capabilities:
 
 ## Files
 
-- `server.js` - central HTTP/WebSocket server
+- `server/` - TypeScript server subproject for Node.js and Cloudflare Workers
+- `server/public/` - browser UI
 - `extension.ts` - Toilet-Pi pi extension used by interactive and background pi, and the package entrypoint for `pi install`
 - `supervisor.js` - one-per-machine supervisor
 - `session-scanner.js` - scans local pi session files
-- `public/` - browser UI
 - `test-client.js` - raw protocol debug client
-- `V2-PLAN.md` - architecture plan
+- `V2-PLAN.md` / `V3-PLAN.md` - architecture plans
 
 ## Quick start
 
@@ -149,7 +149,7 @@ Current capabilities:
 
 ```bash
 cd ~/Projects/toilet-pi
-npm install
+npm run setup
 ```
 
 ### 2. Start the central server

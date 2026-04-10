@@ -4,7 +4,7 @@
 
 ```bash
 cd ~/Projects/toilet-pi
-npm install
+npm run setup
 ```
 
 ## 2. Start the central server
