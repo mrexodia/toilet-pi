@@ -15,7 +15,7 @@
     "deploy": "npm run deploy --prefix server",
     "server": "npm start --prefix server",
     "supervisor": "node supervisor.js",
-    "client": "node test-client.js",
+    "client": "node scripts/test-client.js",
     "setup": "npm install && npm install --prefix server"
   },
   "dependencies": {
@@ -29,5 +29,5 @@
     "daemon"
   ],
   "author": "",
-  "license": "MIT"
+  "license": "MPL-2.0"
 }

@@ -281,6 +281,7 @@ describe('createServerCore', () => {
         busy: false,
         history: [],
         streamingText: null,
+        streamingThinkingText: null,
         activeTools: [],
         queuedInputs: [],
       },

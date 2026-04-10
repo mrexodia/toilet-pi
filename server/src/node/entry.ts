@@ -114,7 +114,7 @@ wss.on('connection', (ws, req) => {
 
 server.listen(PORT, () => {
   console.log('='.repeat(60))
-  console.log('toilet-pi v3 server')
+  console.log('toilet-pi server')
   console.log('='.repeat(60))
   console.log(`Web UI: ${PUBLIC_URL}`)
   console.log(`WebSocket: ${PUBLIC_SERVER_URL}`)

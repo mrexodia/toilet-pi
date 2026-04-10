@@ -140,8 +140,9 @@ Current capabilities:
 - `extension.ts` - Toilet-Pi pi extension used by interactive and background pi, and the package entrypoint for `pi install`
 - `supervisor.js` - one-per-machine supervisor
 - `session-scanner.js` - scans local pi session files
-- `test-client.js` - raw protocol debug client
-- `V2-PLAN.md` / `V3-PLAN.md` - architecture plans
+- `scripts/test-client.js` - raw protocol debug client
+- `docs/quickstart.md` - short setup guide
+- `docs/archive/v2-plan.md` / `docs/archive/v3-plan.md` - archived architecture plans
 
 ## Quick start
 
@@ -426,4 +427,4 @@ Debug client commands:
 
 ## License
 
-MIT
+MPL-2.0
