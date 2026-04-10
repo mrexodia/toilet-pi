@@ -27,7 +27,6 @@ export interface ServerConfig {
   serverToken: string
   publicUrl: string
   publicServerUrl: string
-  maxSessionHistory: number
   wsPath: string
   log?: (message: string) => void
 }

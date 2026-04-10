@@ -15,13 +15,6 @@ const WS_PATH = process.env.TOILET_PI_WS_PATH || '/ws'
 const PUBLIC_URL = process.env.TOILET_PI_PUBLIC_URL || `http://localhost:${PORT}`
 const PUBLIC_SERVER_URL = getPublicServerUrl(PUBLIC_URL, WS_PATH)
 const PUBLIC_DIR = fileURLToPath(new URL('../../public/', import.meta.url))
-const MAX_SESSION_HISTORY = Math.max(
-  1,
-  Number.parseInt(
-    process.env.TOILET_PI_SERVER_HISTORY_LIMIT || process.env.TOILET_PI_HISTORY_LIMIT || '200',
-    10,
-  ) || 200,
-)
 const SERVER_TOKEN = await ensureServerToken()
 
 const transport = createNodeTransport()
@@ -33,7 +26,6 @@ const config: ServerConfig = {
   serverToken: SERVER_TOKEN,
   publicUrl: PUBLIC_URL,
   publicServerUrl: PUBLIC_SERVER_URL,
-  maxSessionHistory: MAX_SESSION_HISTORY,
   wsPath: WS_PATH,
   log,
 }

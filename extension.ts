@@ -18,14 +18,6 @@ const ROLE =
 const REQUIRE_SERVER = ROLE === "background";
 const STATUS_KEY = "toilet-pi";
 const LAUNCH_REQUEST_ID = process.env.TOILET_PI_LAUNCH_REQUEST_ID || null;
-const MAX_HISTORY_MESSAGES = Number.parseInt(
-  process.env.TOILET_PI_HISTORY_LIMIT || "200",
-  10,
-);
-const MAX_MESSAGE_TEXT = Number.parseInt(
-  process.env.TOILET_PI_MESSAGE_LIMIT || "4000",
-  10,
-);
 
 interface ServerMessage {
   type: "input" | "abort" | "abort_and_release";
@@ -144,7 +136,7 @@ export default function (pi: ExtensionAPI) {
     const branch = context.sessionManager.getBranch();
     const history: SanitizedMessage[] = [];
     const toolCalls = new Map<string, ToolCallInfo>();
-    for (const entry of branch.slice(-MAX_HISTORY_MESSAGES)) {
+    for (const entry of branch) {
       if (entry.type !== "message") continue;
       for (const toolCall of extractToolCalls(entry.message?.content)) {
         toolCalls.set(toolCall.toolCallId, toolCall);
@@ -727,16 +719,9 @@ function extractContentPart(part: any) {
 }
 
 function normalizeText(text: string) {
-  const normalized = String(text || "")
+  return String(text || "")
     .replace(/\r\n/g, "\n")
     .trim();
-  if (!normalized) return "";
-  return truncateText(normalized);
-}
-
-function truncateText(text: string) {
-  if (text.length <= MAX_MESSAGE_TEXT) return text;
-  return `${text.slice(0, MAX_MESSAGE_TEXT)}\n\n[truncated for remote view]`;
 }
 
 function parseToolArguments(argumentsValue: any) {
@@ -751,9 +736,7 @@ function parseToolArguments(argumentsValue: any) {
 function sanitizeStructuredData(value: any, depth = 0): any {
   if (value == null) return value;
   if (typeof value === "string") {
-    const normalized = value.replace(/\r\n/g, "\n");
-    if (normalized.length <= MAX_MESSAGE_TEXT) return normalized;
-    return `${normalized.slice(0, MAX_MESSAGE_TEXT)}\n\n[truncated for remote view]`;
+    return value.replace(/\r\n/g, "\n");
   }
   if (typeof value === "number" || typeof value === "boolean") return value;
   if (depth >= 5) return "[truncated nested data]";

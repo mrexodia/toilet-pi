@@ -78,7 +78,6 @@ function createTestServer() {
     serverToken: 'token',
     publicUrl: 'http://localhost:3457',
     publicServerUrl: 'ws://localhost:3457/ws',
-    maxSessionHistory: 200,
     wsPath: '/ws',
   }
   const core = createServerCore(transport, timers, config)

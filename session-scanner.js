@@ -4,10 +4,6 @@ import { homedir } from "node:os";
 import path from "node:path";
 import readline from "node:readline";
 
-const DEFAULT_HISTORY_LIMIT = Number.parseInt(
-  process.env.TOILET_PI_HISTORY_LIMIT || "200",
-  10,
-);
 const DEFAULT_MESSAGE_LIMIT = Number.parseInt(
   process.env.TOILET_PI_MESSAGE_LIMIT || "4000",
   10,
@@ -61,11 +57,6 @@ export async function readSessionSnapshot(sessionFile, options = {}) {
   let sessionName = null;
   let model = null;
   const history = [];
-  const maxMessages = Math.max(
-    1,
-    Number.parseInt(String(options.maxMessages || DEFAULT_HISTORY_LIMIT), 10) ||
-      DEFAULT_HISTORY_LIMIT,
-  );
 
   const stream = createReadStream(resolvedFile, { encoding: "utf8" });
   const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
@@ -123,7 +114,7 @@ export async function readSessionSnapshot(sessionFile, options = {}) {
     cwd: header.cwd || null,
     sessionName,
     model,
-    history: history.slice(-maxMessages),
+    history,
     updatedAt: info.mtimeMs,
   };
 }

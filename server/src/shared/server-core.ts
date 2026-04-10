@@ -445,9 +445,7 @@ export function createServerCore(
       }) || session.preview
     session.model = message.model || session.model
     session.busy = !!message.busy
-    session.history = Array.isArray(message.history)
-      ? message.history.slice(-config.maxSessionHistory)
-      : session.history
+    session.history = Array.isArray(message.history) ? message.history : session.history
     session.streamingText =
       typeof message.streamingText === 'string' ? message.streamingText : null
     session.streamingThinkingText =
@@ -515,7 +513,6 @@ export function createServerCore(
       case 'message':
         if (event.message) {
           session.history.push(event.message)
-          trimSessionHistory(session)
         }
         if (event.message?.role === 'user' && event.message.remoteInputId) {
           removeQueuedInput(session, event.message.remoteInputId)
@@ -760,13 +757,6 @@ export function createServerCore(
     }
   }
 
-  function trimSessionHistory(session: SessionState): void {
-    if (!Array.isArray(session.history) || session.history.length <= config.maxSessionHistory) {
-      return
-    }
-    session.history.splice(0, session.history.length - config.maxSessionHistory)
-  }
-
   function hasConnectedSupervisor(hostId: string | null): boolean {
     if (!hostId) return false
     const host = hosts.get(hostId)
@@ -867,7 +857,7 @@ export function createServerCore(
 
     const loadedHistory = Array.isArray(snapshot.history) ? snapshot.history : []
     if (session.history.length === 0 || loadedHistory.length > session.history.length) {
-      session.history = loadedHistory.slice(-config.maxSessionHistory)
+      session.history = loadedHistory
     }
 
     session.preview = getSessionPreview({ history: session.history }) || session.preview

@@ -24,7 +24,6 @@ interface Env {
   ASSETS: AssetFetcher
   TOILET_PI_HUB: DurableObjectNamespaceLike
   TOILET_PI_SERVER_TOKEN: string
-  TOILET_PI_SERVER_HISTORY_LIMIT?: string
 }
 
 type AcceptedWebSocket = WebSocket & {
@@ -53,10 +52,6 @@ export class ToiletPiHub {
       serverToken: env.TOILET_PI_SERVER_TOKEN,
       publicUrl: '',
       publicServerUrl: '',
-      maxSessionHistory: Math.max(
-        1,
-        Number.parseInt(env.TOILET_PI_SERVER_HISTORY_LIMIT || '200', 10) || 200,
-      ),
       wsPath: DEFAULT_WS_PATH,
       log: (message) => console.log(`[${new Date().toISOString()}] ${message}`),
     }
