@@ -12,6 +12,7 @@ let toolsExpanded = false;
 let stickToBottom = true;
 let isAuthenticated = false;
 let machineConnectToken = null;
+let isMintingMachineConnectToken = false;
 const pendingLaunchRequests = new Map();
 const collapsedThinkingKeys = new Set();
 
@@ -201,11 +202,13 @@ async function generateMachineConnectToken({ copyAfter = false } = {}) {
 		showNotice("Sign in to mint a machine connect URL", "error");
 		return null;
 	}
+	if (isMintingMachineConnectToken) return null;
 
+	isMintingMachineConnectToken = true;
+	renderInstallation();
 	try {
 		const response = await requestJson(getAuthPath("/auth/machine-token"), { method: "POST" });
 		machineConnectToken = typeof response?.token === "string" ? response.token : null;
-		renderInstallation();
 		if (!machineConnectToken) {
 			showNotice("Server did not return a machine connect token", "error");
 			return null;
@@ -217,6 +220,9 @@ async function generateMachineConnectToken({ copyAfter = false } = {}) {
 	} catch (error) {
 		showNotice(error instanceof Error ? error.message : "Failed to mint machine connect URL", "error");
 		return null;
+	} finally {
+		isMintingMachineConnectToken = false;
+		renderInstallation();
 	}
 }
 
@@ -460,17 +466,24 @@ function renderInstallation() {
 	connectTitle.textContent = "Configure a machine";
 	const connectHint = document.createElement("div");
 	connectHint.className = "install-hint";
-	connectHint.textContent = connectUrl
-		? "This machine-scoped connect URL is meant for one computer. Generate a fresh one for each new machine you set up."
-		: isAuthenticated
-			? "Generate a machine-scoped connect URL for the computer you are setting up."
-			: "Sign in first, then mint a machine-scoped connect URL.";
+	connectHint.textContent = isMintingMachineConnectToken
+		? "Minting a machine-scoped connect URL…"
+		: connectUrl
+			? "This machine-scoped connect URL is meant for one computer. Generate a fresh one for each new machine you set up."
+			: isAuthenticated
+				? "Generate a machine-scoped connect URL for the computer you are setting up."
+				: "Sign in first, then mint a machine-scoped connect URL.";
 	const connectActions = document.createElement("div");
 	connectActions.className = "install-actions";
 	if (isAuthenticated) {
 		const generateBtn = document.createElement("button");
 		generateBtn.type = "button";
-		generateBtn.textContent = connectUrl ? "Generate new machine URL" : "Generate machine URL";
+		generateBtn.textContent = isMintingMachineConnectToken
+			? "Generating…"
+			: connectUrl
+				? "Generate new machine URL"
+				: "Generate machine URL";
+		generateBtn.disabled = isMintingMachineConnectToken;
 		generateBtn.onclick = async () => {
 			await generateMachineConnectToken();
 		};
@@ -479,7 +492,7 @@ function renderInstallation() {
 		const copyBtn = document.createElement("button");
 		copyBtn.type = "button";
 		copyBtn.textContent = "Copy";
-		copyBtn.disabled = !connectUrl;
+		copyBtn.disabled = !connectUrl || isMintingMachineConnectToken;
 		copyBtn.onclick = async () => {
 			if (!getConnectUrl()) {
 				const token = await generateMachineConnectToken();
@@ -497,11 +510,13 @@ function renderInstallation() {
 	}
 	const connectCode = document.createElement("pre");
 	connectCode.className = "install-code";
-	connectCode.textContent = connectUrl
-		? `/toilet-pi ${connectUrl}`
-		: isAuthenticated
-			? "Generate a machine connect URL, then paste it into `/toilet-pi` on that computer."
-			: "Sign in to generate a machine connect URL.";
+	connectCode.textContent = isMintingMachineConnectToken
+		? "Minting machine connect URL…"
+		: connectUrl
+			? `/toilet-pi ${connectUrl}`
+			: isAuthenticated
+				? "Generate a machine connect URL, then paste it into `/toilet-pi` on that computer."
+				: "Sign in to generate a machine connect URL.";
 	connectSection.appendChild(connectTitle);
 	connectSection.appendChild(connectHint);
 	connectSection.appendChild(connectActions);
@@ -606,11 +621,14 @@ async function forgetAuthToken() {
 	return logoutOfServer();
 }
 
-function openInstallationModal() {
+async function openInstallationModal() {
 	closeAuthModal();
 	closeHeaderMenu();
 	renderInstallation();
 	bodyEl.classList.add("installation-open");
+	if (isAuthenticated && !machineConnectToken && !isMintingMachineConnectToken) {
+		await generateMachineConnectToken();
+	}
 }
 
 function closeInstallationModal() {
