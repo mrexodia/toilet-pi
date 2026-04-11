@@ -1037,30 +1037,58 @@ function renderHistoryFragments(session, summary) {
 	}
 
 	const fragments = [];
-	let toolBuffer = [];
-	const flushToolBuffer = () => {
-		if (!toolBuffer.length) return;
-		fragments.push(renderCollapsedHistoryToolSummary(toolBuffer));
-		toolBuffer = [];
+	let turnPhaseBuffer = [];
+	let inCollapsedTurn = false;
+
+	const flushTurnPhaseBuffer = () => {
+		if (!turnPhaseBuffer.length) return;
+		fragments.push(renderCollapsedHistoryTurnSummary(turnPhaseBuffer));
+		turnPhaseBuffer = [];
 	};
 
 	for (const message of history) {
-		if (message?.role === "toolResult") {
-			toolBuffer.push(message);
+		if (message?.role === "user") {
+			flushTurnPhaseBuffer();
+			inCollapsedTurn = true;
+			fragments.push(renderMessage(message));
 			continue;
 		}
-		flushToolBuffer();
+
+		if (isCollapsedTurnPhaseMessage(message)) {
+			turnPhaseBuffer.push(message);
+			inCollapsedTurn = true;
+			continue;
+		}
+
+		if (message?.role === "assistant") {
+			flushTurnPhaseBuffer();
+			fragments.push(renderMessage(message));
+			inCollapsedTurn = false;
+			continue;
+		}
+
+		flushTurnPhaseBuffer();
 		fragments.push(renderMessage(message));
+		inCollapsedTurn = false;
 	}
-	flushToolBuffer();
+
+	if (inCollapsedTurn) flushTurnPhaseBuffer();
 	return fragments;
 }
 
-function renderCollapsedHistoryToolSummary(messages) {
-	const count = Array.isArray(messages) ? messages.length : 0;
-	const errorCount = Array.isArray(messages)
-		? messages.filter((message) => !!message?.isError).length
-		: 0;
+function isCollapsedTurnPhaseMessage(message) {
+	if (!message || typeof message !== "object") return false;
+	if (message.role === "toolResult") return true;
+	return message.role === "assistant" && message.stopReason === "toolUse";
+}
+
+function renderCollapsedHistoryTurnSummary(messages) {
+	const toolMessages = Array.isArray(messages)
+		? messages.filter((message) => message?.role === "toolResult")
+		: [];
+	const count = toolMessages.length;
+	const errorCount = toolMessages.filter((message) => !!message?.isError).length;
+	const detail = getCollapsedHistoryTurnDetail(messages);
 	const row = document.createElement("div");
 	row.className = "message-row tool";
 	const el = document.createElement("div");
@@ -1069,15 +1097,41 @@ function renderCollapsedHistoryToolSummary(messages) {
 	headerEl.className = "tool-header";
 	headerEl.textContent = formatCollapsedHistoryToolSummaryText(count, errorCount);
 	el.appendChild(headerEl);
+	if (detail) {
+		const textEl = document.createElement("div");
+		textEl.className = "message-text";
+		textEl.textContent = detail;
+		el.appendChild(textEl);
+	}
 	row.appendChild(el);
 	return row;
+}
+
+function getCollapsedHistoryTurnDetail(messages) {
+	if (!Array.isArray(messages) || messages.length === 0) return "";
+	for (let i = messages.length - 1; i >= 0; i -= 1) {
+		const message = messages[i];
+		if (message?.role === "assistant" && message?.thinkingText) {
+			return `Thinking: ${collapseThinkingPreview(message.thinkingText)}`;
+		}
+		if (message?.role === "toolResult") {
+			const label = formatToolHeader(message);
+			if (message?.isError) return `${label} • error`;
+			return label;
+		}
+	}
+	return "Working…";
 }
 
 function formatCollapsedHistoryToolSummaryText(count, errorCount) {
 	const safeCount = Math.max(0, Number(count || 0));
 	const safeErrors = Math.max(0, Number(errorCount || 0));
-	const toolLabel = safeCount === 1 ? "1 tool called" : `${safeCount} tools called`;
-	if (!safeErrors) return toolLabel;
+	const toolLabel = safeCount <= 0
+		? "Working"
+		: safeCount === 1
+			? "1 tool called"
+			: `${safeCount} tools called`;
+		if (!safeErrors) return toolLabel;
 	return `${toolLabel} • ${safeErrors} error${safeErrors === 1 ? "" : "s"}`;
 }
 
