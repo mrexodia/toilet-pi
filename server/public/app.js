@@ -8,7 +8,6 @@ let currentView = "sessions";
 let currentSessionGuid = null;
 let currentSession = createEmptySession(null);
 let selectedProjectContext = null;
-let toolsExpanded = false;
 let stickToBottom = true;
 let isAuthenticated = false;
 let machineConnectToken = null;
@@ -16,6 +15,7 @@ let isMintingMachineConnectToken = false;
 const pendingLaunchRequests = new Map();
 const thinkingOpenStateByKey = new Map();
 const collapsedThinkingSessions = new Set();
+const expandedToolKeys = new Set();
 
 const bodyEl = document.body;
 const sidebarSummaryEl = document.getElementById("sidebar-summary");
@@ -50,7 +50,6 @@ const sessionSubtitleEl = document.getElementById("session-subtitle");
 const sessionPathEl = document.getElementById("session-path");
 const sessionWorkingIndicatorEl = document.getElementById("session-working-indicator");
 const headerMenuEl = document.getElementById("header-menu");
-const toolsExpandBtnEl = document.getElementById("tools-expand-btn");
 const newSessionBtnEl = document.getElementById("new-session-btn");
 const newSessionFabEl = document.getElementById("new-session-fab");
 const killSessionBtnEl = document.getElementById("kill-session-btn");
@@ -991,26 +990,19 @@ function buildToolElement(tool, options = {}) {
 	const isExcludedBash = isToolExcludedFromContext(tool);
 	el.className = `message tool ${toolStateClass}${isExcludedBash ? " excluded" : ""}`.trim();
 
+	const toolKey = getToolUiKey(tool, options);
+	const expanded = isToolExpanded(tool, options, toolKey);
+
 	const headerEl = document.createElement("div");
 	headerEl.className = "tool-header";
 	headerEl.textContent = formatToolHeader(tool);
 	el.appendChild(headerEl);
 
-	const body = formatToolBody(tool, options.isActive);
-	if (body) {
-		const bodyEl = document.createElement("div");
-		bodyEl.className = "tool-body";
-		bodyEl.textContent = body;
-		el.appendChild(bodyEl);
-	}
+	const bodyEl = createToolBodyElement(tool, options.isActive, expanded);
+	if (bodyEl) el.appendChild(bodyEl);
 
-	const footer = formatToolFooter(tool, options.isActive);
-	if (footer) {
-		const footerEl = document.createElement("div");
-		footerEl.className = "tool-footer";
-		footerEl.textContent = footer;
-		el.appendChild(footerEl);
-	}
+	const footerEl = createToolFooterElement(tool, options, toolKey, expanded);
+	if (footerEl) el.appendChild(footerEl);
 
 	row.appendChild(el);
 	return row;
@@ -1060,13 +1052,13 @@ function formatToolHeader(tool) {
 	}
 }
 
-function formatToolBody(tool, isActive = false) {
+function formatToolBody(tool, isActive = false, expanded = false) {
 	const toolName = String(tool?.toolName || "tool").toLowerCase();
-	if (toolName === "write") return formatWriteToolBody(tool, isActive);
+	if (toolName === "write") return formatWriteToolBody(tool, isActive, expanded);
 
 	const text = extractToolText(tool);
 	if (!text) return isActive ? "" : "(no output)";
-	if (toolsExpanded) return text;
+	if (expanded) return text;
 	return previewToolText(toolName, text);
 }
 
@@ -1079,7 +1071,7 @@ function extractToolText(tool) {
 	return String(tool?.text || "");
 }
 
-function formatWriteToolBody(tool, isActive = false) {
+function formatWriteToolBody(tool, isActive = false, expanded = false) {
 	const content = typeof tool?.args?.content === "string" ? tool.args.content : "";
 	const rawText = String(tool?.text || "");
 	const errorText = tool?.isError ? rawText : "";
@@ -1087,7 +1079,7 @@ function formatWriteToolBody(tool, isActive = false) {
 		if (isWriteSuccessMessage(rawText)) return "";
 		return errorText || (isActive ? "" : "(no output)");
 	}
-	const preview = toolsExpanded ? content : previewToolText("write", content);
+	const preview = expanded ? content : previewToolText("write", content);
 	if (!errorText || isWriteSuccessMessage(errorText)) return preview;
 	return `${preview}\n\n${errorText}`;
 }
@@ -1104,15 +1096,51 @@ function previewToolText(toolName, text) {
 	if (toolName === "bash") {
 		const visibleLines = lines.slice(-maxLines);
 		const earlierLines = Math.max(0, lines.length - visibleLines.length);
-		return `... (${earlierLines} earlier lines, Ctrl+O to expand)\n${visibleLines.join("\n")}`;
+		return `... (${earlierLines} earlier lines)\n${visibleLines.join("\n")}`;
 	}
 
 	const visibleLines = lines.slice(0, maxLines);
 	const remaining = lines.length - visibleLines.length;
 	if (toolName === "write") {
-		return `${visibleLines.join("\n")}\n... (${remaining} more lines, ${lines.length} total, Ctrl+O to expand)`;
+		return `${visibleLines.join("\n")}\n... (${remaining} more lines, ${lines.length} total)`;
 	}
-	return `${visibleLines.join("\n")}\n... (${remaining} more lines, Ctrl+O to expand)`;
+	return `${visibleLines.join("\n")}\n... (${remaining} more lines)`;
+}
+
+function createToolBodyElement(tool, isActive = false, expanded = false) {
+	const toolName = String(tool?.toolName || "tool").toLowerCase();
+	const body = document.createElement("div");
+	body.className = `tool-body${toolName === "edit" ? " diff" : ""}`;
+
+	if (toolName === "edit") {
+		const diff = String(tool?.details?.diff || "");
+		if (!diff) {
+			body.textContent = isActive ? "" : "(no output)";
+			return body.textContent ? body : null;
+		}
+		renderDiffBody(body, diff);
+		return body;
+	}
+
+	const text = formatToolBody(tool, isActive, expanded);
+	if (!text) return null;
+	body.textContent = text;
+	return body;
+}
+
+function renderDiffBody(bodyEl, diffText) {
+	for (const line of String(diffText || "").split("\n")) {
+		const lineEl = document.createElement("div");
+		lineEl.className = `tool-diff-line ${getDiffLineClass(line)}`;
+		lineEl.textContent = line;
+		bodyEl.appendChild(lineEl);
+	}
+}
+
+function getDiffLineClass(line) {
+	if (/^\+/.test(line)) return "added";
+	if (/^-/.test(line)) return "removed";
+	return "context";
 }
 
 function formatToolFooter(tool, isActive = false) {
@@ -1132,6 +1160,68 @@ function formatToolFooter(tool, isActive = false) {
 	const fullOutputPath = getToolFullOutputPath(tool);
 	if (fullOutputPath) parts.push(`Full output: ${fullOutputPath}`);
 	return parts.join(" • ");
+}
+
+function createToolFooterElement(tool, options = {}, toolKey = "", expanded = false) {
+	const footerText = formatToolFooter(tool, options.isActive);
+	const canToggle = canToggleToolBody(tool, options.isActive);
+	if (!footerText && !canToggle) return null;
+
+	const footerEl = document.createElement("div");
+	footerEl.className = "tool-footer";
+
+	if (footerText) {
+		const metaEl = document.createElement("span");
+		metaEl.className = "tool-footer-meta";
+		metaEl.textContent = footerText;
+		footerEl.appendChild(metaEl);
+	}
+
+	if (canToggle && toolKey) {
+		const btn = document.createElement("button");
+		btn.type = "button";
+		btn.className = "tool-toggle subtle";
+		btn.textContent = expanded ? "collapse" : "expand";
+		btn.onclick = (event) => {
+			event.preventDefault();
+			event.stopPropagation();
+			toggleToolExpanded(toolKey);
+		};
+		footerEl.appendChild(btn);
+	}
+
+	return footerEl;
+}
+
+function canToggleToolBody(tool, isActive = false) {
+	if (isActive) return false;
+	const toolName = String(tool?.toolName || "tool").toLowerCase();
+	if (toolName === "edit") return false;
+	const fullText = formatToolBody(tool, isActive, true);
+	const collapsedText = formatToolBody(tool, isActive, false);
+	return !!fullText && fullText !== collapsedText;
+}
+
+function getToolUiKey(tool, options = {}) {
+	if (tool?.toolCallId) return `tool:${tool.toolCallId}`;
+	return [
+		options.timestamp || tool?.timestamp || "",
+		tool?.toolName || "tool",
+		formatToolHeader(tool),
+	].join("|");
+}
+
+function isToolExpanded(tool, options = {}, toolKey = "") {
+	const toolName = String(tool?.toolName || "tool").toLowerCase();
+	if (toolName === "edit") return true;
+	return !!(toolKey && expandedToolKeys.has(toolKey));
+}
+
+function toggleToolExpanded(toolKey) {
+	if (!toolKey) return;
+	if (expandedToolKeys.has(toolKey)) expandedToolKeys.delete(toolKey);
+	else expandedToolKeys.add(toolKey);
+	renderSession();
 }
 
 function getToolTruncation(tool) {
@@ -1236,11 +1326,11 @@ function buildMessageElement(className, text, timestamp, status = "", thinkingTe
 		const thinkingEl = document.createElement("details");
 		thinkingEl.className = "thinking-block";
 		const sessionCollapsed = !!(thinkingScope && collapsedThinkingSessions.has(thinkingScope));
-		const defaultOpen = sessionCollapsed
-			? false
-			: thinkingKey && thinkingOpenStateByKey.has(thinkingKey)
-				? !!thinkingOpenStateByKey.get(thinkingKey)
-				: true;
+		const defaultOpen = thinkingKey && thinkingOpenStateByKey.has(thinkingKey)
+			? !!thinkingOpenStateByKey.get(thinkingKey)
+			: sessionCollapsed
+				? false
+				: false;
 		thinkingEl.open = defaultOpen;
 		if (thinkingKey) {
 			thinkingEl.addEventListener("toggle", () => {
@@ -1366,8 +1456,6 @@ function updateControls() {
 	if (newSessionFabEl) newSessionFabEl.disabled = !canCreateNewSession;
 	if (killSessionBtnEl) killSessionBtnEl.disabled = !canKillSession;
 	bodyEl.classList.toggle("show-fab", showFab);
-	toolsExpandBtnEl.classList.toggle("active", toolsExpanded);
-	toolsExpandBtnEl.textContent = toolsExpanded ? "Collapse Tools" : "Expand Tools";
 
 	messageInputEl.placeholder = hasOwner
 		? (MOBILE_MEDIA.matches ? "Send message…" : "Send a live message to the active session…")
@@ -1668,13 +1756,6 @@ function closeSidebar() {
 	updateControls();
 }
 
-function toggleToolsExpanded() {
-	toolsExpanded = !toolsExpanded;
-	renderSession();
-	updateControls();
-	showNotice(toolsExpanded ? "Tool output expanded" : "Tool output collapsed", "info");
-}
-
 function updateViewButtons() {
 	viewSessionsBtnEl.classList.toggle("active", currentView === "sessions");
 	viewProjectsBtnEl.classList.toggle("active", currentView === "projects");
@@ -1749,11 +1830,6 @@ confirmSubmitBtnEl.onclick = () => {
 	if (!currentSessionGuid) return;
 	send({ type: "terminate_session", sessionGuid: currentSessionGuid });
 };
-toolsExpandBtnEl.onclick = () => {
-	closeHeaderMenu();
-	toggleToolsExpanded();
-};
-
 function triggerNewSession() {
 	const context = getCurrentLaunchContext();
 	if (!context) {
@@ -1827,10 +1903,6 @@ window.addEventListener("keydown", (event) => {
 	if (event.key === "Escape" && headerMenuEl?.open) {
 		closeHeaderMenu();
 		return;
-	}
-	if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "o") {
-		event.preventDefault();
-		toggleToolsExpanded();
 	}
 });
 

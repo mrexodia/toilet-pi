@@ -206,11 +206,21 @@
 			height: 100dvh;
 			display: grid;
 			grid-template-columns: minmax(320px, 390px) minmax(0, 1fr);
-			padding-top: env(safe-area-inset-top, 0);
-			padding-bottom: env(safe-area-inset-bottom, 0);
-			padding-left: env(safe-area-inset-left, 0);
-			padding-right: env(safe-area-inset-right, 0);
+			padding: 0;
 			overflow: hidden;
+		}
+
+		@media (display-mode: standalone), (display-mode: fullscreen) {
+			.app-shell {
+				padding-top: env(safe-area-inset-top, 0);
+				padding-bottom: env(safe-area-inset-bottom, 0);
+				padding-left: env(safe-area-inset-left, 0);
+				padding-right: env(safe-area-inset-right, 0);
+			}
+
+			.composer {
+				padding-bottom: calc(14px + env(safe-area-inset-bottom, 0));
+			}
 		}
 
 		.sidebar {
@@ -631,6 +641,13 @@
 			gap: 10px;
 		}
 
+		#messages-content {
+			display: flex;
+			flex-direction: column;
+			gap: 10px;
+			min-width: 0;
+		}
+
 		.messages-empty {
 			margin: auto;
 			text-align: center;
@@ -708,7 +725,8 @@
 		}
 
 		.tool-header,
-		.tool-body {
+		.tool-body,
+		.tool-footer {
 			font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
 		}
 
@@ -723,11 +741,58 @@
 			overflow-wrap: anywhere;
 		}
 
+		.tool-body.diff {
+			white-space: normal;
+		}
+
+		.tool-diff-line {
+			white-space: pre-wrap;
+			word-break: break-word;
+			overflow-wrap: anywhere;
+		}
+
+		.tool-diff-line.context {
+			color: #808080;
+		}
+
+		.tool-diff-line.added {
+			color: #b5bd68;
+		}
+
+		.tool-diff-line.removed {
+			color: #cc6666;
+		}
+
 		.tool-footer {
 			margin-top: 10px;
-			font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
 			font-size: 12px;
 			color: var(--muted);
+			display: flex;
+			align-items: center;
+			justify-content: space-between;
+			gap: 10px;
+			flex-wrap: wrap;
+		}
+
+		.tool-footer-meta {
+			flex: 1 1 auto;
+			min-width: 0;
+		}
+
+		.tool-toggle {
+			padding: 0;
+			font-size: 12px;
+			line-height: 1.2;
+			min-height: 0;
+			border: none;
+			background: transparent;
+			color: #79c0ff;
+			text-decoration: underline;
+		}
+
+		.tool-toggle:hover {
+			background: transparent;
+			color: #a5d6ff;
 		}
 
 		.message.system {
@@ -1434,7 +1499,6 @@
 						<details class="header-menu" id="header-menu">
 							<summary id="header-menu-btn" class="icon-button subtle" aria-label="More actions"><span class="icon-glyph kebab" aria-hidden="true">⋮</span></summary>
 							<div class="header-menu-panel">
-								<button id="tools-expand-btn" class="subtle" title="Toggle tool output expansion (Ctrl+O)">Expand Tools</button>
 								<button id="new-session-btn">New Session</button>
 								<button id="kill-session-btn" class="danger">Kill Session</button>
 							</div>
