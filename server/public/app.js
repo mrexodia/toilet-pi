@@ -975,10 +975,7 @@ function renderSession({ forceScroll = false } = {}) {
 	}
 
 	const summary = findSessionSummary(currentSessionGuid);
-	const fragments = [];
-	for (const message of getVisibleHistoryMessages(currentSession, summary)) {
-		fragments.push(renderMessage(message));
-	}
+	const fragments = renderHistoryFragments(currentSession, summary);
 
 	const showCollapsedLiveToolSummary = collapseLiveTurnDetails
 		&& isSessionWorking(summary)
@@ -1034,6 +1031,57 @@ function getVisibleHistoryMessages(session, summary) {
 		: null;
 	if (startIndex == null || startIndex < 0) return history;
 	return history.slice(0, startIndex);
+}
+
+function renderHistoryFragments(session, summary) {
+	const history = getVisibleHistoryMessages(session, summary);
+	if (!collapseLiveTurnDetails) {
+		return history.map((message) => renderMessage(message));
+	}
+
+	const fragments = [];
+	let toolBuffer = [];
+	const flushToolBuffer = () => {
+		if (!toolBuffer.length) return;
+		fragments.push(renderCollapsedHistoryToolSummary(toolBuffer));
+		toolBuffer = [];
+	};
+
+	for (const message of history) {
+		if (message?.role === "toolResult") {
+			toolBuffer.push(message);
+			continue;
+		}
+		flushToolBuffer();
+		fragments.push(renderMessage(message));
+	}
+	flushToolBuffer();
+	return fragments;
+}
+
+function renderCollapsedHistoryToolSummary(messages) {
+	const count = Array.isArray(messages) ? messages.length : 0;
+	const errorCount = Array.isArray(messages)
+		? messages.filter((message) => !!message?.isError).length
+		: 0;
+	const row = document.createElement("div");
+	row.className = "message-row tool";
+	const el = document.createElement("div");
+	el.className = `message tool ${errorCount > 0 ? "error" : "success"} compact`;
+	const headerEl = document.createElement("div");
+	headerEl.className = "tool-header";
+	headerEl.textContent = formatCollapsedHistoryToolSummaryText(count, errorCount);
+	el.appendChild(headerEl);
+	row.appendChild(el);
+	return row;
+}
+
+function formatCollapsedHistoryToolSummaryText(count, errorCount) {
+	const safeCount = Math.max(0, Number(count || 0));
+	const safeErrors = Math.max(0, Number(errorCount || 0));
+	const toolLabel = safeCount === 1 ? "1 tool called" : `${safeCount} tools called`;
+	if (!safeErrors) return toolLabel;
+	return `${toolLabel} • ${safeErrors} error${safeErrors === 1 ? "" : "s"}`;
 }
 
 function renderMessage(message) {
@@ -1622,7 +1670,7 @@ function buildMessageElement(className, text, timestamp, status = "", thinkingTe
 	row.className = `message-row ${className}`;
 	const el = document.createElement("div");
 	el.className = `message ${className}`;
-	const compactLiveThinking = collapseLiveTurnDetails && String(className || "").includes("streaming");
+	const compactLiveThinking = collapseLiveTurnDetails && String(className || "").includes("assistant");
 	const displayText = text || (compactLiveThinking && thinkingText ? "Thinking…" : "");
 	if (timestamp || status) {
 		const ts = document.createElement("div");
