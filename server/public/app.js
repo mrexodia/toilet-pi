@@ -977,19 +977,16 @@ function renderSession({ forceScroll = false } = {}) {
 	const summary = findSessionSummary(currentSessionGuid);
 	const fragments = renderHistoryFragments(currentSession, summary);
 
-	const showCollapsedLiveToolSummary = collapseLiveTurnDetails
-		&& isSessionWorking(summary)
-		&& ((currentSession.liveTurnToolCount || 0) > 0 || currentSession.activeTools.length > 0);
-	if (showCollapsedLiveToolSummary) {
-		fragments.push(renderCollapsedLiveToolSummary());
+	const showCollapsedLiveTurnBubble = collapseLiveTurnDetails && isSessionWorking(summary);
+	if (showCollapsedLiveTurnBubble) {
+		fragments.push(renderCollapsedLiveTurnBubble());
 	} else {
 		for (const tool of currentSession.activeTools) {
 			fragments.push(renderActiveTool(tool));
 		}
-	}
-
-	if (currentSession.streamingText || currentSession.streamingThinkingText) {
-		fragments.push(renderAssistantStream(currentSession.streamingText, currentSession.streamingThinkingText));
+		if (currentSession.streamingText || currentSession.streamingThinkingText) {
+			fragments.push(renderAssistantStream(currentSession.streamingText, currentSession.streamingThinkingText));
+		}
 	}
 
 	for (const queuedInput of currentSession.queuedInputs) {
@@ -1300,19 +1297,42 @@ function renderActiveTool(tool) {
 	});
 }
 
-function renderCollapsedLiveToolSummary() {
+function renderCollapsedLiveTurnBubble() {
 	const totalCount = Math.max(currentSession.liveTurnToolCount || 0, currentSession.activeTools.length || 0);
 	const activeCount = currentSession.activeTools.length || 0;
+	const detail = getCollapsedLiveTurnDetail();
 	const row = document.createElement("div");
 	row.className = "message-row tool";
 	const el = document.createElement("div");
-	el.className = "message tool running compact";
+	el.className = `message tool ${currentSession.liveTurnLastActivity?.isError ? "error" : "running"} compact`;
 	const headerEl = document.createElement("div");
 	headerEl.className = "tool-header";
 	headerEl.textContent = formatCollapsedLiveToolSummary(totalCount, activeCount);
 	el.appendChild(headerEl);
+	if (detail) {
+		const textEl = document.createElement("div");
+		textEl.className = "message-text";
+		textEl.textContent = detail;
+		el.appendChild(textEl);
+	}
 	row.appendChild(el);
 	return row;
+}
+
+function getCollapsedLiveTurnDetail() {
+	if (currentSession.streamingThinkingText) {
+		return `Thinking: ${collapseThinkingPreview(currentSession.streamingThinkingText)}`;
+	}
+	if (currentSession.activeTools.length > 0) {
+		return formatToolHeader(currentSession.activeTools[currentSession.activeTools.length - 1]);
+	}
+	if (currentSession.liveTurnLastActivity?.text) {
+		return currentSession.liveTurnLastActivity.text;
+	}
+	if (currentSession.streamingText) {
+		return clampText(currentSession.streamingText, 160);
+	}
+	return "Working…";
 }
 
 function formatCollapsedLiveToolSummary(totalCount, activeCount) {
@@ -1877,6 +1897,7 @@ function applySessionEvent(session, event) {
 				session.liveTurnToolCount = 0;
 				session.liveTurnSeenToolIds = [];
 				session.liveTurnStartHistoryIndex = null;
+				session.liveTurnLastActivity = null;
 			}
 			break;
 
@@ -1886,11 +1907,18 @@ function applySessionEvent(session, event) {
 			session.liveTurnToolCount = 0;
 			session.liveTurnSeenToolIds = [];
 			session.liveTurnStartHistoryIndex = session.history.length;
+			session.liveTurnLastActivity = { text: "Thinking…", isError: false };
 			break;
 
 		case "assistant_stream_update":
 			session.streamingText = event.text || "";
 			session.streamingThinkingText = event.thinkingText || "";
+			session.liveTurnLastActivity = {
+				text: event.thinkingText
+					? `Thinking: ${collapseThinkingPreview(event.thinkingText)}`
+					: (event.text ? clampText(event.text, 160) : "Thinking…"),
+				isError: false,
+			};
 			break;
 
 		case "assistant_stream_end":
@@ -1898,32 +1926,51 @@ function applySessionEvent(session, event) {
 
 		case "tool_start":
 			if (event.toolCallId) {
-				upsertTool(session, {
+				const liveTool = {
 					toolCallId: event.toolCallId,
 					toolName: event.toolName || "tool",
 					args: event.args,
-				});
+				};
+				upsertTool(session, liveTool);
 				if (!session.liveTurnSeenToolIds.includes(event.toolCallId)) {
 					session.liveTurnSeenToolIds.push(event.toolCallId);
 					session.liveTurnToolCount = (session.liveTurnToolCount || 0) + 1;
 				}
+				session.liveTurnLastActivity = {
+					text: formatToolHeader(liveTool),
+					isError: false,
+				};
 			}
 			break;
 
 		case "tool_update":
 			if (event.toolCallId) {
-				upsertTool(session, {
+				const liveTool = {
 					toolCallId: event.toolCallId,
 					toolName: event.toolName || "tool",
 					args: event.args,
 					text: event.text,
 					details: event.details,
-				});
+				};
+				upsertTool(session, liveTool);
+				session.liveTurnLastActivity = {
+					text: formatToolHeader(liveTool),
+					isError: false,
+				};
 			}
 			break;
 
 		case "tool_end":
-			if (event.toolCallId) session.activeTools = session.activeTools.filter((tool) => tool.toolCallId !== event.toolCallId);
+			if (event.toolCallId) {
+				const finishedTool = session.activeTools.find((tool) => tool.toolCallId === event.toolCallId) || null;
+				session.activeTools = session.activeTools.filter((tool) => tool.toolCallId !== event.toolCallId);
+				session.liveTurnLastActivity = {
+					text: finishedTool
+						? `${formatToolHeader(finishedTool)}${event.isError ? " • error" : " • done"}`
+						: `${event.toolName || "tool"}${event.isError ? " error" : " done"}`,
+					isError: !!event.isError,
+				};
+			}
 			break;
 
 		case "busy": {
@@ -1948,6 +1995,7 @@ function applySessionEvent(session, event) {
 				session.liveTurnToolCount = 0;
 				session.liveTurnSeenToolIds = [];
 				session.liveTurnStartHistoryIndex = null;
+				session.liveTurnLastActivity = null;
 			}
 			break;
 		}
@@ -2012,6 +2060,7 @@ function createEmptySession(sessionGuid) {
 		liveTurnToolCount: 0,
 		liveTurnSeenToolIds: [],
 		liveTurnStartHistoryIndex: null,
+		liveTurnLastActivity: null,
 		busy: false,
 		history: [],
 		streamingText: null,
@@ -2038,6 +2087,12 @@ function normalizeSession(session) {
 		liveTurnToolCount: Number.isFinite(session?.liveTurnToolCount) ? session.liveTurnToolCount : 0,
 		liveTurnSeenToolIds: Array.isArray(session?.liveTurnSeenToolIds) ? session.liveTurnSeenToolIds : [],
 		liveTurnStartHistoryIndex: Number.isInteger(session?.liveTurnStartHistoryIndex) ? session.liveTurnStartHistoryIndex : null,
+		liveTurnLastActivity: session?.liveTurnLastActivity && typeof session.liveTurnLastActivity === "object"
+			? {
+				text: String(session.liveTurnLastActivity.text || ""),
+				isError: !!session.liveTurnLastActivity.isError,
+			}
+			: null,
 		busy: !!session?.busy,
 		history: Array.isArray(session?.history) ? session.history : [],
 		streamingText: typeof session?.streamingText === "string" ? session.streamingText : null,
