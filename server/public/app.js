@@ -976,7 +976,7 @@ function renderSession({ forceScroll = false } = {}) {
 
 	const summary = findSessionSummary(currentSessionGuid);
 	const fragments = [];
-	for (const message of currentSession.history) {
+	for (const message of getVisibleHistoryMessages(currentSession, summary)) {
 		fragments.push(renderMessage(message));
 	}
 
@@ -1024,6 +1024,16 @@ function renderMessagesEmpty(text) {
 	empty.className = "messages-empty";
 	empty.textContent = text;
 	return empty;
+}
+
+function getVisibleHistoryMessages(session, summary) {
+	const history = Array.isArray(session?.history) ? session.history : [];
+	if (!collapseLiveTurnDetails || !isSessionWorking(summary)) return history;
+	const startIndex = Number.isInteger(session?.liveTurnStartHistoryIndex)
+		? session.liveTurnStartHistoryIndex
+		: null;
+	if (startIndex == null || startIndex < 0) return history;
+	return history.slice(0, startIndex);
 }
 
 function renderMessage(message) {
@@ -1818,6 +1828,7 @@ function applySessionEvent(session, event) {
 				session.abortRequested = false;
 				session.liveTurnToolCount = 0;
 				session.liveTurnSeenToolIds = [];
+				session.liveTurnStartHistoryIndex = null;
 			}
 			break;
 
@@ -1826,6 +1837,7 @@ function applySessionEvent(session, event) {
 			session.streamingThinkingText = "";
 			session.liveTurnToolCount = 0;
 			session.liveTurnSeenToolIds = [];
+			session.liveTurnStartHistoryIndex = session.history.length;
 			break;
 
 		case "assistant_stream_update":
@@ -1887,6 +1899,7 @@ function applySessionEvent(session, event) {
 				session.activeTools = [];
 				session.liveTurnToolCount = 0;
 				session.liveTurnSeenToolIds = [];
+				session.liveTurnStartHistoryIndex = null;
 			}
 			break;
 		}
@@ -1950,6 +1963,7 @@ function createEmptySession(sessionGuid) {
 		costUsd: null,
 		liveTurnToolCount: 0,
 		liveTurnSeenToolIds: [],
+		liveTurnStartHistoryIndex: null,
 		busy: false,
 		history: [],
 		streamingText: null,
@@ -1975,6 +1989,7 @@ function normalizeSession(session) {
 		costUsd: Number.isFinite(session?.costUsd) ? session.costUsd : null,
 		liveTurnToolCount: Number.isFinite(session?.liveTurnToolCount) ? session.liveTurnToolCount : 0,
 		liveTurnSeenToolIds: Array.isArray(session?.liveTurnSeenToolIds) ? session.liveTurnSeenToolIds : [],
+		liveTurnStartHistoryIndex: Number.isInteger(session?.liveTurnStartHistoryIndex) ? session.liveTurnStartHistoryIndex : null,
 		busy: !!session?.busy,
 		history: Array.isArray(session?.history) ? session.history : [],
 		streamingText: typeof session?.streamingText === "string" ? session.streamingText : null,
