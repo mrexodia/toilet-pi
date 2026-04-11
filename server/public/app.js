@@ -14,7 +14,8 @@ let isAuthenticated = false;
 let machineConnectToken = null;
 let isMintingMachineConnectToken = false;
 const pendingLaunchRequests = new Map();
-const collapsedThinkingKeys = new Set();
+const thinkingOpenStateByKey = new Map();
+const collapsedThinkingSessions = new Set();
 
 const bodyEl = document.body;
 const sidebarSummaryEl = document.getElementById("sidebar-summary");
@@ -370,7 +371,7 @@ function handleMessage(message) {
 			const pending = pendingLaunchRequests.get(message.requestId);
 			if (!pending) return;
 			pendingLaunchRequests.delete(message.requestId);
-			showNotice(`Background session started on ${message.hostId}`, "info");
+			showNotice(`Background session started on ${pending.hostname || message.hostId || "unknown computer"}`, "info");
 			attachSession(message.sessionGuid, {
 				hostId: message.hostId,
 				cwd: message.cwd || pending.cwd,
@@ -873,7 +874,7 @@ function hydrateCurrentSessionFromOverview() {
 }
 
 function renderSession({ forceScroll = false } = {}) {
-	const previousDistanceFromBottom = messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight;
+	const previousScrollTop = messagesEl.scrollTop;
 	const shouldStick = forceScroll || stickToBottom;
 	messagesEl.innerHTML = "";
 
@@ -882,6 +883,7 @@ function renderSession({ forceScroll = false } = {}) {
 		return;
 	}
 
+	const summary = findSessionSummary(currentSessionGuid);
 	const fragments = [];
 	for (const message of currentSession.history) {
 		fragments.push(renderMessage(message));
@@ -899,6 +901,10 @@ function renderSession({ forceScroll = false } = {}) {
 		fragments.push(renderQueuedInput(queuedInput));
 	}
 
+	if (shouldRenderWorkingPlaceholder(summary)) {
+		fragments.push(renderWorkingPlaceholder());
+	}
+
 	if (fragments.length === 0) {
 		messagesEl.appendChild(renderMessagesEmpty("No messages in this session yet. Send a message to start working."));
 		return;
@@ -912,7 +918,7 @@ function renderSession({ forceScroll = false } = {}) {
 		if (shouldStick) {
 			scrollMessagesToBottom();
 		} else {
-			messagesEl.scrollTop = Math.max(0, messagesEl.scrollHeight - messagesEl.clientHeight - previousDistanceFromBottom);
+			messagesEl.scrollTop = Math.min(previousScrollTop, Math.max(0, messagesEl.scrollHeight - messagesEl.clientHeight));
 		}
 	});
 }
@@ -931,11 +937,12 @@ function renderMessage(message) {
 	if (message.role === "assistant") {
 		return buildMessageElement(
 			"assistant",
-			message.text || "",
+			getAssistantMessageText(message),
 			message.timestamp,
 			getAssistantMessageStatus(message),
 			message.thinkingText || "",
 			getThinkingKey(message),
+			getThinkingScope(),
 		);
 	}
 	if (message.role === "toolResult") {
@@ -948,10 +955,34 @@ function renderQueuedInput(queuedInput) {
 	return buildMessageElement("user queued", queuedInput?.text || "", queuedInput?.timestamp || null, "queued");
 }
 
+function renderWorkingPlaceholder() {
+	const row = document.createElement("div");
+	row.className = "message-row working";
+	const el = document.createElement("div");
+	el.className = "message working";
+	const spinner = document.createElement("span");
+	spinner.className = "inline-spinner";
+	spinner.setAttribute("aria-hidden", "true");
+	const label = document.createElement("span");
+	label.textContent = "Working...";
+	el.appendChild(spinner);
+	el.appendChild(label);
+	row.appendChild(el);
+	return row;
+}
+
+function shouldRenderWorkingPlaceholder(summary) {
+	return !!(
+		isSessionWorking(summary)
+		&& !currentSession.activeTools.length
+		&& !currentSession.streamingText
+		&& !currentSession.streamingThinkingText
+	);
+}
+
 function renderToolMessage(message) {
 	return buildToolElement(message, {
 		timestamp: message?.timestamp || null,
-		status: toolsExpanded ? "expanded" : "collapsed",
 		isError: !!message?.isError,
 		isActive: false,
 	});
@@ -971,17 +1002,9 @@ function buildToolElement(tool, options = {}) {
 	row.className = "message-row tool";
 
 	const el = document.createElement("div");
-	el.className = `message tool ${options.isError ? "error" : ""}`.trim();
-
-	if (options.timestamp || options.status) {
-		const ts = document.createElement("div");
-		ts.className = "timestamp";
-		const parts = [];
-		if (options.timestamp) parts.push(new Date(options.timestamp).toLocaleTimeString());
-		if (options.status) parts.push(options.status);
-		ts.textContent = parts.join(" • ");
-		el.appendChild(ts);
-	}
+	const toolStateClass = options.isActive ? "running" : options.isError ? "error" : "success";
+	const isExcludedBash = isToolExcludedFromContext(tool);
+	el.className = `message tool ${toolStateClass}${isExcludedBash ? " excluded" : ""}`.trim();
 
 	const headerEl = document.createElement("div");
 	headerEl.className = "tool-header";
@@ -1029,8 +1052,11 @@ function formatToolHeader(tool) {
 			}
 			return `read ${path || "..."}${suffix}`;
 		}
-		case "write":
-			return `write ${path || "..."}`;
+		case "write": {
+			const lineCount = typeof args.content === "string" ? args.content.split("\n").length : 0;
+			const lineInfo = lineCount > 0 ? ` (${lineCount} line${lineCount === 1 ? "" : "s"})` : "";
+			return `write ${path || "..."}${lineInfo}`;
+		}
 		case "edit": {
 			const firstChangedLine = details?.firstChangedLine ? `:${details.firstChangedLine}` : "";
 			return `edit ${path || "..."}${firstChangedLine}`;
@@ -1050,38 +1076,96 @@ function formatToolHeader(tool) {
 }
 
 function formatToolBody(tool, isActive = false) {
-	if (isActive) return "";
+	const toolName = String(tool?.toolName || "tool").toLowerCase();
+	if (toolName === "write") return formatWriteToolBody(tool, isActive);
 
+	const text = extractToolText(tool);
+	if (!text) return isActive ? "" : "(no output)";
+	if (toolsExpanded) return text;
+	return previewToolText(toolName, text);
+}
+
+function extractToolText(tool) {
 	const toolName = String(tool?.toolName || "tool").toLowerCase();
 	const details = tool?.details || {};
-	let text = "";
-
 	if (toolName === "edit" && typeof details?.diff === "string" && details.diff) {
-		text = details.diff;
-	} else {
-		text = String(tool?.text || "");
+		return details.diff;
 	}
+	return String(tool?.text || "");
+}
 
-	if (!text) return "(no output)";
-	if (toolsExpanded) return text;
+function formatWriteToolBody(tool, isActive = false) {
+	const content = typeof tool?.args?.content === "string" ? tool.args.content : "";
+	const rawText = String(tool?.text || "");
+	const errorText = tool?.isError ? rawText : "";
+	if (!content) {
+		if (isWriteSuccessMessage(rawText)) return "";
+		return errorText || (isActive ? "" : "(no output)");
+	}
+	const preview = toolsExpanded ? content : previewToolText("write", content);
+	if (!errorText || isWriteSuccessMessage(errorText)) return preview;
+	return `${preview}\n\n${errorText}`;
+}
 
+function isWriteSuccessMessage(text) {
+	return /^Successfully wrote \d+ bytes to /i.test(String(text || ""));
+}
+
+function previewToolText(toolName, text) {
 	const lines = text.split("\n");
 	const maxLines = getToolPreviewLines(toolName);
+	if (lines.length <= maxLines) return text;
+
+	if (toolName === "bash") {
+		const visibleLines = lines.slice(-maxLines);
+		const earlierLines = Math.max(0, lines.length - visibleLines.length);
+		return `... (${earlierLines} earlier lines, Ctrl+O to expand)\n${visibleLines.join("\n")}`;
+	}
+
 	const visibleLines = lines.slice(0, maxLines);
 	const remaining = lines.length - visibleLines.length;
-	let output = visibleLines.join("\n");
-	if (remaining > 0) {
-		const label = toolName === "bash" ? "earlier lines" : "more lines";
-		output += `\n... (${remaining} ${label}, Ctrl+O to expand)`;
+	if (toolName === "write") {
+		return `${visibleLines.join("\n")}\n... (${remaining} more lines, ${lines.length} total, Ctrl+O to expand)`;
 	}
-	return output;
+	return `${visibleLines.join("\n")}\n... (${remaining} more lines, Ctrl+O to expand)`;
 }
 
 function formatToolFooter(tool, isActive = false) {
-	if (isActive) return "";
-	const durationMs = Number(tool?.durationMs || 0);
-	if (!durationMs) return "";
-	return `Took ${(durationMs / 1000).toFixed(1)}s`;
+	const parts = [];
+	if (!isActive) {
+		const durationMs = Number(tool?.durationMs || 0);
+		if (durationMs) parts.push(`Took ${(durationMs / 1000).toFixed(1)}s`);
+	}
+	const truncation = getToolTruncation(tool);
+	if (truncation?.truncated) {
+		if (Number.isFinite(truncation.outputLines) && Number.isFinite(truncation.totalLines)) {
+			parts.push(`Showing ${truncation.outputLines} of ${truncation.totalLines} lines`);
+		} else {
+			parts.push("Truncated");
+		}
+	}
+	const fullOutputPath = getToolFullOutputPath(tool);
+	if (fullOutputPath) parts.push(`Full output: ${fullOutputPath}`);
+	return parts.join(" • ");
+}
+
+function getToolTruncation(tool) {
+	const details = tool?.details || {};
+	if (details?.truncation && typeof details.truncation === "object") return details.truncation;
+	return null;
+}
+
+function getToolFullOutputPath(tool) {
+	const details = tool?.details || {};
+	if (typeof details?.fullOutputPath === "string" && details.fullOutputPath) return details.fullOutputPath;
+	if (typeof tool?.fullOutputPath === "string" && tool.fullOutputPath) return tool.fullOutputPath;
+	return "";
+}
+
+function isToolExcludedFromContext(tool) {
+	const details = tool?.details || {};
+	const args = tool?.args || {};
+	return !!(details?.excludeFromContext || args?.excludeFromContext);
 }
 
 function getToolPreviewLines(toolName) {
@@ -1108,7 +1192,15 @@ function shortenToolPath(value) {
 }
 
 function renderAssistantStream(text, thinkingText = "") {
-	return buildMessageElement("assistant streaming", text || "", null, "", thinkingText || "", `stream:${currentSessionGuid || "none"}`);
+	return buildMessageElement(
+		"assistant streaming",
+		text || "",
+		null,
+		"",
+		thinkingText || "",
+		`stream:${currentSessionGuid || "none"}`,
+		getThinkingScope(),
+	);
 }
 
 function getAssistantMessageStatus(message) {
@@ -1124,6 +1216,13 @@ function getAssistantMessageStatus(message) {
 	}
 }
 
+function getAssistantMessageText(message) {
+	const text = String(message?.text || "");
+	if (text && text !== "[aborted]") return text;
+	if (message?.stopReason === "aborted") return "Operation aborted";
+	return text;
+}
+
 function renderSystemMessage(text) {
 	const row = document.createElement("div");
 	row.className = "message-row system";
@@ -1134,7 +1233,7 @@ function renderSystemMessage(text) {
 	return row;
 }
 
-function buildMessageElement(className, text, timestamp, status = "", thinkingText = "", thinkingKey = "") {
+function buildMessageElement(className, text, timestamp, status = "", thinkingText = "", thinkingKey = "", thinkingScope = "") {
 	const row = document.createElement("div");
 	row.className = `message-row ${className}`;
 	const el = document.createElement("div");
@@ -1151,16 +1250,29 @@ function buildMessageElement(className, text, timestamp, status = "", thinkingTe
 	if (thinkingText) {
 		const thinkingEl = document.createElement("details");
 		thinkingEl.className = "thinking-block";
-		thinkingEl.open = !thinkingKey || !collapsedThinkingKeys.has(thinkingKey);
+		const defaultOpen = thinkingKey && thinkingOpenStateByKey.has(thinkingKey)
+			? !!thinkingOpenStateByKey.get(thinkingKey)
+			: !thinkingScope || !collapsedThinkingSessions.has(thinkingScope);
+		thinkingEl.open = defaultOpen;
 		if (thinkingKey) {
 			thinkingEl.addEventListener("toggle", () => {
-				if (thinkingEl.open) collapsedThinkingKeys.delete(thinkingKey);
-				else collapsedThinkingKeys.add(thinkingKey);
+				thinkingOpenStateByKey.set(thinkingKey, thinkingEl.open);
+				if (thinkingScope) {
+					if (thinkingEl.open) collapsedThinkingSessions.delete(thinkingScope);
+					else collapsedThinkingSessions.add(thinkingScope);
+				}
 			});
 		}
 		const summaryEl = document.createElement("summary");
 		summaryEl.className = "thinking-label";
-		summaryEl.textContent = "Thinking";
+		const labelTextEl = document.createElement("span");
+		labelTextEl.className = "thinking-label-text";
+		labelTextEl.textContent = "Thinking";
+		summaryEl.appendChild(labelTextEl);
+		const previewEl = document.createElement("span");
+		previewEl.className = "thinking-inline-preview";
+		previewEl.textContent = collapseThinkingPreview(thinkingText);
+		summaryEl.appendChild(previewEl);
 		const textEl = document.createElement("div");
 		textEl.className = "thinking-text";
 		textEl.textContent = thinkingText;
@@ -1176,6 +1288,16 @@ function buildMessageElement(className, text, timestamp, status = "", thinkingTe
 	}
 	row.appendChild(el);
 	return row;
+}
+
+function collapseThinkingPreview(text) {
+	return String(text || "")
+		.replace(/\s+/g, " ")
+		.trim();
+}
+
+function getThinkingScope() {
+	return currentSessionGuid ? `session:${currentSessionGuid}` : "";
 }
 
 function getThinkingKey(message) {
@@ -1201,7 +1323,7 @@ function updateHeader() {
 	if (!currentSessionGuid) {
 		if (selectedProjectContext?.cwd) {
 			sessionTitleEl.textContent = basenamePath(selectedProjectContext.cwd);
-			sessionSubtitleEl.textContent = `${selectedProjectContext.hostConnected ? "ready" : "offline"} • ${selectedProjectContext.hostname || selectedProjectContext.hostId} • ${selectedProjectContext.cwd}`;
+			sessionSubtitleEl.textContent = `${selectedProjectContext.hostConnected ? "ready" : "offline"} • ${selectedProjectContext.hostname || "unknown computer"} • ${selectedProjectContext.cwd}`;
 			sessionPathEl.textContent = selectedProjectContext.cwd || "";
 		} else {
 			sessionTitleEl.textContent = "No session selected";
@@ -1215,12 +1337,12 @@ function updateHeader() {
 	}
 
 	const summary = findSessionSummary(currentSessionGuid);
-	const hostLabel = currentSession.hostId || summary?.hostId || "unknown host";
+	const hostLabel = summary?.hostname || selectedProjectContext?.hostname || "unknown computer";
 	const owner = currentSession.owner || summary?.owner || "inactive";
 	const queuedCount = currentSession.queuedInputs.length || summary?.queuedInputCount || 0;
 	const queued = queuedCount ? ` • ${queuedCount} queued` : "";
 	const model = currentSession.model || summary?.model || "no model";
-	const hostname = summary?.hostname || hostLabel;
+	const hostname = hostLabel;
 	const cwd = currentSession.cwd || summary?.cwd || currentSessionGuid;
 	const sessionLabel = currentSession.sessionName || summary?.sessionName || summary?.preview || shortId(currentSessionGuid);
 	const projectLabel = getProjectLabel(cwd);
@@ -1232,7 +1354,7 @@ function updateHeader() {
 	sessionTitleEl.textContent = title;
 	sessionSubtitleEl.textContent = `${owner}${working ? " • working" : ""}${queued} • ${model} • ${hostname} • ${cwd}`;
 	sessionPathEl.textContent = cwd;
-	sessionWorkingIndicatorEl?.classList.toggle("visible", working);
+	sessionWorkingIndicatorEl?.classList.remove("visible");
 }
 
 function updateControls() {
@@ -1313,6 +1435,7 @@ function applySessionEvent(session, event) {
 			if (event.message?.role === "assistant") {
 				session.streamingText = null;
 				session.streamingThinkingText = null;
+				session.abortRequested = false;
 			}
 			break;
 
@@ -1339,18 +1462,44 @@ function applySessionEvent(session, event) {
 			}
 			break;
 
+		case "tool_update":
+			if (event.toolCallId) {
+				upsertTool(session, {
+					toolCallId: event.toolCallId,
+					toolName: event.toolName || "tool",
+					args: event.args,
+					text: event.text,
+					details: event.details,
+				});
+			}
+			break;
+
 		case "tool_end":
 			if (event.toolCallId) session.activeTools = session.activeTools.filter((tool) => tool.toolCallId !== event.toolCallId);
 			break;
 
-		case "busy":
+		case "busy": {
+			const hadLiveContent = !!(
+				session.streamingText
+				|| session.streamingThinkingText
+				|| session.activeTools.length
+			);
 			session.busy = !!event.busy;
 			if (!session.busy) {
+				if (session.abortRequested && hadLiveContent) {
+					session.history.push({
+						role: "system",
+						text: "Operation aborted",
+						timestamp: Date.now(),
+					});
+				}
+				session.abortRequested = false;
 				session.streamingText = null;
 				session.streamingThinkingText = null;
 				session.activeTools = [];
 			}
 			break;
+		}
 
 		case "queued_input_add":
 			if (event.queuedInput?.inputId) {
@@ -1380,8 +1529,12 @@ function applySessionEvent(session, event) {
 
 function upsertTool(session, tool) {
 	const existingIndex = session.activeTools.findIndex((entry) => entry.toolCallId === tool.toolCallId);
-	if (existingIndex >= 0) session.activeTools[existingIndex] = tool;
-	else session.activeTools.push(tool);
+	if (existingIndex >= 0) {
+		session.activeTools[existingIndex] = {
+			...session.activeTools[existingIndex],
+			...tool,
+		};
+	} else session.activeTools.push(tool);
 }
 
 function createEmptySession(sessionGuid) {
@@ -1399,6 +1552,7 @@ function createEmptySession(sessionGuid) {
 		streamingThinkingText: null,
 		activeTools: [],
 		queuedInputs: [],
+		abortRequested: false,
 	};
 }
 
@@ -1417,6 +1571,7 @@ function normalizeSession(session) {
 		streamingThinkingText: typeof session?.streamingThinkingText === "string" ? session.streamingThinkingText : null,
 		activeTools: Array.isArray(session?.activeTools) ? session.activeTools : [],
 		queuedInputs: Array.isArray(session?.queuedInputs) ? session.queuedInputs : [],
+		abortRequested: false,
 	};
 }
 
@@ -1633,6 +1788,8 @@ sendBtnEl.onclick = () => {
 	closeHeaderMenu();
 	const sent = send({ type: "input", sessionGuid: currentSessionGuid, text });
 	if (!sent) return;
+	stickToBottom = true;
+	requestAnimationFrame(() => scrollMessagesToBottom());
 	if (!(currentSession.owner || findSessionSummary(currentSessionGuid)?.owner)) {
 		showNotice("Starting background runner and delivering your message…", "info");
 	}
@@ -1642,6 +1799,7 @@ sendBtnEl.onclick = () => {
 abortBtnEl.onclick = () => {
 	if (!currentSessionGuid) return;
 	closeHeaderMenu();
+	currentSession.abortRequested = true;
 	send({ type: "abort", sessionGuid: currentSessionGuid });
 };
 

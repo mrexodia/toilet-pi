@@ -458,6 +458,7 @@ export function createServerCore(
         'busy',
         'model',
         'tool_start',
+        'tool_update',
         'tool_end',
         'session_name',
         'queued_input_add',
@@ -587,6 +588,19 @@ export function createServerCore(
             toolCallId: event.toolCallId,
             toolName: event.toolName || 'tool',
             args: event.args,
+          })
+        }
+        break
+
+      case 'tool_update':
+        if (event.toolCallId) {
+          const previous = session.activeTools.get(event.toolCallId)
+          session.activeTools.set(event.toolCallId, {
+            toolCallId: event.toolCallId,
+            toolName: event.toolName || previous?.toolName || 'tool',
+            args: event.args ?? previous?.args,
+            text: typeof event.text === 'string' ? event.text : previous?.text,
+            details: event.details ?? previous?.details,
           })
         }
         break

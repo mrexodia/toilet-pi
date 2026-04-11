@@ -9,8 +9,9 @@
 	<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
 	<meta name="apple-mobile-web-app-title" content="toilet-pi" />
 	<link rel="manifest" href="./manifest.webmanifest" />
-	<link rel="icon" href="./icon.svg" type="image/svg+xml" />
-	<link rel="apple-touch-icon" href="./icon.svg" />
+	<link rel="icon" href="./favicon.svg" type="image/svg+xml" />
+	<link rel="alternate icon" href="./favicon.ico" type="image/x-icon" />
+	<link rel="apple-touch-icon" href="./favicon.svg" />
 	<title>toilet-pi</title>
 	<style>
 		:root {
@@ -81,6 +82,14 @@
 			background: var(--green);
 			border-color: var(--green);
 			color: white;
+		}
+
+		#send-btn {
+			min-width: 56px;
+			padding-left: 14px;
+			padding-right: 14px;
+			font-size: 18px;
+			line-height: 1;
 		}
 
 		button.danger {
@@ -655,12 +664,26 @@
 		}
 
 		.message.tool {
-			background: var(--panel-3);
-			border-left: 3px solid var(--purple);
+			border-left: 3px solid var(--blue);
+		}
+
+		.message.tool.running {
+			background: #282832;
+			border-left-color: #5f87ff;
+		}
+
+		.message.tool.success {
+			background: #283228;
+			border-left-color: #b5bd68;
 		}
 
 		.message.tool.error {
-			border-left-color: var(--red);
+			background: #3c2828;
+			border-left-color: #cc6666;
+		}
+
+		.message.tool.excluded {
+			opacity: 0.84;
 		}
 
 		.tool-header,
@@ -722,6 +745,27 @@
 			color: #d2a8ff;
 		}
 
+		.thinking-label-text {
+			flex: 0 0 auto;
+		}
+
+		.thinking-inline-preview {
+			flex: 1 1 auto;
+			min-width: 0;
+			font-size: 11px;
+			font-weight: 500;
+			letter-spacing: 0;
+			text-transform: none;
+			color: rgba(210, 168, 255, 0.72);
+			white-space: nowrap;
+			overflow: hidden;
+			text-overflow: ellipsis;
+		}
+
+		.thinking-block[open] .thinking-inline-preview {
+			display: none;
+		}
+
 		.thinking-label::-webkit-details-marker {
 			display: none;
 		}
@@ -749,6 +793,32 @@
 			white-space: pre-wrap;
 			word-break: break-word;
 			overflow-wrap: anywhere;
+		}
+
+		.message-row.working {
+			justify-content: stretch;
+		}
+
+		.message.working {
+			display: inline-flex;
+			align-items: center;
+			gap: 10px;
+			width: auto;
+			max-width: 100%;
+			padding: 10px 12px;
+			background: rgba(22, 27, 34, 0.9);
+			border: 1px solid rgba(48, 54, 61, 0.85);
+			color: var(--muted);
+		}
+
+		.inline-spinner {
+			width: 14px;
+			height: 14px;
+			border-radius: 50%;
+			border: 2px solid rgba(121, 192, 255, 0.22);
+			border-top-color: #79c0ff;
+			animation: spin 0.8s linear infinite;
+			flex: 0 0 auto;
 		}
 
 		.timestamp {
@@ -1032,7 +1102,7 @@
 		}
 
 		.working-indicator {
-			display: none;
+			display: none !important;
 			width: 14px;
 			height: 14px;
 			border-radius: 50%;
@@ -1232,7 +1302,7 @@
 			}
 
 			#send-btn {
-				min-width: 0;
+				min-width: 48px;
 			}
 		}
 	</style>
@@ -1356,7 +1426,7 @@
 			<div class="composer">
 				<input id="message-input" type="text" placeholder="Send a message to the active session…" autocomplete="off" />
 				<button id="abort-btn" class="danger icon-button abort-button" title="Abort active generation" aria-label="Abort active generation" disabled>■</button>
-				<button id="send-btn" class="primary" disabled>Send</button>
+				<button id="send-btn" class="primary" title="Send" aria-label="Send" disabled>🎲</button>
 			</div>
 		</main>
 	</div>

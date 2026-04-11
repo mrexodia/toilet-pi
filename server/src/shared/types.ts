@@ -36,6 +36,8 @@ export interface ActiveTool {
   toolCallId: string
   toolName: string
   args?: unknown
+  text?: string
+  details?: unknown
 }
 
 export interface PendingInput {

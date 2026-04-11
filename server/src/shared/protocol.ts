@@ -38,6 +38,8 @@ export interface ActiveToolSnapshot {
   toolCallId: string
   toolName: string
   args?: unknown
+  text?: string
+  details?: unknown
 }
 
 export interface QueuedInput {
@@ -110,6 +112,15 @@ export interface ToolStartEvent {
   args?: unknown
 }
 
+export interface ToolUpdateEvent {
+  type: 'tool_update'
+  toolCallId: string
+  toolName?: string
+  args?: unknown
+  text?: string
+  details?: unknown
+}
+
 export interface ToolEndEvent {
   type: 'tool_end'
   toolCallId: string
@@ -153,6 +164,7 @@ export type SessionEvent =
   | AssistantStreamUpdateEvent
   | AssistantStreamEndEvent
   | ToolStartEvent
+  | ToolUpdateEvent
   | ToolEndEvent
   | BusyEvent
   | ModelEvent

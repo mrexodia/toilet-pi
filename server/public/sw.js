@@ -1,10 +1,11 @@
-const CACHE_NAME = 'toilet-pi-v1';
+const CACHE_NAME = 'toilet-pi-v2';
 const APP_ASSETS = [
   './',
   './index.html',
   './app.js',
   './manifest.webmanifest',
-  './icon.svg',
+  './favicon.svg',
+  './favicon.ico',
 ];
 
 self.addEventListener('install', (event) => {
@@ -35,7 +36,8 @@ self.addEventListener('fetch', (event) => {
     url.pathname.endsWith('.html') ||
     url.pathname.endsWith('.js') ||
     url.pathname.endsWith('.webmanifest') ||
-    url.pathname.endsWith('.svg');
+    url.pathname.endsWith('.svg') ||
+    url.pathname.endsWith('.ico');
 
   if (!isShellRequest) return;
 

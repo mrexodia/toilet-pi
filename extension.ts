@@ -710,6 +710,28 @@ export default function (pi: ExtensionAPI) {
     });
   });
 
+  pi.on("tool_execution_update", async (event) => {
+    const previous = pendingToolCalls.get(event.toolCallId);
+    const partial = sanitizePartialToolResult(event.partialResult);
+    const nextToolCall = {
+      toolCallId: event.toolCallId,
+      toolName: event.toolName,
+      args: previous?.args ?? sanitizeStructuredData((event as any).args),
+      startedAt: previous?.startedAt,
+      details: partial.details ?? previous?.details,
+      durationMs: previous?.durationMs,
+    };
+    pendingToolCalls.set(event.toolCallId, nextToolCall);
+    emitSessionEvent({
+      type: "tool_update",
+      toolCallId: event.toolCallId,
+      toolName: event.toolName,
+      args: nextToolCall.args,
+      text: partial.text,
+      details: partial.details,
+    });
+  });
+
   pi.on("tool_execution_end", async (event) => {
     const started = pendingToolCalls.get(event.toolCallId);
     completedToolCalls.set(event.toolCallId, {
@@ -717,7 +739,7 @@ export default function (pi: ExtensionAPI) {
       toolName: event.toolName,
       args: started?.args ?? sanitizeStructuredData((event as any).args),
       startedAt: started?.startedAt,
-      details: sanitizeStructuredData((event.result as any)?.details),
+      details: sanitizeStructuredData((event.result as any)?.details) ?? started?.details,
       durationMs: started?.startedAt ? Date.now() - started.startedAt : undefined,
     });
     emitSessionEvent({
@@ -834,6 +856,29 @@ function sanitizeMessage(
     };
   }
 
+  if (message.role === "bashExecution") {
+    const output = normalizeText(String(message.output || ""));
+    const details = sanitizeStructuredData({
+      exitCode: message.exitCode,
+      cancelled: !!message.cancelled,
+      truncated: !!message.truncated,
+      fullOutputPath: message.fullOutputPath,
+      excludeFromContext: !!message.excludeFromContext,
+    });
+    return {
+      role: "toolResult",
+      timestamp: message.timestamp,
+      toolName: "bash",
+      text: output,
+      isError: !!message.cancelled || (typeof message.exitCode === "number" && message.exitCode !== 0),
+      args: sanitizeStructuredData({
+        command: String(message.command || ""),
+        excludeFromContext: !!message.excludeFromContext,
+      }),
+      details,
+    };
+  }
+
   if (message.role === "toolResult") {
     const toolCall = message.toolCallId
       ? toolCalls.get(message.toolCallId) || completedToolCalls.get(message.toolCallId)
@@ -898,6 +943,16 @@ function extractToolResultText(content: any) {
   return normalizeText(
     content.map(extractContentPart).filter(Boolean).join(""),
   );
+}
+
+function sanitizePartialToolResult(partialResult: any) {
+  if (!partialResult || typeof partialResult !== "object") {
+    return { text: "", details: undefined };
+  }
+  return {
+    text: extractToolResultText((partialResult as any).content),
+    details: sanitizeStructuredData((partialResult as any).details),
+  };
 }
 
 function extractContentPart(part: any) {
