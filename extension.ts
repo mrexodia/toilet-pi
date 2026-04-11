@@ -68,8 +68,9 @@ export default function (pi: ExtensionAPI) {
   let shuttingDown = false;
   let releasing = false;
   let pendingAssistantAbortMessage = false;
-  let sessionNamePoller: NodeJS.Timeout | null = null;
+  let sessionStatePoller: NodeJS.Timeout | null = null;
   let lastReportedSessionName: string | null = null;
+  let lastReportedHasPendingMessages = false;
   let connectionConfig: { serverUrl: string; token: string } | null = null;
   const pendingRemoteInputIds: string[] = [];
   const pendingToolCalls = new Map<string, ToolCallInfo>();
@@ -100,17 +101,21 @@ export default function (pi: ExtensionAPI) {
 
   function updateStatus(status: string, connected = false) {
     if (!ctx?.hasUI || ROLE === "background") return;
+    const normalized = String(status || "").trim().toLowerCase();
+    const isConnecting = normalized.startsWith("connecting");
+    const isDisconnected = normalized === "disconnected";
+    const isError = normalized.includes("error");
+
+    if (!isConnecting && !isDisconnected && !isError) {
+      ctx.ui.setStatus(STATUS_KEY, undefined);
+      return;
+    }
+
     const theme = ctx.ui.theme;
     const icon = connected
       ? theme.fg("success", "●")
-      : theme.fg("warning", "○");
-    if (status === "unconfigured") {
-      ctx.ui.setStatus(STATUS_KEY, `${icon} toilet-pi: unconfigured · /toilet-pi`);
-      return;
-    }
-    const mobileUrl = getMobileUrl();
-    const mobileSuffix = connected && mobileUrl ? ` · ${mobileUrl}` : "";
-    ctx.ui.setStatus(STATUS_KEY, `${icon} toilet-pi:${status}${mobileSuffix}`);
+      : theme.fg(isError ? "error" : "warning", isError ? "●" : "○");
+    ctx.ui.setStatus(STATUS_KEY, `${icon} toilet-pi: ${status}`);
   }
 
   function send(payload: unknown) {
@@ -245,6 +250,8 @@ export default function (pi: ExtensionAPI) {
       reconnectAttempt = 0;
       updateStatus(`${ROLE}`, true);
       sendHello();
+      syncSessionName(true);
+      syncPendingMessages(true);
     });
 
     ws.on("message", async (data: Buffer) => {
@@ -421,9 +428,9 @@ export default function (pi: ExtensionAPI) {
       clearTimeout(reconnectTimer);
       reconnectTimer = null;
     }
-    if (sessionNamePoller) {
-      clearInterval(sessionNamePoller);
-      sessionNamePoller = null;
+    if (sessionStatePoller) {
+      clearInterval(sessionStatePoller);
+      sessionStatePoller = null;
     }
     try {
       await Promise.resolve(ctx.abort());
@@ -474,10 +481,33 @@ export default function (pi: ExtensionAPI) {
     });
   }
 
-  function startSessionNamePolling() {
-    if (sessionNamePoller) clearInterval(sessionNamePoller);
-    sessionNamePoller = setInterval(() => {
+  function syncPendingMessages(force = false) {
+    if (!ctx) return;
+    const nextHasPendingMessages = !!ctx.hasPendingMessages();
+    if (!force && nextHasPendingMessages === lastReportedHasPendingMessages) return;
+    lastReportedHasPendingMessages = nextHasPendingMessages;
+    if (nextHasPendingMessages) {
+      emitSessionEvent({
+        type: "queued_input_add",
+        queuedInput: {
+          inputId: "__local_pending__",
+          text: "Queued in TUI…",
+          timestamp: Date.now(),
+        },
+      });
+      return;
+    }
+    emitSessionEvent({
+      type: "queued_input_remove",
+      inputId: "__local_pending__",
+    });
+  }
+
+  function startSessionStatePolling() {
+    if (sessionStatePoller) clearInterval(sessionStatePoller);
+    sessionStatePoller = setInterval(() => {
       syncSessionName();
+      syncPendingMessages();
     }, 1000);
   }
 
@@ -492,7 +522,8 @@ export default function (pi: ExtensionAPI) {
     completedToolCalls.clear();
     shuttingDown = false;
     lastReportedSessionName = getSessionName(context);
-    startSessionNamePolling();
+    lastReportedHasPendingMessages = !!context.hasPendingMessages();
+    startSessionStatePolling();
     connectionConfig = await loadConnectionConfig();
     if (connectionConfig) {
       updateStatus("connecting", false);
@@ -637,9 +668,9 @@ export default function (pi: ExtensionAPI) {
       clearTimeout(reconnectTimer);
       reconnectTimer = null;
     }
-    if (sessionNamePoller) {
-      clearInterval(sessionNamePoller);
-      sessionNamePoller = null;
+    if (sessionStatePoller) {
+      clearInterval(sessionStatePoller);
+      sessionStatePoller = null;
     }
     closeSocket("session shutdown");
     if (ctx?.hasUI) {
@@ -653,6 +684,7 @@ export default function (pi: ExtensionAPI) {
     pendingToolCalls.clear();
     completedToolCalls.clear();
     lastReportedSessionName = null;
+    lastReportedHasPendingMessages = false;
     ctx = null;
   });
 

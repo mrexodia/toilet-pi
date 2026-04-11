@@ -435,9 +435,16 @@ export function createServerCore(
     })
 
     if (
-      ['message', 'busy', 'model', 'tool_start', 'tool_end', 'session_name'].includes(
-        String(message.event?.type || ''),
-      )
+      [
+        'message',
+        'busy',
+        'model',
+        'tool_start',
+        'tool_end',
+        'session_name',
+        'queued_input_add',
+        'queued_input_remove',
+      ].includes(String(message.event?.type || ''))
     ) {
       broadcastOverview()
       notifySessionMeta(session.sessionGuid)
@@ -592,7 +599,23 @@ export function createServerCore(
         break
 
       case 'queued_input_add':
+        if (event.queuedInput?.inputId) {
+          const existingIndex = session.queuedInputs.findIndex(
+            (entry) => entry.inputId === event.queuedInput?.inputId,
+          )
+          if (existingIndex >= 0) session.queuedInputs[existingIndex] = event.queuedInput
+          else session.queuedInputs.push(event.queuedInput)
+        }
+        break
+
       case 'queued_input_remove':
+        if (event.inputId) {
+          session.queuedInputs = session.queuedInputs.filter(
+            (entry) => entry.inputId !== event.inputId,
+          )
+        } else {
+          session.queuedInputs.shift()
+        }
         break
     }
   }

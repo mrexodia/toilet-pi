@@ -1082,10 +1082,10 @@ function updateControls() {
 	toolsExpandBtnEl.textContent = toolsExpanded ? "Collapse Tools" : "Expand Tools";
 
 	messageInputEl.placeholder = hasOwner
-		? "Send a live message to the active session…"
+		? (MOBILE_MEDIA.matches ? "Send message…" : "Send a live message to the active session…")
 		: currentSessionGuid && canAutoStart
-			? "Send a message — toilet-pi will auto-start this session in background…"
-			: "Select a session to send a message…";
+			? (MOBILE_MEDIA.matches ? "Resume session…" : "Send a message — toilet-pi will auto-start this session in background…")
+			: (MOBILE_MEDIA.matches ? "Select session…" : "Select a session to send a message…");
 }
 
 function getCurrentLaunchContext() {
