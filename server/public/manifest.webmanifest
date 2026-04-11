@@ -1,0 +1,18 @@
+{
+  "name": "toilet-pi",
+  "short_name": "toilet-pi",
+  "description": "Remote control pi sessions from a mobile-friendly web UI.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#0d1117",
+  "theme_color": "#0d1117",
+  "icons": [
+    {
+      "src": "./icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

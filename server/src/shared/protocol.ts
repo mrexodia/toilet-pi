@@ -210,6 +210,7 @@ export interface HelloRunnerMessage {
   streamingText?: string | null
   streamingThinkingText?: string | null
   history?: SanitizedMessage[]
+  updatedAt?: number
 }
 
 export type HelloMessage =
@@ -230,6 +231,11 @@ export interface InputMessage {
 
 export interface AbortMessage {
   type: 'abort'
+  sessionGuid?: string
+}
+
+export interface TerminateSessionMessage {
+  type: 'terminate_session'
   sessionGuid?: string
 }
 
@@ -307,6 +313,7 @@ export type ClientMessage =
   | AttachMessage
   | InputMessage
   | AbortMessage
+  | TerminateSessionMessage
   | StartBackgroundSessionMessage
   | CreateBackgroundSessionMessage
   | RefreshHostSessionsMessage
@@ -381,6 +388,10 @@ export interface AbortAndReleaseMessage {
   type: 'abort_and_release'
 }
 
+export interface TerminateSessionCommandMessage {
+  type: 'terminate_session'
+}
+
 export interface ListSessionsMessage {
   type: 'list_sessions'
 }
@@ -418,6 +429,7 @@ export type ServerMessage =
   | InputCommandMessage
   | AbortCommandMessage
   | AbortAndReleaseMessage
+  | TerminateSessionCommandMessage
   | ListSessionsMessage
   | ReadSessionSnapshotMessage
   | StartBackgroundSessionCommandMessage
@@ -438,6 +450,7 @@ export function parseClientMessage(raw: unknown): ClientMessage {
     case 'attach':
     case 'input':
     case 'abort':
+    case 'terminate_session':
     case 'start_background_session':
     case 'create_background_session':
     case 'refresh_host_sessions':

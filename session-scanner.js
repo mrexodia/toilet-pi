@@ -56,6 +56,7 @@ export async function readSessionSnapshot(sessionFile, options = {}) {
   let header = null;
   let sessionName = null;
   let model = null;
+  let updatedAt = 0;
   const history = [];
 
   const stream = createReadStream(resolvedFile, { encoding: "utf8" });
@@ -71,6 +72,12 @@ export async function readSessionSnapshot(sessionFile, options = {}) {
       } catch {
         continue;
       }
+
+      updatedAt = Math.max(
+        updatedAt,
+        normalizeTimestamp(entry.timestamp),
+        normalizeTimestamp(entry.message?.timestamp),
+      );
 
       if (!header && entry.type === "session") {
         header = entry;
@@ -115,7 +122,7 @@ export async function readSessionSnapshot(sessionFile, options = {}) {
     sessionName,
     model,
     history,
-    updatedAt: info.mtimeMs,
+    updatedAt: updatedAt || info.mtimeMs,
   };
 }
 
@@ -135,6 +142,7 @@ async function summarizeSessionFile(sessionFile) {
   let header = null;
   let sessionName = null;
   let firstUserText = null;
+  let updatedAt = 0;
 
   const stream = createReadStream(sessionFile, { encoding: "utf8" });
   const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
@@ -149,6 +157,12 @@ async function summarizeSessionFile(sessionFile) {
       } catch {
         continue;
       }
+
+      updatedAt = Math.max(
+        updatedAt,
+        normalizeTimestamp(entry.timestamp),
+        normalizeTimestamp(entry.message?.timestamp),
+      );
 
       if (!header && entry.type === "session") {
         header = entry;
@@ -185,8 +199,17 @@ async function summarizeSessionFile(sessionFile) {
     cwd: header.cwd || null,
     sessionName,
     preview: firstUserText,
-    updatedAt: info.mtimeMs,
+    updatedAt: updatedAt || info.mtimeMs,
   };
+}
+
+function normalizeTimestamp(value) {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string") {
+    const parsed = Date.parse(value);
+    if (!Number.isNaN(parsed)) return parsed;
+  }
+  return 0;
 }
 
 function sanitizeMessage(message, fallbackTimestamp) {
@@ -209,7 +232,7 @@ function sanitizeMessage(message, fallbackTimestamp) {
     return {
       role: "assistant",
       timestamp: normalizeTimestamp(message.timestamp || fallbackTimestamp),
-      text: text || `[${message.stopReason || "done"}]`,
+      text: text || (message.stopReason === "toolUse" ? "" : `[${message.stopReason || "done"}]`),
       thinkingText: thinkingText || undefined,
       stopReason: message.stopReason,
     };
@@ -302,15 +325,6 @@ function truncateText(text) {
   return text.length > DEFAULT_MESSAGE_LIMIT
     ? `${text.slice(0, DEFAULT_MESSAGE_LIMIT - 1)}…`
     : text;
-}
-
-function normalizeTimestamp(value) {
-  if (typeof value === "number" && Number.isFinite(value)) return value;
-  if (typeof value === "string") {
-    const parsed = Date.parse(value);
-    if (!Number.isNaN(parsed)) return parsed;
-  }
-  return undefined;
 }
 
 function compactText(text) {

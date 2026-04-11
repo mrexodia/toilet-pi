@@ -20,7 +20,7 @@ const STATUS_KEY = "toilet-pi";
 const LAUNCH_REQUEST_ID = process.env.TOILET_PI_LAUNCH_REQUEST_ID || null;
 
 interface ServerMessage {
-  type: "input" | "abort" | "abort_and_release";
+  type: "input" | "abort" | "abort_and_release" | "terminate_session";
   text?: string;
   inputId?: string;
 }
@@ -68,6 +68,8 @@ export default function (pi: ExtensionAPI) {
   let shuttingDown = false;
   let releasing = false;
   let pendingAssistantAbortMessage = false;
+  let sessionNamePoller: NodeJS.Timeout | null = null;
+  let lastReportedSessionName: string | null = null;
   let connectionConfig: { serverUrl: string; token: string } | null = null;
   const pendingRemoteInputIds: string[] = [];
   const pendingToolCalls = new Map<string, ToolCallInfo>();
@@ -126,6 +128,19 @@ export default function (pi: ExtensionAPI) {
 
   function getSessionName(context: ExtensionContext | null = ctx) {
     try {
+      const branch = context?.sessionManager.getBranch?.();
+      if (Array.isArray(branch)) {
+        for (let i = branch.length - 1; i >= 0; i -= 1) {
+          const entry = branch[i] as any;
+          if (entry?.type !== "session_info") continue;
+          const name = typeof entry.name === "string" ? entry.name.trim() : "";
+          return name || null;
+        }
+      }
+    } catch {
+      // Fall through to the session manager getter.
+    }
+    try {
       return context?.sessionManager.getSessionName() || null;
     } catch {
       return null;
@@ -147,6 +162,22 @@ export default function (pi: ExtensionAPI) {
     return history;
   }
 
+  function getSessionUpdatedAt(context: ExtensionContext) {
+    try {
+      const branch = context.sessionManager.getBranch();
+      for (let i = branch.length - 1; i >= 0; i -= 1) {
+        const entry = branch[i] as any;
+        const timestamp = normalizeTimestamp(entry?.timestamp);
+        if (timestamp != null) return timestamp;
+        const messageTimestamp = normalizeTimestamp(entry?.message?.timestamp);
+        if (messageTimestamp != null) return messageTimestamp;
+      }
+    } catch {
+      // Ignore and fall back to now.
+    }
+    return Date.now();
+  }
+
   function sendHello() {
     if (!ctx) return;
     send({
@@ -163,6 +194,7 @@ export default function (pi: ExtensionAPI) {
       streamingText: lastStreamText,
       streamingThinkingText: lastThinkingText,
       history: buildHistory(ctx),
+      updatedAt: getSessionUpdatedAt(ctx),
     });
   }
 
@@ -336,6 +368,11 @@ export default function (pi: ExtensionAPI) {
       return;
     }
 
+    if (message.type === "terminate_session") {
+      await terminateSession();
+      return;
+    }
+
     if (message.type === "input" && message.text) {
       await dispatchIncomingInput(message.text, message.inputId || null);
     }
@@ -377,6 +414,26 @@ export default function (pi: ExtensionAPI) {
     }
   }
 
+  async function terminateSession() {
+    if (!ctx || shuttingDown) return;
+    shuttingDown = true;
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+    }
+    if (sessionNamePoller) {
+      clearInterval(sessionNamePoller);
+      sessionNamePoller = null;
+    }
+    try {
+      await Promise.resolve(ctx.abort());
+    } catch {
+      // Ignore.
+    }
+    await waitUntilIdle(ctx, 5000);
+    ctx.shutdown();
+  }
+
   async function shutdownBackgroundProcess(_reason: string) {
     if (!ctx || shuttingDown) return;
     shuttingDown = true;
@@ -407,6 +464,23 @@ export default function (pi: ExtensionAPI) {
     });
   }
 
+  function syncSessionName(force = false) {
+    const nextName = getSessionName(ctx);
+    if (!force && nextName === lastReportedSessionName) return;
+    lastReportedSessionName = nextName;
+    emitSessionEvent({
+      type: "session_name",
+      sessionName: nextName,
+    });
+  }
+
+  function startSessionNamePolling() {
+    if (sessionNamePoller) clearInterval(sessionNamePoller);
+    sessionNamePoller = setInterval(() => {
+      syncSessionName();
+    }, 1000);
+  }
+
   pi.on("session_start", async (_event, context) => {
     ctx = context;
     currentSessionGuid = getSessionGuid(context);
@@ -417,6 +491,8 @@ export default function (pi: ExtensionAPI) {
     pendingToolCalls.clear();
     completedToolCalls.clear();
     shuttingDown = false;
+    lastReportedSessionName = getSessionName(context);
+    startSessionNamePolling();
     connectionConfig = await loadConnectionConfig();
     if (connectionConfig) {
       updateStatus("connecting", false);
@@ -510,6 +586,7 @@ export default function (pi: ExtensionAPI) {
       currentSessionGuid = getSessionGuid();
       sendHello();
     }
+    syncSessionName();
   });
 
   pi.on("tool_execution_start", async (event) => {
@@ -560,6 +637,10 @@ export default function (pi: ExtensionAPI) {
       clearTimeout(reconnectTimer);
       reconnectTimer = null;
     }
+    if (sessionNamePoller) {
+      clearInterval(sessionNamePoller);
+      sessionNamePoller = null;
+    }
     closeSocket("session shutdown");
     if (ctx?.hasUI) {
       ctx.ui.setStatus(STATUS_KEY, undefined);
@@ -571,6 +652,7 @@ export default function (pi: ExtensionAPI) {
     pendingRemoteInputIds.length = 0;
     pendingToolCalls.clear();
     completedToolCalls.clear();
+    lastReportedSessionName = null;
     ctx = null;
   });
 
@@ -639,7 +721,7 @@ function sanitizeMessage(
     return {
       role: "assistant",
       timestamp: message.timestamp,
-      text: text || `[${message.stopReason || "done"}]`,
+      text: text || (message.stopReason === "toolUse" ? "" : `[${message.stopReason || "done"}]`),
       thinkingText: thinkingText || undefined,
       stopReason: message.stopReason,
     };
@@ -731,6 +813,15 @@ function parseToolArguments(argumentsValue: any) {
   } catch {
     return argumentsValue;
   }
+}
+
+function normalizeTimestamp(value: any) {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string") {
+    const parsed = Date.parse(value);
+    if (!Number.isNaN(parsed)) return parsed;
+  }
+  return null;
 }
 
 function sanitizeStructuredData(value: any, depth = 0): any {

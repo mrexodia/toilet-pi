@@ -28,8 +28,15 @@ const authTokenInputEl = document.getElementById("auth-token-input");
 const authCloseBtnEl = document.getElementById("auth-close-btn");
 const authCancelBtnEl = document.getElementById("auth-cancel-btn");
 const authForgetBtnEl = document.getElementById("auth-forget-btn");
+const authConnectionStatusEl = document.getElementById("auth-connection-status");
+const authConnectionDetailEl = document.getElementById("auth-connection-detail");
 const installationModalScrimEl = document.getElementById("installation-modal-scrim");
 const installationCloseBtnEl = document.getElementById("installation-close-btn");
+const confirmModalScrimEl = document.getElementById("confirm-modal-scrim");
+const confirmCloseBtnEl = document.getElementById("confirm-close-btn");
+const confirmCancelBtnEl = document.getElementById("confirm-cancel-btn");
+const confirmSubmitBtnEl = document.getElementById("confirm-submit-btn");
+const confirmModalCopyEl = document.getElementById("confirm-modal-copy");
 const viewSessionsBtnEl = document.getElementById("view-sessions-btn");
 const viewProjectsBtnEl = document.getElementById("view-projects-btn");
 const menuBtnEl = document.getElementById("menu-btn");
@@ -37,14 +44,19 @@ const sidebarCloseBtnEl = document.getElementById("sidebar-close");
 const sessionTitleEl = document.getElementById("session-title");
 const sessionSubtitleEl = document.getElementById("session-subtitle");
 const sessionPathEl = document.getElementById("session-path");
+const sessionWorkingIndicatorEl = document.getElementById("session-working-indicator");
+const headerMenuEl = document.getElementById("header-menu");
 const toolsExpandBtnEl = document.getElementById("tools-expand-btn");
 const newSessionBtnEl = document.getElementById("new-session-btn");
+const newSessionFabEl = document.getElementById("new-session-fab");
+const killSessionBtnEl = document.getElementById("kill-session-btn");
 const noticeBarEl = document.getElementById("notice-bar");
 const messagesEl = document.getElementById("messages");
 const messageInputEl = document.getElementById("message-input");
 const sendBtnEl = document.getElementById("send-btn");
 const abortBtnEl = document.getElementById("abort-btn");
 
+registerPwa();
 renderInstallation();
 connect();
 renderBrowserList();
@@ -95,6 +107,21 @@ function normalizePublicPathname(pathname) {
 
 function getConnectUrl() {
 	return getWebSocketUrl();
+}
+
+function getServiceWorkerPath() {
+	const publicPathname = normalizePublicPathname(location.pathname || "/");
+	if (publicPathname === "/") return "/sw.js";
+	return `${publicPathname.replace(/\/+$/, "")}/sw.js`;
+}
+
+function registerPwa() {
+	if (!("serviceWorker" in navigator)) return;
+	window.addEventListener("load", () => {
+		navigator.serviceWorker.register(getServiceWorkerPath()).catch(() => {
+			// Ignore PWA registration errors.
+		});
+	});
 }
 
 function resetConnection(reason = "reset") {
@@ -262,6 +289,7 @@ function setConnection(connected, suppressNotice = false) {
 			: "Disconnected. Click to update the saved token."
 		: "Unauthenticated. Click to enter a server token.";
 	updateSidebarSummary();
+	updateAuthConnectionState();
 	renderInstallation();
 	updateControls();
 	if (connected && noticeBarEl.textContent === "Disconnected from server. Reconnecting…") {
@@ -329,6 +357,18 @@ function renderInstallation() {
 	connectSection.appendChild(connectActions);
 	connectSection.appendChild(connectCode);
 	installationPanelEl.appendChild(connectSection);
+
+	const pwaSection = document.createElement("section");
+	pwaSection.className = "install-section";
+	const pwaTitle = document.createElement("div");
+	pwaTitle.className = "install-copy";
+	pwaTitle.textContent = "Install on mobile";
+	const pwaHint = document.createElement("div");
+	pwaHint.className = "install-hint";
+	pwaHint.textContent = "Install toilet-pi to hide most browser navigation chrome. On iPhone/iPad use Share → Add to Home Screen. On Android use Install app / Add to Home screen from the browser menu.";
+	pwaSection.appendChild(pwaTitle);
+	pwaSection.appendChild(pwaHint);
+	installationPanelEl.appendChild(pwaSection);
 }
 
 async function copyText(text) {
@@ -354,8 +394,26 @@ async function copyText(text) {
 	}
 }
 
+function updateAuthConnectionState() {
+	if (!authConnectionStatusEl || !authConnectionDetailEl) return;
+	const connected = ws?.readyState === WebSocket.OPEN;
+	authConnectionStatusEl.textContent = connected ? "Connected" : authToken ? "Disconnected" : "Unauthenticated";
+	authConnectionStatusEl.className = `status-pill ${connected ? "connected" : "disconnected"}`;
+	authConnectionDetailEl.textContent = connected
+		? "Server connected. You can manage your saved token or open installation help."
+		: authToken
+			? "A token is saved, but the server is currently disconnected."
+			: "Add a token to connect to your server.";
+}
+
+function closeHeaderMenu() {
+	if (headerMenuEl) headerMenuEl.open = false;
+}
+
 function openAuthModal() {
 	closeInstallationModal();
+	closeHeaderMenu();
+	updateAuthConnectionState();
 	if (authTokenInputEl) authTokenInputEl.value = authToken || "";
 	if (authForgetBtnEl) authForgetBtnEl.disabled = !authToken;
 	bodyEl.classList.add("auth-open");
@@ -393,6 +451,7 @@ function forgetAuthToken() {
 
 function openInstallationModal() {
 	closeAuthModal();
+	closeHeaderMenu();
 	renderInstallation();
 	bodyEl.classList.add("installation-open");
 }
@@ -400,6 +459,17 @@ function openInstallationModal() {
 function closeInstallationModal() {
 	renderInstallation();
 	bodyEl.classList.remove("installation-open");
+}
+
+function openConfirmModal(message) {
+	if (confirmModalCopyEl) confirmModalCopyEl.textContent = message;
+	closeHeaderMenu();
+	bodyEl.classList.add("confirm-open");
+	requestAnimationFrame(() => confirmSubmitBtnEl?.focus());
+}
+
+function closeConfirmModal() {
+	bodyEl.classList.remove("confirm-open");
 }
 
 function flattenSessions() {
@@ -477,19 +547,20 @@ function renderSessionBrowser() {
 			closeSidebar: true,
 		});
 
-		const main = document.createElement("div");
-		main.className = "item-main";
-		main.appendChild(makeLine("item-title", getSessionTitle(session)));
-		main.appendChild(makeLine("item-subtitle", `${session.hostname} • ${session.cwd || shortId(session.sessionGuid)}`));
-		if (session.preview && session.preview !== getSessionTitle(session)) {
-			main.appendChild(makeLine("item-preview", session.preview));
+		const projectLabel = getProjectLabel(session.cwd);
+		row.appendChild(makeLine("item-title", projectLabel || getSessionTitle(session)));
+		const detailLabel = getSessionDetailLabel(session);
+		if (detailLabel) row.appendChild(makeLine("item-subtitle", detailLabel));
+		row.appendChild(makeLine("item-meta", `${session.model || "no model"}${session.hostname ? ` • ${session.hostname}` : ""}`));
+		if (session.cwd) {
+			const pathEl = makeLine("item-path", session.cwd);
+			pathEl.title = session.cwd;
+			row.appendChild(pathEl);
 		}
 
 		const badges = document.createElement("div");
 		badges.className = "item-badges";
 		for (const badge of buildSessionBadges(session)) badges.appendChild(badge);
-
-		row.appendChild(main);
 		row.appendChild(badges);
 		browserListEl.appendChild(row);
 	}
@@ -508,33 +579,26 @@ function renderProjectBrowser() {
 
 		const header = document.createElement("div");
 		header.className = "project-header";
-		const main = document.createElement("div");
-		main.className = "project-main";
-		main.appendChild(makeLine("project-title", basenamePath(project.cwd)));
-		main.appendChild(makeLine("project-host", project.hostname));
+		const selectBtn = document.createElement("button");
+		selectBtn.type = "button";
+		selectBtn.className = `project-select ${isSelectedProject(project) ? "active" : ""}`;
+		selectBtn.onclick = () => {
+			selectedProjectContext = { hostId: project.hostId, hostname: project.hostname, cwd: project.cwd, hostConnected: project.hostConnected };
+			currentSessionGuid = null;
+			currentSession = createEmptySession(null);
+			send({ type: "attach", sessionGuid: null });
+			renderBrowserList();
+			renderSession({ forceScroll: true });
+			updateHeader();
+			updateControls();
+			if (MOBILE_MEDIA.matches) showNotice(`Selected ${basenamePath(project.cwd)}`, "info");
+		};
+		selectBtn.appendChild(makeLine("project-title", basenamePath(project.cwd)));
+		selectBtn.appendChild(makeLine("project-meta", `${project.sessions.length} session${project.sessions.length === 1 ? "" : "s"} • ${project.hostConnected ? "online" : "offline"}${project.hostname ? ` • ${project.hostname}` : ""}`));
 		const projectPathEl = makeLine("project-path", project.cwd);
 		projectPathEl.title = project.cwd;
-		main.appendChild(projectPathEl);
-		header.appendChild(main);
-
-		const actions = document.createElement("div");
-		actions.className = "project-actions";
-		const meta = document.createElement("span");
-		meta.className = `badge ${project.hostConnected ? "connected" : "disconnected"}`;
-		meta.textContent = `${project.sessions.length} session${project.sessions.length === 1 ? "" : "s"}`;
-		actions.appendChild(meta);
-
-		const newBtn = document.createElement("button");
-		newBtn.type = "button";
-		newBtn.textContent = "New Session";
-		newBtn.disabled = !(ws?.readyState === WebSocket.OPEN && project.hostConnected && project.cwd && project.cwd !== "(unknown project)");
-		newBtn.onclick = (event) => {
-			event.stopPropagation();
-			selectedProjectContext = { hostId: project.hostId, hostname: project.hostname, cwd: project.cwd, hostConnected: project.hostConnected };
-			createNewBackgroundSession(selectedProjectContext);
-		};
-		actions.appendChild(newBtn);
-		header.appendChild(actions);
+		selectBtn.appendChild(projectPathEl);
+		header.appendChild(selectBtn);
 		card.appendChild(header);
 
 		const sessionsEl = document.createElement("div");
@@ -550,17 +614,12 @@ function renderProjectBrowser() {
 				hostConnected: session.hostConnected,
 				closeSidebar: true,
 			});
-
-			const itemMain = document.createElement("div");
-			itemMain.className = "session-mini-main";
-			itemMain.appendChild(makeLine("session-mini-title", getSessionTitle(session)));
-			itemMain.appendChild(makeLine("session-mini-subtitle", session.preview || shortId(session.sessionGuid)));
-
+			row.appendChild(makeLine("session-mini-title", getSessionDetailLabel(session) || session.sessionName || session.preview || shortId(session.sessionGuid)));
+			const subtitle = `${session.model || "no model"}${session.hostname ? ` • ${session.hostname}` : ""}`;
+			row.appendChild(makeLine("session-mini-subtitle", subtitle));
 			const itemBadges = document.createElement("div");
 			itemBadges.className = "item-badges";
 			for (const badge of buildSessionBadges(session)) itemBadges.appendChild(badge);
-
-			row.appendChild(itemMain);
 			row.appendChild(itemBadges);
 			sessionsEl.appendChild(row);
 		}
@@ -626,12 +685,12 @@ function hydrateCurrentSessionFromOverview() {
 	if (!currentSessionGuid) return;
 	const summary = findSessionSummary(currentSessionGuid);
 	if (!summary) return;
-	currentSession.hostId ||= summary.hostId;
-	currentSession.sessionFile ||= summary.sessionFile || null;
-	currentSession.sessionName ||= summary.sessionName || null;
-	currentSession.cwd ||= summary.cwd || null;
-	currentSession.model ||= summary.model || null;
-	currentSession.owner ??= summary.owner ?? null;
+	currentSession.hostId = currentSession.hostId || summary.hostId;
+	currentSession.sessionFile = currentSession.sessionFile || summary.sessionFile || null;
+	currentSession.sessionName = summary.sessionName ?? currentSession.sessionName;
+	currentSession.cwd = summary.cwd ?? currentSession.cwd;
+	currentSession.model = summary.model ?? currentSession.model;
+	currentSession.owner = currentSession.owner ?? summary.owner ?? null;
 	currentSession.busy = currentSession.busy || !!summary.busy;
 	selectedProjectContext = summary.cwd
 		? { hostId: summary.hostId, hostname: summary.hostname, cwd: summary.cwd, hostConnected: summary.hostConnected }
@@ -965,27 +1024,40 @@ function scrollMessagesToBottom() {
 
 function updateHeader() {
 	if (!currentSessionGuid) {
-		sessionTitleEl.textContent = "No session selected";
-		sessionSubtitleEl.textContent = currentView === "projects"
-			? "Pick a project and start a new session, or select an existing session below it."
-			: "Select a session from the sidebar to watch it live.";
-		sessionPathEl.textContent = selectedProjectContext?.cwd || "";
+		if (selectedProjectContext?.cwd) {
+			sessionTitleEl.textContent = basenamePath(selectedProjectContext.cwd);
+			sessionSubtitleEl.textContent = `${selectedProjectContext.hostConnected ? "ready" : "offline"} • ${selectedProjectContext.hostname || selectedProjectContext.hostId} • ${selectedProjectContext.cwd}`;
+			sessionPathEl.textContent = selectedProjectContext.cwd || "";
+		} else {
+			sessionTitleEl.textContent = "No session selected";
+			sessionSubtitleEl.textContent = currentView === "projects"
+				? "Pick a project, then use + to start a new session."
+				: "Select a session from the sidebar to watch it live.";
+			sessionPathEl.textContent = "";
+		}
+		sessionWorkingIndicatorEl?.classList.remove("visible");
 		return;
 	}
 
 	const summary = findSessionSummary(currentSessionGuid);
 	const hostLabel = currentSession.hostId || summary?.hostId || "unknown host";
 	const owner = currentSession.owner || summary?.owner || "inactive";
-	const busy = currentSession.busy ? " • busy" : "";
 	const queuedCount = currentSession.queuedInputs.length || summary?.queuedInputCount || 0;
 	const queued = queuedCount ? ` • ${queuedCount} queued` : "";
 	const model = currentSession.model || summary?.model || "no model";
-	const title = clampText(currentSession.sessionName || summary?.sessionName || summary?.preview || shortId(currentSessionGuid), 120);
 	const hostname = summary?.hostname || hostLabel;
+	const cwd = currentSession.cwd || summary?.cwd || currentSessionGuid;
+	const sessionLabel = currentSession.sessionName || summary?.sessionName || summary?.preview || shortId(currentSessionGuid);
+	const projectLabel = getProjectLabel(cwd);
+	const title = projectLabel
+		? clampText(sessionLabel && sessionLabel !== projectLabel ? `${projectLabel} — ${sessionLabel}` : projectLabel, 120)
+		: clampText(sessionLabel, 120);
+	const working = isSessionWorking(summary);
 
 	sessionTitleEl.textContent = title;
-	sessionSubtitleEl.textContent = `${hostname} • ${owner}${busy}${queued} • ${model}`;
-	sessionPathEl.textContent = currentSession.cwd || summary?.cwd || currentSessionGuid;
+	sessionSubtitleEl.textContent = `${owner}${working ? " • working" : ""}${queued} • ${model} • ${hostname} • ${cwd}`;
+	sessionPathEl.textContent = cwd;
+	sessionWorkingIndicatorEl?.classList.toggle("visible", working);
 }
 
 function updateControls() {
@@ -994,10 +1066,18 @@ function updateControls() {
 	const hasOwner = !!(currentSession.owner || summary?.owner);
 	const canAutoStart = !!(summary && summary.hostConnected && (summary.sessionFile || summary.sessionGuid));
 	const launchContext = getCurrentLaunchContext();
+	const canCreateNewSession = !!(connected && launchContext && launchContext.hostConnected && launchContext.cwd && launchContext.cwd !== "(unknown project)");
+	const canKillSession = !!(connected && currentSessionGuid && hasOwner);
+	const showAbort = !!(connected && currentSessionGuid && hasOwner && isSessionWorking(summary));
+	const showFab = MOBILE_MEDIA.matches && bodyEl.classList.contains("sidebar-open") && canCreateNewSession;
 
 	sendBtnEl.disabled = !(connected && currentSessionGuid && (hasOwner || canAutoStart));
-	abortBtnEl.disabled = !(connected && currentSessionGuid && hasOwner);
-	newSessionBtnEl.disabled = !(connected && launchContext && launchContext.hostConnected && launchContext.cwd && launchContext.cwd !== "(unknown project)");
+	abortBtnEl.disabled = !showAbort;
+	abortBtnEl.hidden = !showAbort;
+	newSessionBtnEl.disabled = !canCreateNewSession;
+	if (newSessionFabEl) newSessionFabEl.disabled = !canCreateNewSession;
+	if (killSessionBtnEl) killSessionBtnEl.disabled = !canKillSession;
+	bodyEl.classList.toggle("show-fab", showFab);
 	toolsExpandBtnEl.classList.toggle("active", toolsExpanded);
 	toolsExpandBtnEl.textContent = toolsExpanded ? "Collapse Tools" : "Expand Tools";
 
@@ -1020,6 +1100,16 @@ function getCurrentLaunchContext() {
 	}
 	if (selectedProjectContext?.cwd) return selectedProjectContext;
 	return null;
+}
+
+function isSessionWorking(summary = null) {
+	return !!(
+		currentSession.busy
+		|| currentSession.streamingText
+		|| currentSession.streamingThinkingText
+		|| currentSession.activeTools.length
+		|| summary?.runnerStatus === "starting"
+	);
 }
 
 function syncSelectedProjectContext() {
@@ -1160,7 +1250,26 @@ function findSessionSummary(sessionGuid) {
 }
 
 function getSessionTitle(session) {
-	return clampText(session.sessionName || session.preview || shortId(session.sessionGuid), 120);
+	const projectLabel = getProjectLabel(session.cwd);
+	const label = session.sessionName || session.preview || shortId(session.sessionGuid);
+	if (!projectLabel) return clampText(label, 120);
+	if (!label || label === projectLabel) return clampText(projectLabel, 120);
+	return clampText(`${projectLabel} — ${label}`, 120);
+}
+
+function getSessionDetailLabel(session) {
+	const detail = session.sessionName || session.preview || "";
+	const projectLabel = getProjectLabel(session.cwd);
+	if (!detail || detail === projectLabel) return "";
+	return clampText(detail, 140);
+}
+
+function isSelectedProject(project) {
+	return !!(
+		!currentSessionGuid
+		&& selectedProjectContext?.hostId === project.hostId
+		&& selectedProjectContext?.cwd === project.cwd
+	);
 }
 
 function clampText(value, max = 120) {
@@ -1218,6 +1327,11 @@ function basenamePath(value) {
 	return parts.at(-1) || trimmed;
 }
 
+function getProjectLabel(cwd) {
+	if (!cwd || cwd === "(unknown project)") return "";
+	return basenamePath(cwd);
+}
+
 function shortId(value) {
 	return value ? value.slice(0, 8) : "unknown";
 }
@@ -1225,10 +1339,12 @@ function shortId(value) {
 function openSidebar() {
 	if (!MOBILE_MEDIA.matches) return;
 	bodyEl.classList.add("sidebar-open");
+	updateControls();
 }
 
 function closeSidebar() {
 	bodyEl.classList.remove("sidebar-open");
+	updateControls();
 }
 
 function toggleToolsExpanded() {
@@ -1247,17 +1363,28 @@ viewSessionsBtnEl.onclick = () => {
 	currentView = "sessions";
 	updateViewButtons();
 	renderBrowserList();
+	updateControls();
 };
 
 viewProjectsBtnEl.onclick = () => {
 	currentView = "projects";
 	updateViewButtons();
 	renderBrowserList();
+	updateControls();
 };
 
-menuBtnEl.onclick = () => openSidebar();
-sidebarCloseBtnEl.onclick = () => closeSidebar();
-sidebarScrimEl.onclick = () => closeSidebar();
+menuBtnEl.onclick = () => {
+	openSidebar();
+	updateControls();
+};
+sidebarCloseBtnEl.onclick = () => {
+	closeSidebar();
+	updateControls();
+};
+sidebarScrimEl.onclick = () => {
+	closeSidebar();
+	updateControls();
+};
 connectionStatusEl.onclick = () => openAuthModal();
 connectionStatusEl.onkeydown = (event) => {
 	if (event.key === "Enter" || event.key === " ") {
@@ -1292,17 +1419,44 @@ installationCloseBtnEl.onclick = () => closeInstallationModal();
 installationModalScrimEl.onclick = (event) => {
 	if (event.target === installationModalScrimEl) closeInstallationModal();
 };
-toolsExpandBtnEl.onclick = () => toggleToolsExpanded();
-
-newSessionBtnEl.onclick = () => {
-	const context = getCurrentLaunchContext();
-	if (!context) return;
-	createNewBackgroundSession(context);
+confirmCloseBtnEl.onclick = () => closeConfirmModal();
+confirmCancelBtnEl.onclick = () => closeConfirmModal();
+confirmModalScrimEl.onclick = (event) => {
+	if (event.target === confirmModalScrimEl) closeConfirmModal();
 };
+confirmSubmitBtnEl.onclick = () => {
+	closeConfirmModal();
+	if (!currentSessionGuid) return;
+	send({ type: "terminate_session", sessionGuid: currentSessionGuid });
+};
+toolsExpandBtnEl.onclick = () => {
+	closeHeaderMenu();
+	toggleToolsExpanded();
+};
+
+function triggerNewSession() {
+	const context = getCurrentLaunchContext();
+	if (!context) {
+		showNotice("Select a project first", "error");
+		return;
+	}
+	closeHeaderMenu();
+	createNewBackgroundSession(context);
+}
+
+newSessionBtnEl.onclick = () => triggerNewSession();
+if (newSessionFabEl) newSessionFabEl.onclick = () => triggerNewSession();
+if (killSessionBtnEl) {
+	killSessionBtnEl.onclick = () => {
+		if (!currentSessionGuid) return;
+		openConfirmModal(`This will close ${sessionTitleEl.textContent || "the selected session"}. Continue?`);
+	};
+}
 
 sendBtnEl.onclick = () => {
 	const text = messageInputEl.value.trim();
 	if (!text || !currentSessionGuid) return;
+	closeHeaderMenu();
 	const sent = send({ type: "input", sessionGuid: currentSessionGuid, text });
 	if (!sent) return;
 	if (!(currentSession.owner || findSessionSummary(currentSessionGuid)?.owner)) {
@@ -1313,6 +1467,7 @@ sendBtnEl.onclick = () => {
 
 abortBtnEl.onclick = () => {
 	if (!currentSessionGuid) return;
+	closeHeaderMenu();
 	send({ type: "abort", sessionGuid: currentSessionGuid });
 };
 
@@ -1327,6 +1482,12 @@ messagesEl.addEventListener("scroll", () => {
 	stickToBottom = isNearBottom();
 });
 
+document.addEventListener("click", (event) => {
+	if (headerMenuEl?.open && !headerMenuEl.contains(event.target)) {
+		closeHeaderMenu();
+	}
+});
+
 window.addEventListener("keydown", (event) => {
 	if (event.key === "Escape" && bodyEl.classList.contains("auth-open")) {
 		closeAuthModal();
@@ -1334,6 +1495,14 @@ window.addEventListener("keydown", (event) => {
 	}
 	if (event.key === "Escape" && bodyEl.classList.contains("installation-open")) {
 		closeInstallationModal();
+		return;
+	}
+	if (event.key === "Escape" && bodyEl.classList.contains("confirm-open")) {
+		closeConfirmModal();
+		return;
+	}
+	if (event.key === "Escape" && headerMenuEl?.open) {
+		closeHeaderMenu();
 		return;
 	}
 	if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "o") {
@@ -1344,7 +1513,13 @@ window.addEventListener("keydown", (event) => {
 
 window.addEventListener("resize", () => {
 	if (!MOBILE_MEDIA.matches) closeSidebar();
+	updateControls();
 	if (stickToBottom) {
 		requestAnimationFrame(() => scrollMessagesToBottom());
 	}
+});
+
+MOBILE_MEDIA.addEventListener?.("change", () => {
+	if (!MOBILE_MEDIA.matches) closeSidebar();
+	updateControls();
 });

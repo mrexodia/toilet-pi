@@ -260,6 +260,25 @@ export function createServerCore(
       return
     }
 
+    if (message.type === 'terminate_session') {
+      const session = getKnownSession(message.sessionGuid)
+      const target = getOwnerConnection(session)
+      if (!session || !target) {
+        send(connId, {
+          type: 'error',
+          message: 'Session is not currently owned by an active runner',
+        })
+        return
+      }
+      send(target, { type: 'terminate_session' })
+      send(connId, {
+        type: 'notice',
+        level: 'info',
+        message: `Closing ${formatSessionLabel(session)}…`,
+      })
+      return
+    }
+
     if (message.type === 'start_background_session') {
       const session = getKnownSession(message.sessionGuid) || getOrCreateSession(message.sessionGuid)
       if (message.hostId) session.hostId = message.hostId
@@ -416,7 +435,7 @@ export function createServerCore(
     })
 
     if (
-      ['message', 'busy', 'model', 'tool_start', 'tool_end'].includes(
+      ['message', 'busy', 'model', 'tool_start', 'tool_end', 'session_name'].includes(
         String(message.event?.type || ''),
       )
     ) {
@@ -451,7 +470,7 @@ export function createServerCore(
     session.streamingThinkingText =
       typeof message.streamingThinkingText === 'string' ? message.streamingThinkingText : null
     session.runnerStatus = 'running'
-    session.updatedAt = Date.now()
+    session.updatedAt = getRunnerUpdatedAt(message, session.history)
     clearFinishedTools(session)
 
     if (message.role === 'interactive') {
@@ -947,7 +966,7 @@ export function createServerCore(
           sessionName: session.sessionName || current.sessionName || null,
           cwd: session.cwd || current.cwd || null,
           preview: getSessionPreview(session) || session.preview || current.preview || null,
-          updatedAt: session.updatedAt || current.updatedAt || 0,
+          updatedAt: Math.max(session.updatedAt || 0, current.updatedAt || 0),
           owner: session.owner,
           busy: session.busy,
           model: session.model,
@@ -1046,6 +1065,24 @@ export function createServerCore(
     if (!(session.activeTools instanceof Map)) {
       session.activeTools = new Map<string, ActiveTool>()
     }
+  }
+
+  function getRunnerUpdatedAt(
+    message: HelloRunnerMessage,
+    history: SanitizedMessage[] = [],
+  ): number {
+    const direct =
+      typeof message.updatedAt === 'number' && Number.isFinite(message.updatedAt)
+        ? message.updatedAt
+        : 0
+    const historyTimestamp = history.reduce((max, entry) => {
+      const value = typeof entry?.timestamp === 'number' && Number.isFinite(entry.timestamp)
+        ? entry.timestamp
+        : 0
+      return Math.max(max, value)
+    }, 0)
+    const latest = Math.max(direct, historyTimestamp)
+    return latest || Date.now()
   }
 
   function formatSessionLabel(session: SessionState): string {

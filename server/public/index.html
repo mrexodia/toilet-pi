@@ -2,7 +2,15 @@
 <html lang="en">
 <head>
 	<meta charset="UTF-8" />
-	<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+	<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+	<meta name="theme-color" content="#0d1117" />
+	<meta name="mobile-web-app-capable" content="yes" />
+	<meta name="apple-mobile-web-app-capable" content="yes" />
+	<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+	<meta name="apple-mobile-web-app-title" content="toilet-pi" />
+	<link rel="manifest" href="./manifest.webmanifest" />
+	<link rel="icon" href="./icon.svg" type="image/svg+xml" />
+	<link rel="apple-touch-icon" href="./icon.svg" />
 	<title>toilet-pi</title>
 	<style>
 		:root {
@@ -30,6 +38,10 @@
 		html, body {
 			height: 100%;
 			overflow: hidden;
+		}
+
+		[hidden] {
+			display: none !important;
 		}
 
 		* {
@@ -162,9 +174,14 @@
 		}
 
 		.app-shell {
-			height: 100%;
+			height: 100dvh;
 			display: grid;
 			grid-template-columns: minmax(320px, 390px) minmax(0, 1fr);
+			padding-top: env(safe-area-inset-top, 0);
+			padding-bottom: env(safe-area-inset-bottom, 0);
+			padding-left: env(safe-area-inset-left, 0);
+			padding-right: env(safe-area-inset-right, 0);
+			overflow: hidden;
 		}
 
 		.sidebar {
@@ -197,7 +214,14 @@
 			justify-content: space-between;
 			gap: 12px;
 			min-width: 0;
+		}
+
+		.sidebar-title-row {
 			overflow: hidden;
+		}
+
+		.main-header-top {
+			overflow: visible;
 		}
 
 		.sidebar-header h1,
@@ -239,6 +263,13 @@
 			display: flex;
 			flex-direction: column;
 			gap: 10px;
+		}
+
+		#browser-list {
+			display: flex;
+			flex-direction: column;
+			gap: 12px;
+			min-width: 0;
 		}
 
 		.browser-empty {
@@ -476,20 +507,22 @@
 			min-width: 0;
 			max-width: 100%;
 			min-height: 0;
-			overflow-x: hidden;
-			display: grid;
-			grid-template-rows: auto auto minmax(0, 1fr) auto;
+			height: 100%;
+			overflow: hidden;
+			display: flex;
+			flex-direction: column;
 		}
 
 		.main > * {
 			min-width: 0;
 			max-width: 100%;
+			flex: 0 0 auto;
 		}
 
 		.main-header {
 			background: rgba(13, 17, 23, 0.72);
 			backdrop-filter: blur(10px);
-			overflow: hidden;
+			overflow: visible;
 		}
 
 		.header-copy {
@@ -542,7 +575,10 @@
 			padding: 10px 16px;
 			font-size: 12px;
 			color: var(--muted);
-			min-height: 41px;
+		}
+
+		.notice-bar:empty {
+			display: none;
 		}
 
 		.notice-bar.info {
@@ -554,6 +590,7 @@
 		}
 
 		.messages-scroller {
+			flex: 1 1 auto;
 			min-height: 0;
 			min-width: 0;
 			overflow-y: auto;
@@ -600,6 +637,7 @@
 			white-space: pre-wrap;
 			word-break: break-word;
 			overflow-wrap: anywhere;
+			overflow-x: auto;
 		}
 
 		.message.user {
@@ -659,12 +697,6 @@
 
 		.message.streaming {
 			border-style: dashed;
-			position: relative;
-		}
-
-		.message.streaming::after {
-			content: "▋";
-			animation: blink 0.8s step-end infinite;
 		}
 
 		.thinking-block {
@@ -739,12 +771,331 @@
 			width: 100%;
 		}
 
+		body.confirm-open .confirm-modal-scrim {
+			display: flex;
+		}
+
+		.confirm-modal-scrim {
+			position: fixed;
+			inset: 0;
+			background: rgba(0, 0, 0, 0.62);
+			display: none;
+			align-items: center;
+			justify-content: center;
+			padding: 20px;
+			z-index: 55;
+		}
+
+		.auth-card,
+		.confirm-card {
+			width: min(400px, 90vw);
+			max-width: 400px;
+			padding: 24px;
+			border-radius: 12px;
+		}
+
+		.install-card {
+			width: min(720px, 92vw);
+			padding: 24px;
+			border-radius: 12px;
+		}
+
+		.auth-status-card,
+		.confirm-card {
+			background: var(--panel-2);
+			border: 1px solid var(--border);
+			box-shadow: var(--shadow);
+		}
+
+		.auth-status-card {
+			display: flex;
+			align-items: center;
+			justify-content: space-between;
+			gap: 12px;
+			padding: 14px;
+			border-radius: 12px;
+			background: rgba(13, 17, 23, 0.45);
+		}
+
+		.auth-status-copy {
+			min-width: 0;
+			display: flex;
+			flex-direction: column;
+			gap: 6px;
+		}
+
+		.auth-status-title {
+			font-size: 12px;
+			font-weight: 700;
+		}
+
+		.auth-status-row {
+			display: flex;
+			flex-direction: column;
+			align-items: flex-start;
+			gap: 6px;
+			min-width: 0;
+		}
+
+		.auth-actions {
+			justify-content: space-between;
+			align-items: center;
+			flex-wrap: nowrap;
+		}
+
+		.auth-actions-left,
+		.confirm-actions {
+			display: flex;
+			align-items: center;
+			gap: 8px;
+		}
+
+		.confirm-card {
+			display: flex;
+			flex-direction: column;
+			gap: 12px;
+			max-height: min(80vh, 900px);
+			overflow-y: auto;
+		}
+
+		.confirm-actions {
+			justify-content: space-between;
+		}
+
+		.sidebar-body {
+			padding-bottom: 92px;
+		}
+
+		.list-item,
+		.project-select,
+		.session-mini {
+			display: flex;
+			flex-direction: column;
+			align-items: flex-start;
+			gap: 6px;
+			padding: 18px 16px;
+			text-align: left;
+			width: 100%;
+			min-width: 0;
+			max-width: 100%;
+			overflow: hidden;
+		}
+
+		.project-select {
+			background: transparent;
+			border: none;
+			border-bottom: 1px solid rgba(48, 54, 61, 0.7);
+			border-radius: 0;
+			cursor: pointer;
+		}
+
+		.project-select:hover,
+		.project-select.active {
+			background: rgba(31, 111, 235, 0.1);
+		}
+
+		.list-item,
+		.session-mini {
+			border-bottom: 1px solid rgba(48, 54, 61, 0.55);
+		}
+
+		.list-item:last-child,
+		.session-mini:last-child {
+			border-bottom: none;
+		}
+
+		.item-badges,
+		.project-actions {
+			flex-direction: row;
+			align-items: center;
+			justify-content: flex-start;
+			flex-wrap: wrap;
+			gap: 8px;
+			margin-top: 2px;
+		}
+
+		.project-card {
+			padding: 0;
+		}
+
+		.project-header {
+			padding: 0;
+			display: block;
+		}
+
+		.project-sessions {
+			border-top: none;
+		}
+
+		.item-title,
+		.item-subtitle,
+		.item-preview,
+		.item-meta,
+		.item-path,
+		.project-title,
+		.project-meta,
+		.project-path,
+		.session-mini-title,
+		.session-mini-subtitle {
+			display: block;
+			width: 100%;
+			min-width: 0;
+			max-width: 100%;
+		}
+
+		.item-meta,
+		.item-path,
+		.project-meta,
+		.project-path {
+			font-size: 12px;
+			color: var(--muted);
+			white-space: nowrap;
+			overflow: hidden;
+			text-overflow: ellipsis;
+			max-width: 100%;
+		}
+
+		.item-path,
+		.project-path {
+			font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+			font-size: 11px;
+		}
+
+		.main-header {
+			position: sticky;
+			top: 0;
+			z-index: 12;
+		}
+
+		.header-subtitle {
+			font-size: 0.85rem;
+			opacity: 0.8;
+			margin-top: 6px;
+		}
+
+		.header-path {
+			display: none;
+		}
+
+		.header-actions {
+			align-self: flex-start;
+		}
+
+		.header-menu {
+			position: relative;
+		}
+
+		.header-menu > summary {
+			list-style: none;
+			display: inline-flex;
+			align-items: center;
+			justify-content: center;
+			width: 40px;
+			height: 40px;
+			padding: 0;
+			border: 1px solid var(--border);
+			border-radius: 10px;
+			background: transparent;
+			cursor: pointer;
+		}
+
+		.header-menu > summary:hover {
+			background: #2a3038;
+		}
+
+		.header-menu > summary::-webkit-details-marker {
+			display: none;
+		}
+
+		.header-menu-panel {
+			position: absolute;
+			right: 0;
+			top: calc(100% + 8px);
+			min-width: 190px;
+			padding: 8px;
+			border-radius: 12px;
+			border: 1px solid var(--border);
+			background: var(--panel-2);
+			box-shadow: var(--shadow);
+			display: none;
+			flex-direction: column;
+			gap: 8px;
+			z-index: 40;
+		}
+
+		.header-menu[open] .header-menu-panel {
+			display: flex;
+		}
+
+		.header-menu-panel button {
+			width: 100%;
+			text-align: left;
+		}
+
+		.working-indicator {
+			display: none;
+			width: 14px;
+			height: 14px;
+			border-radius: 50%;
+			border: 2px solid rgba(121, 192, 255, 0.3);
+			border-top-color: #79c0ff;
+			animation: spin 0.8s linear infinite;
+			flex: 0 0 auto;
+		}
+
+		.working-indicator.visible {
+			display: inline-block;
+		}
+
+		.composer {
+			position: relative;
+			z-index: 1;
+			grid-template-columns: minmax(0, 1fr) auto auto;
+			background: var(--panel);
+			border-top: 1px solid var(--border);
+			border-bottom: none;
+			box-shadow: 0 -10px 24px rgba(0, 0, 0, 0.22);
+			padding-bottom: 14px;
+		}
+
+		.abort-button {
+			font-size: 13px;
+		}
+
+		.new-session-fab {
+			position: fixed;
+			bottom: 24px;
+			right: 24px;
+			z-index: 100;
+			border-radius: 50%;
+			width: 56px;
+			height: 56px;
+			display: none;
+			align-items: center;
+			justify-content: center;
+			font-size: 28px;
+			line-height: 1;
+			padding: 0;
+			background: var(--green);
+			border-color: var(--green);
+			color: white;
+			box-shadow: var(--shadow);
+		}
+
+		body.show-fab .new-session-fab {
+			display: inline-flex;
+		}
+
 		.sidebar-scrim {
 			display: none;
 		}
 
 		@keyframes blink {
 			50% { opacity: 0; }
+		}
+
+		@keyframes spin {
+			to { transform: rotate(360deg); }
 		}
 
 		@media (max-width: 900px) {
@@ -795,7 +1146,6 @@
 			}
 
 			.main-header,
-			.composer,
 			.notice-bar,
 			.sidebar-header,
 			.sidebar-tabs {
@@ -803,19 +1153,30 @@
 				padding-right: 14px;
 			}
 
+			.composer {
+				padding-left: 12px;
+				padding-right: 12px;
+			}
+
 			.messages-scroller {
 				padding: 14px;
 			}
 
+			.header-subtitle {
+				display: none;
+			}
+
 			.composer {
-				grid-template-columns: auto minmax(0, 1fr) auto;
+				grid-template-columns: minmax(0, 1fr) auto auto;
+				gap: 6px;
+				padding-top: 10px;
+				padding-bottom: 10px;
 			}
 		}
 
 		@media (max-width: 560px) {
 			.main-header-top {
-				flex-direction: column;
-				align-items: stretch;
+				align-items: flex-start;
 			}
 
 			.header-copy {
@@ -823,16 +1184,52 @@
 			}
 
 			.header-actions {
+				width: auto;
+				margin-left: auto;
+			}
+
+			.auth-status-card,
+			.auth-actions,
+			.confirm-actions {
+				flex-direction: column;
+				align-items: stretch;
+			}
+
+			.auth-actions-left {
 				width: 100%;
-				justify-content: flex-end;
+			}
+
+			.auth-actions-left > button,
+			.auth-actions > button,
+			.confirm-actions > button {
+				width: 100%;
+			}
+
+			.header-menu-panel {
+				min-width: 160px;
 			}
 
 			.composer {
-				grid-template-columns: 1fr auto;
+				grid-template-columns: minmax(0, 1fr) auto auto;
+				gap: 6px;
+				padding-top: 8px;
+				padding-bottom: 8px;
+				padding-left: 10px;
+				padding-right: 10px;
 			}
 
-			#abort-btn {
-				grid-column: 1 / -1;
+			#message-input {
+				min-width: 0;
+				padding: 10px 12px;
+				border-radius: 10px;
+			}
+
+			.abort-button,
+			#send-btn {
+				height: 40px;
+				min-height: 40px;
+				padding-left: 10px;
+				padding-right: 10px;
 			}
 		}
 	</style>
@@ -844,17 +1241,43 @@
 				<h3 id="auth-modal-title">Enter server token</h3>
 				<button id="auth-close-btn" class="icon-button subtle" aria-label="Close token dialog">✕</button>
 			</div>
+			<div class="auth-status-card">
+				<div class="auth-status-copy">
+					<div class="auth-status-title">Connection</div>
+					<div class="auth-status-row">
+						<span id="auth-connection-status" class="status-pill disconnected">Disconnected</span>
+						<span id="auth-connection-detail" class="auth-hint">Add a token to connect to your server.</span>
+					</div>
+				</div>
+				<button id="installation-btn" type="button" class="subtle">Installation</button>
+			</div>
 			<form id="auth-form" class="auth-form" autocomplete="on">
 				<div class="auth-field">
 					<label for="auth-token-input">Server token</label>
 					<input id="auth-token-input" name="password" type="password" placeholder="Paste token" autocomplete="current-password" spellcheck="false" />
 				</div>
 				<div class="auth-actions">
-					<button id="auth-forget-btn" type="button" class="danger">Forget token</button>
-					<button id="auth-cancel-btn" type="button" class="subtle">Cancel</button>
+					<div class="auth-actions-left">
+						<button id="auth-forget-btn" type="button" class="danger">Forget token</button>
+						<button id="auth-cancel-btn" type="button" class="subtle">Cancel</button>
+					</div>
 					<button type="submit" class="primary">Save token</button>
 				</div>
 			</form>
+		</section>
+	</div>
+
+	<div class="confirm-modal-scrim" id="confirm-modal-scrim">
+		<section class="confirm-card" role="dialog" aria-modal="true" aria-labelledby="confirm-modal-title">
+			<div class="install-header">
+				<h3 id="confirm-modal-title">Kill session?</h3>
+				<button id="confirm-close-btn" class="icon-button subtle" aria-label="Close confirmation dialog">✕</button>
+			</div>
+			<div id="confirm-modal-copy" class="auth-copy">This will close the selected session.</div>
+			<div class="confirm-actions">
+				<button id="confirm-cancel-btn" type="button" class="subtle">Cancel</button>
+				<button id="confirm-submit-btn" type="button" class="danger">Kill session</button>
+			</div>
 		</section>
 	</div>
 
@@ -902,14 +1325,20 @@
 						<div class="header-title-row">
 							<button id="menu-btn" class="icon-button subtle menu-button" aria-label="Open sidebar">☰</button>
 							<h2 id="session-title">No session selected</h2>
+							<span id="session-working-indicator" class="working-indicator" aria-hidden="true"></span>
 						</div>
 						<div id="session-subtitle" class="header-subtitle">Choose a session or a project from the sidebar.</div>
 						<div id="session-path" class="header-path"></div>
 					</div>
 					<div class="header-actions">
-						<button id="installation-btn" class="subtle">Installation</button>
-						<button id="tools-expand-btn" class="subtle" title="Toggle tool output expansion (Ctrl+O)">Expand Tools</button>
-						<button id="new-session-btn">New Session</button>
+						<details class="header-menu" id="header-menu">
+							<summary id="header-menu-btn" class="icon-button subtle" aria-label="More actions">⋮</summary>
+							<div class="header-menu-panel">
+								<button id="tools-expand-btn" class="subtle" title="Toggle tool output expansion (Ctrl+O)">Expand Tools</button>
+								<button id="new-session-btn">New Session</button>
+								<button id="kill-session-btn" class="danger">Kill Session</button>
+							</div>
+						</details>
 					</div>
 				</div>
 			</div>
@@ -921,12 +1350,14 @@
 			</div>
 
 			<div class="composer">
-				<button id="abort-btn" class="danger" disabled>Abort</button>
 				<input id="message-input" type="text" placeholder="Send a message to the active session…" autocomplete="off" />
+				<button id="abort-btn" class="danger icon-button abort-button" title="Abort active generation" aria-label="Abort active generation" disabled>■</button>
 				<button id="send-btn" class="primary" disabled>Send</button>
 			</div>
 		</main>
 	</div>
+
+	<button id="new-session-fab" class="new-session-fab" type="button" aria-label="New Session" title="New Session">+</button>
 
 	<script type="module" src="/app.js"></script>
 </body>
