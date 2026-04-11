@@ -16,6 +16,8 @@
 	<style>
 		:root {
 			color-scheme: dark;
+			--safe-top: 0px;
+			--safe-bottom: 0px;
 			--bg: #0d1117;
 			--panel: #161b22;
 			--panel-2: #1c2128;
@@ -216,6 +218,13 @@
 			overflow: hidden;
 		}
 
+		@media (display-mode: standalone), (display-mode: fullscreen) {
+			:root {
+				--safe-top: env(safe-area-inset-top, 0px);
+				--safe-bottom: env(safe-area-inset-bottom, 0px);
+			}
+		}
+
 		.sidebar {
 			background: var(--panel);
 			border-right: 1px solid var(--border);
@@ -229,6 +238,15 @@
 		.main-header,
 		.composer {
 			padding: 14px 16px;
+		}
+
+		.sidebar-header,
+		.main-header {
+			padding-top: calc(14px + var(--safe-top));
+		}
+
+		.composer {
+			padding-bottom: calc(14px + var(--safe-bottom));
 		}
 
 		.sidebar-header,
@@ -1302,7 +1320,7 @@
 			}
 
 			.main-header {
-				padding-top: 4px;
+				padding-top: calc(4px + var(--safe-top));
 				padding-bottom: 6px;
 			}
 
@@ -1323,7 +1341,7 @@
 				grid-template-columns: minmax(0, 1fr) auto auto;
 				gap: 6px;
 				padding-top: 10px;
-				padding-bottom: 10px;
+				padding-bottom: calc(10px + var(--safe-bottom));
 			}
 		}
 
@@ -1366,7 +1384,7 @@
 				grid-template-columns: minmax(0, 1fr) auto auto;
 				gap: 6px;
 				padding-top: 8px;
-				padding-bottom: 8px;
+				padding-bottom: calc(8px + var(--safe-bottom));
 				padding-left: 6px;
 				padding-right: 6px;
 			}
