@@ -1,6 +1,7 @@
 name = "toilet-pi"
 main = "src/cloudflare/entry.ts"
 compatibility_date = "2025-04-01"
+preview_urls = false
 
 [assets]
 directory = "./public"
