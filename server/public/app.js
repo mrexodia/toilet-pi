@@ -56,6 +56,8 @@ const newSessionFabEl = document.getElementById("new-session-fab");
 const killSessionBtnEl = document.getElementById("kill-session-btn");
 const noticeBarEl = document.getElementById("notice-bar");
 const messagesEl = document.getElementById("messages");
+const messagesContentEl = document.getElementById("messages-content");
+const workingPlaceholderRowEl = document.getElementById("working-placeholder-row");
 const messageInputEl = document.getElementById("message-input");
 const sendBtnEl = document.getElementById("send-btn");
 const abortBtnEl = document.getElementById("abort-btn");
@@ -876,10 +878,11 @@ function hydrateCurrentSessionFromOverview() {
 function renderSession({ forceScroll = false } = {}) {
 	const previousScrollTop = messagesEl.scrollTop;
 	const shouldStick = forceScroll || stickToBottom;
-	messagesEl.innerHTML = "";
+	messagesContentEl.innerHTML = "";
 
 	if (!currentSessionGuid) {
-		messagesEl.appendChild(renderMessagesEmpty("Select a session to watch it live, or switch to Projects to start a brand-new background session."));
+		messagesContentEl.appendChild(renderMessagesEmpty("Select a session to watch it live, or switch to Projects to start a brand-new background session."));
+		workingPlaceholderRowEl.hidden = true;
 		return;
 	}
 
@@ -901,17 +904,15 @@ function renderSession({ forceScroll = false } = {}) {
 		fragments.push(renderQueuedInput(queuedInput));
 	}
 
-	if (shouldRenderWorkingPlaceholder(summary)) {
-		fragments.push(renderWorkingPlaceholder());
-	}
+	workingPlaceholderRowEl.hidden = !shouldRenderWorkingPlaceholder(summary);
 
 	if (fragments.length === 0) {
-		messagesEl.appendChild(renderMessagesEmpty("No messages in this session yet. Send a message to start working."));
+		messagesContentEl.appendChild(renderMessagesEmpty("No messages in this session yet. Send a message to start working."));
 		return;
 	}
 
 	for (const fragment of fragments) {
-		messagesEl.appendChild(fragment);
+		messagesContentEl.appendChild(fragment);
 	}
 
 	requestAnimationFrame(() => {
@@ -953,22 +954,6 @@ function renderMessage(message) {
 
 function renderQueuedInput(queuedInput) {
 	return buildMessageElement("user queued", queuedInput?.text || "", queuedInput?.timestamp || null, "queued");
-}
-
-function renderWorkingPlaceholder() {
-	const row = document.createElement("div");
-	row.className = "message-row working";
-	const el = document.createElement("div");
-	el.className = "message working";
-	const spinner = document.createElement("span");
-	spinner.className = "inline-spinner";
-	spinner.setAttribute("aria-hidden", "true");
-	const label = document.createElement("span");
-	label.textContent = "Working...";
-	el.appendChild(spinner);
-	el.appendChild(label);
-	row.appendChild(el);
-	return row;
 }
 
 function shouldRenderWorkingPlaceholder(summary) {

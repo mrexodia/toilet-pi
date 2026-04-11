@@ -1,4 +1,4 @@
-const CACHE_NAME = 'toilet-pi-v2';
+const CACHE_NAME = 'toilet-pi-v3';
 const APP_ASSETS = [
   './',
   './index.html',
@@ -6,6 +6,9 @@ const APP_ASSETS = [
   './manifest.webmanifest',
   './favicon.svg',
   './favicon.ico',
+  './apple-touch-icon.png',
+  './icon-192.png',
+  './icon-512.png',
 ];
 
 self.addEventListener('install', (event) => {
@@ -37,7 +40,8 @@ self.addEventListener('fetch', (event) => {
     url.pathname.endsWith('.js') ||
     url.pathname.endsWith('.webmanifest') ||
     url.pathname.endsWith('.svg') ||
-    url.pathname.endsWith('.ico');
+    url.pathname.endsWith('.ico') ||
+    url.pathname.endsWith('.png');
 
   if (!isShellRequest) return;
 

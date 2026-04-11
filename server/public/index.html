@@ -11,7 +11,7 @@
 	<link rel="manifest" href="./manifest.webmanifest" />
 	<link rel="icon" href="./favicon.svg" type="image/svg+xml" />
 	<link rel="alternate icon" href="./favicon.ico" type="image/x-icon" />
-	<link rel="apple-touch-icon" href="./favicon.svg" />
+	<link rel="apple-touch-icon" sizes="180x180" href="./apple-touch-icon.png" />
 	<title>toilet-pi</title>
 	<style>
 		:root {
@@ -112,7 +112,27 @@
 			align-items: center;
 			justify-content: center;
 			font-size: 18px;
+			line-height: 1;
 			flex: 0 0 auto;
+		}
+
+		.icon-glyph {
+			display: inline-flex;
+			align-items: center;
+			justify-content: center;
+			width: 100%;
+			height: 100%;
+			line-height: 1;
+		}
+
+		.icon-glyph.menu {
+			font-size: 24px;
+			transform: translateY(-1px);
+		}
+
+		.icon-glyph.kebab {
+			font-size: 22px;
+			transform: translateY(-1px);
 		}
 
 		input {
@@ -231,6 +251,7 @@
 
 		.main-header-top {
 			overflow: visible;
+			min-height: 40px;
 		}
 
 		.sidebar-header h1,
@@ -1223,8 +1244,8 @@
 			}
 
 			.main-header {
-				padding-top: 8px;
-				padding-bottom: 8px;
+				padding-top: 4px;
+				padding-bottom: 6px;
 			}
 
 			.composer {
@@ -1402,7 +1423,7 @@
 				<div class="main-header-top">
 					<div class="header-copy">
 						<div class="header-title-row">
-							<button id="menu-btn" class="icon-button subtle menu-button" aria-label="Open sidebar">☰</button>
+							<button id="menu-btn" class="icon-button subtle menu-button" aria-label="Open sidebar"><span class="icon-glyph menu" aria-hidden="true">≡</span></button>
 							<h2 id="session-title">No session selected</h2>
 							<span id="session-working-indicator" class="working-indicator" aria-hidden="true"></span>
 						</div>
@@ -1411,7 +1432,7 @@
 					</div>
 					<div class="header-actions">
 						<details class="header-menu" id="header-menu">
-							<summary id="header-menu-btn" class="icon-button subtle" aria-label="More actions">⋮</summary>
+							<summary id="header-menu-btn" class="icon-button subtle" aria-label="More actions"><span class="icon-glyph kebab" aria-hidden="true">⋮</span></summary>
 							<div class="header-menu-panel">
 								<button id="tools-expand-btn" class="subtle" title="Toggle tool output expansion (Ctrl+O)">Expand Tools</button>
 								<button id="new-session-btn">New Session</button>
@@ -1425,7 +1446,15 @@
 			<div id="notice-bar" class="notice-bar"></div>
 
 			<div id="messages" class="messages-scroller">
-				<div class="messages-empty">Waiting for a server connection…</div>
+				<div id="messages-content">
+					<div class="messages-empty">Waiting for a server connection…</div>
+				</div>
+				<div id="working-placeholder-row" class="message-row working" hidden>
+					<div class="message working">
+						<span class="inline-spinner" aria-hidden="true"></span>
+						<span>Working...</span>
+					</div>
+				</div>
 			</div>
 
 			<div class="composer">
