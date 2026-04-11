@@ -1894,19 +1894,23 @@ function applySessionEvent(session, event) {
 				session.streamingText = null;
 				session.streamingThinkingText = null;
 				session.abortRequested = false;
-				session.liveTurnToolCount = 0;
-				session.liveTurnSeenToolIds = [];
-				session.liveTurnStartHistoryIndex = null;
-				session.liveTurnLastActivity = null;
+				if (event.message?.stopReason !== "toolUse") {
+					session.liveTurnToolCount = 0;
+					session.liveTurnSeenToolIds = [];
+					session.liveTurnStartHistoryIndex = null;
+					session.liveTurnLastActivity = null;
+				}
 			}
 			break;
 
 		case "assistant_stream_start":
 			session.streamingText = "";
 			session.streamingThinkingText = "";
-			session.liveTurnToolCount = 0;
-			session.liveTurnSeenToolIds = [];
-			session.liveTurnStartHistoryIndex = session.history.length;
+			if (!Number.isInteger(session.liveTurnStartHistoryIndex) || session.liveTurnStartHistoryIndex < 0) {
+				session.liveTurnToolCount = 0;
+				session.liveTurnSeenToolIds = [];
+				session.liveTurnStartHistoryIndex = session.history.length;
+			}
 			session.liveTurnLastActivity = { text: "Thinking…", isError: false };
 			break;
 
