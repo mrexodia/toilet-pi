@@ -1241,30 +1241,31 @@
 	<div class="auth-modal-scrim" id="auth-modal-scrim">
 		<section class="auth-card" role="dialog" aria-modal="true" aria-labelledby="auth-modal-title">
 			<div class="install-header">
-				<h3 id="auth-modal-title">Enter server token</h3>
-				<button id="auth-close-btn" class="icon-button subtle" aria-label="Close token dialog">✕</button>
+				<h3 id="auth-modal-title">Admin access</h3>
+				<button id="auth-close-btn" class="icon-button subtle" aria-label="Close auth dialog">✕</button>
 			</div>
 			<div class="auth-status-card">
 				<div class="auth-status-copy">
 					<div class="auth-status-title">Connection</div>
 					<div class="auth-status-row">
-						<span id="auth-connection-status" class="status-pill disconnected">Disconnected</span>
-						<span id="auth-connection-detail" class="auth-hint">Add a token to connect to your server.</span>
+						<span id="auth-connection-status" class="status-pill disconnected">Unauthenticated</span>
+						<span id="auth-connection-detail" class="auth-hint">Enter your admin token to sign in.</span>
 					</div>
 				</div>
 				<button id="installation-btn" type="button" class="subtle">Installation</button>
 			</div>
 			<form id="auth-form" class="auth-form" autocomplete="on">
 				<div class="auth-field">
-					<label for="auth-token-input">Server token</label>
-					<input id="auth-token-input" name="password" type="password" placeholder="Paste token" autocomplete="current-password" spellcheck="false" />
+					<label for="auth-token-input">Admin token</label>
+					<input id="auth-token-input" name="password" type="password" placeholder="Paste admin token" autocomplete="current-password" spellcheck="false" />
+					<div class="auth-hint">Use the admin token here. Machine connect URLs belong in <code>/toilet-pi</code>.</div>
 				</div>
 				<div class="auth-actions">
 					<div class="auth-actions-left">
-						<button id="auth-forget-btn" type="button" class="danger">Forget token</button>
+						<button id="auth-forget-btn" type="button" class="danger">Log out</button>
 						<button id="auth-cancel-btn" type="button" class="subtle">Cancel</button>
 					</div>
-					<button type="submit" class="primary">Save token</button>
+					<button type="submit" class="primary">Sign in</button>
 				</div>
 			</form>
 		</section>
@@ -1303,7 +1304,7 @@
 						<div class="sidebar-subtitle" id="sidebar-summary">Waiting for server…</div>
 					</div>
 					<div style="display:flex;align-items:center;gap:8px;">
-						<span id="connection-status" class="status-pill disconnected">Disconnected</span>
+						<span id="connection-status" class="status-pill disconnected">Unauthenticated</span>
 						<button id="sidebar-close" class="icon-button subtle sidebar-close" aria-label="Close sidebar">✕</button>
 					</div>
 				</div>

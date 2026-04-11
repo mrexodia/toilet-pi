@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import type { ConnectionAuth } from '../shared/auth.js'
 import { createServerCore } from '../shared/server-core.js'
 import type { ServerMessage } from '../shared/protocol.js'
 import type { ServerConfig, Timers, Transport } from '../shared/types.js'
@@ -84,9 +85,16 @@ function createTestServer() {
   return { core, transport, timers }
 }
 
-function connect(transport: FakeTransport, core: ReturnType<typeof createServerCore>, connId: string) {
+function connect(
+  transport: FakeTransport,
+  core: ReturnType<typeof createServerCore>,
+  connId: string,
+  auth: ConnectionAuth = connId.startsWith('web')
+    ? { kind: 'admin' }
+    : { kind: 'machine', machineId: 'host-1' },
+) {
   transport.connect(connId)
-  core.onConnect(connId, 'test')
+  core.onConnect(connId, 'test', auth)
 }
 
 async function send(core: ReturnType<typeof createServerCore>, connId: string, payload: unknown) {

@@ -1,11 +1,21 @@
 import { randomBytes, randomUUID } from 'node:crypto'
-import { createServer } from 'node:http'
+import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { readFile, mkdir, writeFile } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 import { homedir } from 'node:os'
 import path from 'node:path'
 import { WebSocketServer, type WebSocket } from 'ws'
-import { hasMatchingToken } from '../shared/auth.js'
+import {
+  ADMIN_COOKIE_MAX_AGE_SECONDS,
+  ADMIN_COOKIE_NAME,
+  clearCookie,
+  createAdminSessionToken,
+  createMachineToken,
+  getConnectionAuthFromToken,
+  hasMatchingToken,
+  serializeCookie,
+  verifyAdminSessionCookie,
+} from '../shared/auth.js'
 import { createServerCore } from '../shared/server-core.js'
 import type { ServerConfig, Timers } from '../shared/types.js'
 import { createNodeTransport } from './transport.js'
@@ -31,48 +41,81 @@ const config: ServerConfig = {
 }
 const core = createServerCore(transport, timers, config)
 const connectionIds = new WeakMap<WebSocket, string>()
+const connectionAuthById = new Map<string, Awaited<ReturnType<typeof authorizeWebSocketRequest>>>()
 
 const server = createServer(async (req, res) => {
+  const requestUrl = getRequestUrl(req)
+
   try {
-    const url = new URL(req.url || '/', `http://${req.headers.host || `localhost:${PORT}`}`)
-    const filePath = resolvePublicPath(url.pathname)
+    if (requestUrl.pathname === '/auth/login') {
+      await handleLoginRequest(req, res)
+      return
+    }
+
+    if (requestUrl.pathname === '/auth/logout') {
+      await handleLogoutRequest(req, res)
+      return
+    }
+
+    if (requestUrl.pathname === '/auth/status') {
+      await handleStatusRequest(req, res)
+      return
+    }
+
+    if (requestUrl.pathname === '/auth/machine-token') {
+      await handleMachineTokenRequest(req, res)
+      return
+    }
+
+    const filePath = resolvePublicPath(requestUrl.pathname)
     if (!filePath) {
-      res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' })
-      res.end('Not found')
+      sendText(res, 404, 'Not found')
       return
     }
 
     const content = await readFile(filePath)
-    res.writeHead(200, { 'Content-Type': getContentType(filePath) })
-    res.end(content)
-  } catch {
-    res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' })
-    res.end('Not found')
+    sendBuffer(res, 200, content, getContentType(filePath))
+  } catch (error) {
+    log(
+      `http request failed: ${error instanceof Error ? error.message : String(error)}`,
+    )
+    sendText(res, 500, 'Internal server error')
   }
 })
 
 const wss = new WebSocketServer({ noServer: true })
 
 server.on('upgrade', (req, socket, head) => {
-  const url = new URL(req.url || '/', `http://${req.headers.host || `localhost:${PORT}`}`)
-  if (url.pathname !== WS_PATH) {
-    socket.write('HTTP/1.1 404 Not Found\r\n\r\n')
-    socket.destroy()
-    return
-  }
+  void (async () => {
+    const requestUrl = getRequestUrl(req)
+    if (requestUrl.pathname !== WS_PATH) {
+      socket.write('HTTP/1.1 404 Not Found\r\n\r\n')
+      socket.destroy()
+      return
+    }
 
-  const token = url.searchParams.get('token')
-  if (!hasMatchingToken(SERVER_TOKEN, token)) {
-    socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n')
-    socket.destroy()
-    return
-  }
+    const auth = await authorizeWebSocketRequest(req)
+    if (!auth) {
+      socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n')
+      socket.destroy()
+      return
+    }
 
-  const connId = randomUUID()
-  wss.handleUpgrade(req, socket, head, (ws) => {
-    connectionIds.set(ws, connId)
-    transport.register(connId, ws)
-    wss.emit('connection', ws, req)
+    const connId = randomUUID()
+    connectionAuthById.set(connId, auth)
+    wss.handleUpgrade(req, socket, head, (ws) => {
+      connectionIds.set(ws, connId)
+      transport.register(connId, ws)
+      wss.emit('connection', ws, req)
+    })
+  })().catch((error) => {
+    log(`upgrade failed: ${error instanceof Error ? error.message : String(error)}`)
+    try {
+      socket.write('HTTP/1.1 500 Internal Server Error\r\n\r\n')
+    } catch {
+      // Ignore.
+    }
+    socket.destroy()
   })
 })
 
@@ -88,7 +131,8 @@ wss.on('connection', (ws, req) => {
   }
 
   const remote = req.socket.remoteAddress || 'unknown'
-  core.onConnect(connId, remote)
+  core.onConnect(connId, remote, connectionAuthById.get(connId) || null)
+  connectionAuthById.delete(connId)
 
   ws.on('message', async (data) => {
     await core.onMessage(connId, data.toString())
@@ -97,6 +141,7 @@ wss.on('connection', (ws, req) => {
   ws.on('close', () => {
     core.onClose(connId)
     transport.unregister(connId)
+    connectionAuthById.delete(connId)
   })
 
   ws.on('error', (error) => {
@@ -110,13 +155,135 @@ server.listen(PORT, () => {
   console.log('='.repeat(60))
   console.log(`Web UI: ${PUBLIC_URL}`)
   console.log(`WebSocket: ${PUBLIC_SERVER_URL}`)
-  console.log(`Admin URL: ${buildAdminUrl(PUBLIC_SERVER_URL, SERVER_TOKEN)}`)
-  console.log(
-    `Connect URL: ${buildConnectUrl({ serverUrl: PUBLIC_SERVER_URL, token: SERVER_TOKEN })}`,
-  )
+  console.log(`Admin login URL: ${buildAdminUrl(PUBLIC_SERVER_URL, SERVER_TOKEN)}`)
+  console.log('Machine connect URLs are minted from the web UI after admin login')
   console.log('State: in-memory only')
   console.log('='.repeat(60))
 })
+
+async function handleLoginRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  if (req.method !== 'POST') {
+    sendMethodNotAllowed(res, 'POST')
+    return
+  }
+
+  const body = await readRequestBody(req)
+  const token = extractTokenFromBody(body, req.headers['content-type'])
+  if (!hasMatchingToken(SERVER_TOKEN, token)) {
+    sendJson(res, 401, { ok: false, message: 'Unauthorized' }, { cacheControl: 'no-store' })
+    return
+  }
+
+  const sessionToken = await createAdminSessionToken(SERVER_TOKEN, {
+    expiresInSeconds: ADMIN_COOKIE_MAX_AGE_SECONDS,
+  })
+
+  sendJson(
+    res,
+    200,
+    { ok: true },
+    {
+      cacheControl: 'no-store',
+      setCookie: serializeCookie(ADMIN_COOKIE_NAME, sessionToken, {
+        path: '/',
+        httpOnly: true,
+        secure: isSecureRequest(req),
+        sameSite: 'Strict',
+        maxAge: ADMIN_COOKIE_MAX_AGE_SECONDS,
+      }),
+    },
+  )
+}
+
+async function handleLogoutRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  if (req.method !== 'POST') {
+    sendMethodNotAllowed(res, 'POST')
+    return
+  }
+
+  if (!isAllowedCookieOrigin(req)) {
+    sendJson(res, 403, { ok: false, message: 'Forbidden' }, { cacheControl: 'no-store' })
+    return
+  }
+
+  sendJson(
+    res,
+    200,
+    { ok: true },
+    {
+      cacheControl: 'no-store',
+      setCookie: clearCookie(ADMIN_COOKIE_NAME, {
+        path: '/',
+        httpOnly: true,
+        secure: isSecureRequest(req),
+        sameSite: 'Strict',
+      }),
+    },
+  )
+}
+
+async function handleStatusRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  if (req.method !== 'GET') {
+    sendMethodNotAllowed(res, 'GET')
+    return
+  }
+
+  const auth = await verifyAdminSessionCookie(
+    SERVER_TOKEN,
+    req.headers.cookie || null,
+    ADMIN_COOKIE_NAME,
+  )
+
+  sendJson(
+    res,
+    200,
+    {
+      authenticated: auth?.kind === 'admin',
+    },
+    { cacheControl: 'no-store' },
+  )
+}
+
+async function handleMachineTokenRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  if (req.method !== 'POST') {
+    sendMethodNotAllowed(res, 'POST')
+    return
+  }
+
+  if (!isAllowedCookieOrigin(req)) {
+    sendJson(res, 403, { ok: false, message: 'Forbidden' }, { cacheControl: 'no-store' })
+    return
+  }
+
+  const auth = await verifyAdminSessionCookie(
+    SERVER_TOKEN,
+    req.headers.cookie || null,
+    ADMIN_COOKIE_NAME,
+  )
+  if (auth?.kind !== 'admin') {
+    sendJson(res, 401, { ok: false, message: 'Unauthorized' }, { cacheControl: 'no-store' })
+    return
+  }
+
+  const machineToken = await createMachineToken(SERVER_TOKEN, randomUUID())
+  sendJson(
+    res,
+    200,
+    {
+      token: machineToken,
+    },
+    { cacheControl: 'no-store' },
+  )
+}
+
+async function authorizeWebSocketRequest(req: IncomingMessage) {
+  const requestUrl = getRequestUrl(req)
+  const bearerAuth = await getConnectionAuthFromToken(SERVER_TOKEN, requestUrl.searchParams.get('token'))
+  if (bearerAuth) return bearerAuth
+
+  if (!isAllowedWebSocketOrigin(req)) return null
+  return verifyAdminSessionCookie(SERVER_TOKEN, req.headers.cookie || null, ADMIN_COOKIE_NAME)
+}
 
 function resolvePublicPath(requestPath: string): string | null {
   const pathname = requestPath === '/' ? '/index.html' : requestPath
@@ -226,6 +393,153 @@ async function ensureServerToken(): Promise<string> {
     mode: 0o600,
   })
   return token
+}
+
+function getRequestUrl(req: IncomingMessage): URL {
+  return new URL(req.url || '/', getRequestBaseUrl(req))
+}
+
+function getRequestBaseUrl(req: IncomingMessage): string {
+  const host = req.headers.host || `localhost:${PORT}`
+  const forwardedProto = String(req.headers['x-forwarded-proto'] || '')
+    .split(',')[0]
+    .trim()
+  const protocol = forwardedProto || new URL(PUBLIC_URL).protocol.replace(/:$/, '') || 'http'
+  return `${protocol}://${host}`
+}
+
+function getExpectedBrowserOrigin(req: IncomingMessage): string {
+  if (process.env.TOILET_PI_PUBLIC_URL) {
+    return new URL(PUBLIC_URL).origin
+  }
+  return new URL(getRequestBaseUrl(req)).origin
+}
+
+function isSecureRequest(req: IncomingMessage): boolean {
+  return getExpectedBrowserOrigin(req).startsWith('https://')
+}
+
+function isAllowedCookieOrigin(req: IncomingMessage): boolean {
+  const origin = String(req.headers.origin || '').trim()
+  if (!origin) return true
+  return safeGetOrigin(origin) === getExpectedBrowserOrigin(req)
+}
+
+function isAllowedWebSocketOrigin(req: IncomingMessage): boolean {
+  const origin = String(req.headers.origin || '').trim()
+  if (!origin) return false
+  return safeGetOrigin(origin) === getExpectedBrowserOrigin(req)
+}
+
+function safeGetOrigin(value: string): string | null {
+  try {
+    return new URL(value).origin
+  } catch {
+    return null
+  }
+}
+
+async function readRequestBody(req: IncomingMessage): Promise<string> {
+  const chunks: Buffer[] = []
+  let total = 0
+  for await (const chunk of req) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+    total += buffer.length
+    if (total > 16 * 1024) {
+      throw new Error('Request body too large')
+    }
+    chunks.push(buffer)
+  }
+  return Buffer.concat(chunks).toString('utf8')
+}
+
+function extractTokenFromBody(body: string, contentType: string | string[] | undefined): string | null {
+  const normalizedType = Array.isArray(contentType) ? contentType[0] : contentType || ''
+  if (normalizedType.includes('application/json')) {
+    try {
+      const parsed = JSON.parse(body)
+      return typeof parsed?.token === 'string' ? parsed.token : null
+    } catch {
+      return null
+    }
+  }
+
+  if (normalizedType.includes('application/x-www-form-urlencoded')) {
+    return new URLSearchParams(body).get('token')
+  }
+
+  try {
+    const parsed = JSON.parse(body)
+    return typeof parsed?.token === 'string' ? parsed.token : null
+  } catch {
+    return new URLSearchParams(body).get('token')
+  }
+}
+
+function getSecurityHeaders(contentType: string, cacheControl?: string): Record<string, string> {
+  return {
+    'Content-Type': contentType,
+    'Content-Security-Policy': [
+      "default-src 'self'",
+      "script-src 'self'",
+      "style-src 'self' 'unsafe-inline'",
+      "img-src 'self' data:",
+      "connect-src 'self' ws: wss:",
+      "object-src 'none'",
+      "base-uri 'none'",
+      "frame-ancestors 'none'",
+      "form-action 'self'",
+    ].join('; '),
+    'Referrer-Policy': 'no-referrer',
+    'X-Content-Type-Options': 'nosniff',
+    'X-Frame-Options': 'DENY',
+    ...(cacheControl ? { 'Cache-Control': cacheControl } : {}),
+  }
+}
+
+function sendBuffer(
+  res: ServerResponse,
+  statusCode: number,
+  content: Buffer,
+  contentType: string,
+  options: { cacheControl?: string; setCookie?: string } = {},
+): void {
+  res.writeHead(statusCode, {
+    ...getSecurityHeaders(contentType, options.cacheControl),
+    ...(options.setCookie ? { 'Set-Cookie': options.setCookie } : {}),
+  })
+  res.end(content)
+}
+
+function sendText(
+  res: ServerResponse,
+  statusCode: number,
+  body: string,
+  options: { cacheControl?: string; setCookie?: string } = {},
+): void {
+  res.writeHead(statusCode, {
+    ...getSecurityHeaders('text/plain; charset=utf-8', options.cacheControl),
+    ...(options.setCookie ? { 'Set-Cookie': options.setCookie } : {}),
+  })
+  res.end(body)
+}
+
+function sendJson(
+  res: ServerResponse,
+  statusCode: number,
+  payload: unknown,
+  options: { cacheControl?: string; setCookie?: string } = {},
+): void {
+  const body = Buffer.from(`${JSON.stringify(payload)}\n`, 'utf8')
+  sendBuffer(res, statusCode, body, 'application/json; charset=utf-8', options)
+}
+
+function sendMethodNotAllowed(res: ServerResponse, allowedMethod: string): void {
+  res.writeHead(405, {
+    ...getSecurityHeaders('text/plain; charset=utf-8', 'no-store'),
+    Allow: allowedMethod,
+  })
+  res.end('Method not allowed')
 }
 
 function log(message: string): void {

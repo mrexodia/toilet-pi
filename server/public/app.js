@@ -1,5 +1,4 @@
 const MOBILE_MEDIA = window.matchMedia("(max-width: 900px)");
-const TOKEN_STORAGE_KEY = "toilet-pi.token";
 
 let ws = null;
 let reconnectTimer = null;
@@ -11,7 +10,8 @@ let currentSession = createEmptySession(null);
 let selectedProjectContext = null;
 let toolsExpanded = false;
 let stickToBottom = true;
-let authToken = loadAuthToken();
+let isAuthenticated = false;
+let machineConnectToken = null;
 const pendingLaunchRequests = new Map();
 const collapsedThinkingKeys = new Set();
 
@@ -58,37 +58,29 @@ const abortBtnEl = document.getElementById("abort-btn");
 
 registerPwa();
 renderInstallation();
-connect();
 renderBrowserList();
 renderSession({ forceScroll: true });
 updateHeader();
 updateControls();
 updateViewButtons();
+setConnection(false, true);
+void initializeAuth();
 
-function loadAuthToken() {
+async function initializeAuth() {
 	const hashParams = new URLSearchParams(location.hash.startsWith("#") ? location.hash.slice(1) : location.hash);
 	const tokenFromHash = hashParams.get("token")?.trim() || null;
 	if (tokenFromHash) {
-		localStorage.setItem(TOKEN_STORAGE_KEY, tokenFromHash);
 		history.replaceState(null, "", `${location.pathname}${location.search}`);
-		return tokenFromHash;
+		const success = await loginWithAdminToken(tokenFromHash, { showNoticeOnSuccess: false });
+		if (!success) showNotice("Admin token rejected", "error");
+		return;
 	}
-	const stored = localStorage.getItem(TOKEN_STORAGE_KEY)?.trim();
-	return stored || null;
+	await refreshAuthState({ connectWhenAuthenticated: true, suppressNotice: true });
 }
 
-function persistAuthToken(token) {
-	const normalized = String(token || "").trim() || null;
-	authToken = normalized;
-	if (normalized) localStorage.setItem(TOKEN_STORAGE_KEY, normalized);
-	else localStorage.removeItem(TOKEN_STORAGE_KEY);
-	return normalized;
-}
-
-function getWebSocketUrl() {
-	if (!authToken) return null;
+function getWebSocketUrl(token = null) {
 	const url = new URL(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}${getWebSocketPathname()}`);
-	url.searchParams.set("token", authToken);
+	if (token) url.searchParams.set("token", token);
 	return url.toString();
 }
 
@@ -106,13 +98,124 @@ function normalizePublicPathname(pathname) {
 }
 
 function getConnectUrl() {
-	return getWebSocketUrl();
+	return machineConnectToken ? getWebSocketUrl(machineConnectToken) : null;
+}
+
+function getAuthPath(pathname) {
+	const publicPathname = normalizePublicPathname(location.pathname || "/");
+	const suffix = pathname.startsWith("/") ? pathname : `/${pathname}`;
+	if (publicPathname === "/") return suffix;
+	return `${publicPathname.replace(/\/+$/, "")}${suffix}`;
 }
 
 function getServiceWorkerPath() {
 	const publicPathname = normalizePublicPathname(location.pathname || "/");
 	if (publicPathname === "/") return "/sw.js";
 	return `${publicPathname.replace(/\/+$/, "")}/sw.js`;
+}
+
+async function requestJson(path, options = {}) {
+	const response = await fetch(path, {
+		...options,
+		credentials: "same-origin",
+		headers: {
+			Accept: "application/json",
+			...(options.headers || {}),
+		},
+	});
+	const text = await response.text();
+	let payload = null;
+	if (text) {
+		try {
+			payload = JSON.parse(text);
+		} catch {
+			payload = null;
+		}
+	}
+	if (!response.ok) {
+		throw new Error(payload?.message || `Request failed (${response.status})`);
+	}
+	return payload;
+}
+
+async function refreshAuthState({ connectWhenAuthenticated = false, suppressNotice = false, keepCurrentOnError = false } = {}) {
+	try {
+		const status = await requestJson(getAuthPath("/auth/status"), { method: "GET" });
+		isAuthenticated = !!status?.authenticated;
+	} catch {
+		if (!keepCurrentOnError) isAuthenticated = false;
+	}
+
+	if (!isAuthenticated) {
+		machineConnectToken = null;
+		resetConnection("unauthenticated");
+	}
+
+	setConnection(ws?.readyState === WebSocket.OPEN, suppressNotice);
+	if (isAuthenticated && connectWhenAuthenticated) connect();
+	return isAuthenticated;
+}
+
+async function loginWithAdminToken(token, { showNoticeOnSuccess = true } = {}) {
+	const normalized = String(token || "").trim();
+	if (!normalized) return false;
+
+	try {
+		await requestJson(getAuthPath("/auth/login"), {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+			},
+			body: JSON.stringify({ token: normalized }),
+		});
+		isAuthenticated = true;
+		resetAuthState();
+		setConnection(false, true);
+		connect();
+		if (showNoticeOnSuccess) showNotice("Logged in", "info");
+		return true;
+	} catch (error) {
+		isAuthenticated = false;
+		resetAuthState();
+		showNotice(error instanceof Error ? error.message : "Login failed", "error");
+		return false;
+	}
+}
+
+async function logoutOfServer() {
+	try {
+		await requestJson(getAuthPath("/auth/logout"), { method: "POST" });
+	} catch (error) {
+		showNotice(error instanceof Error ? error.message : "Logout failed", "error");
+	}
+	isAuthenticated = false;
+	machineConnectToken = null;
+	resetAuthState();
+	setConnection(false, true);
+}
+
+async function generateMachineConnectToken({ copyAfter = false } = {}) {
+	if (!isAuthenticated) {
+		showNotice("Sign in to mint a machine connect URL", "error");
+		return null;
+	}
+
+	try {
+		const response = await requestJson(getAuthPath("/auth/machine-token"), { method: "POST" });
+		machineConnectToken = typeof response?.token === "string" ? response.token : null;
+		renderInstallation();
+		if (!machineConnectToken) {
+			showNotice("Server did not return a machine connect token", "error");
+			return null;
+		}
+		if (copyAfter) {
+			await copyText(`/toilet-pi ${getConnectUrl()}`);
+		}
+		return machineConnectToken;
+	} catch (error) {
+		showNotice(error instanceof Error ? error.message : "Failed to mint machine connect URL", "error");
+		return null;
+	}
 }
 
 function registerPwa() {
@@ -144,18 +247,20 @@ function resetConnection(reason = "reset") {
 }
 
 function connect() {
-	const wsUrl = getWebSocketUrl();
-	if (!wsUrl) {
+	if (!isAuthenticated) {
 		setConnection(false, true);
 		return;
 	}
+	const wsUrl = getWebSocketUrl();
 	if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
 		return;
 	}
 
+	let opened = false;
 	ws = new WebSocket(wsUrl);
 
 	ws.onopen = () => {
+		opened = true;
 		setConnection(true);
 		send({ type: "hello", role: "web" });
 		if (currentSessionGuid) {
@@ -163,8 +268,16 @@ function connect() {
 		}
 	};
 
-	ws.onclose = () => {
+	ws.onclose = async () => {
+		ws = null;
 		setConnection(false);
+		if (!opened) {
+			await refreshAuthState({
+				connectWhenAuthenticated: false,
+				suppressNotice: true,
+				keepCurrentOnError: true,
+			});
+		}
 		scheduleReconnect();
 	};
 
@@ -182,7 +295,7 @@ function connect() {
 }
 
 function scheduleReconnect() {
-	if (!authToken || reconnectTimer) return;
+	if (!isAuthenticated || reconnectTimer) return;
 	reconnectTimer = setTimeout(() => {
 		reconnectTimer = null;
 		connect();
@@ -279,15 +392,16 @@ function handleMessage(message) {
 }
 
 function setConnection(connected, suppressNotice = false) {
-	connectionStatusEl.textContent = connected ? "Connected" : authToken ? "Disconnected" : "Unauthenticated";
+	const connectionLabel = connected ? "Connected" : isAuthenticated ? "Disconnected" : "Unauthenticated";
+	connectionStatusEl.textContent = connectionLabel;
 	connectionStatusEl.className = `status-pill clickable ${connected ? "connected" : "disconnected"}`;
 	connectionStatusEl.tabIndex = 0;
 	connectionStatusEl.setAttribute("role", "button");
-	connectionStatusEl.title = authToken
+	connectionStatusEl.title = isAuthenticated
 		? connected
-			? "Connected. Click to view or replace the saved token."
-			: "Disconnected. Click to update the saved token."
-		: "Unauthenticated. Click to enter a server token.";
+			? "Connected. Click to manage your admin session."
+			: "Disconnected. Click to manage your admin session."
+		: "Unauthenticated. Click to sign in with your admin token.";
 	updateSidebarSummary();
 	updateAuthConnectionState();
 	renderInstallation();
@@ -295,12 +409,12 @@ function setConnection(connected, suppressNotice = false) {
 	if (connected && noticeBarEl.textContent === "Disconnected from server. Reconnecting…") {
 		clearNotice();
 	}
-	if (!connected && authToken && !suppressNotice) showNotice("Disconnected from server. Reconnecting…", "error", false);
+	if (!connected && isAuthenticated && !suppressNotice) showNotice("Disconnected from server. Reconnecting…", "error", false);
 }
 
 function updateSidebarSummary() {
-	if (!authToken) {
-		sidebarSummaryEl.textContent = "Open your toilet-pi admin URL or click Unauthenticated to enter a token.";
+	if (!isAuthenticated) {
+		sidebarSummaryEl.textContent = "Open toilet-pi and sign in with your admin token.";
 		return;
 	}
 	const connectedHosts = hosts.filter((host) => host.connected).length;
@@ -341,19 +455,37 @@ function renderInstallation() {
 	connectSection.className = "install-section";
 	const connectTitle = document.createElement("div");
 	connectTitle.className = "install-copy";
-	connectTitle.textContent = "Configure pi";
+	connectTitle.textContent = "Configure a machine";
+	const connectHint = document.createElement("div");
+	connectHint.className = "install-hint";
+	connectHint.textContent = connectUrl
+		? "Use this machine-scoped connect URL with `/toilet-pi` on the computer you are setting up."
+		: isAuthenticated
+			? "Generate a machine-scoped connect URL for the computer you are setting up."
+			: "Sign in first, then mint a machine-scoped connect URL.";
 	const connectActions = document.createElement("div");
 	connectActions.className = "install-actions";
 	const connectCopyBtn = document.createElement("button");
 	connectCopyBtn.type = "button";
-	connectCopyBtn.textContent = "Copy";
-	connectCopyBtn.disabled = !connectUrl;
-	connectCopyBtn.onclick = () => copyText(`/toilet-pi ${connectUrl || ""}`);
+	connectCopyBtn.textContent = connectUrl ? "Copy" : isAuthenticated ? "Generate machine URL" : "Sign in";
+	connectCopyBtn.disabled = !connectUrl && !isAuthenticated;
+	connectCopyBtn.onclick = async () => {
+		if (connectUrl) {
+			await copyText(`/toilet-pi ${connectUrl}`);
+			return;
+		}
+		await generateMachineConnectToken({ copyAfter: true });
+	};
 	connectActions.appendChild(connectCopyBtn);
 	const connectCode = document.createElement("pre");
 	connectCode.className = "install-code";
-	connectCode.textContent = connectUrl ? `/toilet-pi ${connectUrl}` : "/toilet-pi wss://host/ws?token=...";
+	connectCode.textContent = connectUrl
+		? `/toilet-pi ${connectUrl}`
+		: isAuthenticated
+			? "Click Generate to mint a machine connect URL."
+			: "Log in to generate a machine connect URL.";
 	connectSection.appendChild(connectTitle);
+	connectSection.appendChild(connectHint);
 	connectSection.appendChild(connectActions);
 	connectSection.appendChild(connectCode);
 	installationPanelEl.appendChild(connectSection);
@@ -397,13 +529,13 @@ async function copyText(text) {
 function updateAuthConnectionState() {
 	if (!authConnectionStatusEl || !authConnectionDetailEl) return;
 	const connected = ws?.readyState === WebSocket.OPEN;
-	authConnectionStatusEl.textContent = connected ? "Connected" : authToken ? "Disconnected" : "Unauthenticated";
+	authConnectionStatusEl.textContent = connected ? "Connected" : isAuthenticated ? "Disconnected" : "Unauthenticated";
 	authConnectionStatusEl.className = `status-pill ${connected ? "connected" : "disconnected"}`;
 	authConnectionDetailEl.textContent = connected
-		? "Server connected. You can manage your saved token or open installation help."
-		: authToken
-			? "A token is saved, but the server is currently disconnected."
-			: "Add a token to connect to your server.";
+		? "Server connected. You can mint machine connect URLs or log out."
+		: isAuthenticated
+			? "You are signed in, but the live server connection is currently down."
+			: "Enter your admin token to sign in.";
 }
 
 function closeHeaderMenu() {
@@ -414,8 +546,11 @@ function openAuthModal() {
 	closeInstallationModal();
 	closeHeaderMenu();
 	updateAuthConnectionState();
-	if (authTokenInputEl) authTokenInputEl.value = authToken || "";
-	if (authForgetBtnEl) authForgetBtnEl.disabled = !authToken;
+	if (authTokenInputEl) authTokenInputEl.value = "";
+	if (authForgetBtnEl) {
+		authForgetBtnEl.disabled = !isAuthenticated;
+		authForgetBtnEl.textContent = "Log out";
+	}
 	bodyEl.classList.add("auth-open");
 	requestAnimationFrame(() => authTokenInputEl?.focus());
 }
@@ -430,6 +565,7 @@ function resetAuthState() {
 	currentSession = createEmptySession(null);
 	selectedProjectContext = null;
 	pendingLaunchRequests.clear();
+	machineConnectToken = null;
 	resetConnection("reauth");
 	setConnection(false, true);
 	renderBrowserList();
@@ -438,15 +574,12 @@ function resetAuthState() {
 	renderSession({ forceScroll: true });
 }
 
-function applyAuthToken(token) {
-	persistAuthToken(token);
-	resetAuthState();
-	if (authToken) connect();
+async function applyAuthToken(token) {
+	return loginWithAdminToken(token);
 }
 
-function forgetAuthToken() {
-	persistAuthToken(null);
-	resetAuthState();
+async function forgetAuthToken() {
+	return logoutOfServer();
 }
 
 function openInstallationModal() {
@@ -1394,25 +1527,24 @@ connectionStatusEl.onkeydown = (event) => {
 };
 authCloseBtnEl.onclick = () => closeAuthModal();
 authCancelBtnEl.onclick = () => closeAuthModal();
-authForgetBtnEl.onclick = () => {
-	forgetAuthToken();
+authForgetBtnEl.onclick = async () => {
+	await forgetAuthToken();
 	closeAuthModal();
-	showNotice("Saved token removed", "info");
+	showNotice("Logged out", "info");
 };
 authModalScrimEl.onclick = (event) => {
 	if (event.target === authModalScrimEl) closeAuthModal();
 };
-authFormEl.onsubmit = (event) => {
+authFormEl.onsubmit = async (event) => {
 	event.preventDefault();
 	const token = authTokenInputEl.value.trim();
 	if (!token) {
-		showNotice("Enter a server token", "error");
+		showNotice("Enter your admin token", "error");
 		authTokenInputEl.focus();
 		return;
 	}
-	applyAuthToken(token);
-	closeAuthModal();
-	showNotice("Saved token. Connecting…", "info");
+	const success = await applyAuthToken(token);
+	if (success) closeAuthModal();
 };
 installationBtnEl.onclick = () => openInstallationModal();
 installationCloseBtnEl.onclick = () => closeInstallationModal();

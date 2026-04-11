@@ -1,3 +1,4 @@
+import type { ConnectionAuth } from './auth.js'
 import {
   parseClientMessage,
   type ClientMessage,
@@ -46,6 +47,7 @@ export function createServerCore(
   const sessions = new Map<string, SessionState>()
   const webClients = new Map<string, WebClientState>()
   const clients = new Map<string, ClientState>()
+  const authContexts = new Map<string, ConnectionAuth>()
   const pendingSessionSnapshotLoads = new Map<string, unknown>()
 
   const log =
@@ -68,7 +70,8 @@ export function createServerCore(
     return sent
   }
 
-  function onConnect(connId: string, remoteAddr: string): void {
+  function onConnect(connId: string, remoteAddr: string, auth?: ConnectionAuth | null): void {
+    if (auth) authContexts.set(connId, auth)
     log(`client connected from ${remoteAddr}`)
   }
 
@@ -117,6 +120,13 @@ export function createServerCore(
   }
 
   function handleHello(connId: string, message: HelloMessage): void {
+    const auth = authContexts.get(connId)
+    if (!auth) {
+      send(connId, { type: 'error', message: 'Unauthorized connection' })
+      transport.close(connId, 1008, 'Unauthorized')
+      return
+    }
+
     const role = message.role
     if (!['web', 'host-supervisor', 'interactive', 'background'].includes(role)) {
       send(connId, { type: 'error', message: `Unknown role: ${String(role)}` })
@@ -125,14 +135,25 @@ export function createServerCore(
     }
 
     if (role === 'web') {
+      if (auth.kind !== 'admin') {
+        send(connId, { type: 'error', message: 'Unauthorized role for this token' })
+        transport.close(connId, 1008, 'Unauthorized role')
+        return
+      }
       clients.set(connId, { role: 'web' })
       webClients.set(connId, { attachedSessionGuid: null })
       sendOverview(connId)
       return
     }
 
+    if (auth.kind !== 'machine') {
+      send(connId, { type: 'error', message: 'Unauthorized role for this token' })
+      transport.close(connId, 1008, 'Unauthorized role')
+      return
+    }
+
     if (role === 'host-supervisor') {
-      registerHostSupervisor(connId, message)
+      registerHostSupervisor(connId, message, auth.machineId)
       return
     }
 
@@ -144,23 +165,17 @@ export function createServerCore(
 
     clients.set(connId, {
       role,
-      hostId: typeof message.hostId === 'string' ? message.hostId : null,
+      hostId: auth.machineId,
       sessionGuid: message.sessionGuid,
     })
-    registerRunner(connId, message)
+    registerRunner(connId, message, auth.machineId)
   }
 
   function registerHostSupervisor(
     connId: string,
     message: HelloHostSupervisorMessage,
+    hostId: string,
   ): void {
-    const hostId = typeof message.hostId === 'string' ? message.hostId : ''
-    if (!hostId) {
-      send(connId, { type: 'error', message: 'Missing hostId' })
-      transport.close(connId, 1008, 'Missing hostId')
-      return
-    }
-
     clients.set(connId, {
       role: 'host-supervisor',
       hostId,
@@ -340,10 +355,13 @@ export function createServerCore(
     }
   }
 
-  async function handleHostMessage(_connId: string, message: ClientMessage): Promise<void> {
+  async function handleHostMessage(connId: string, message: ClientMessage): Promise<void> {
+    const client = clients.get(connId)
+    if (!client || client.role !== 'host-supervisor') return
+
     if (message.type === 'host_sessions') {
-      hostCatalogs.set(message.hostId, {
-        hostId: message.hostId,
+      hostCatalogs.set(client.hostId, {
+        hostId: client.hostId,
         updatedAt: Date.now(),
         sessions: Array.isArray(message.sessions)
           ? message.sessions.map((session) => normalizeCatalogSession(session))
@@ -354,7 +372,7 @@ export function createServerCore(
     }
 
     if (message.type === 'session_snapshot_data') {
-      mergeLoadedSessionSnapshot(message.hostId || null, normalizeSnapshot(message.session))
+      mergeLoadedSessionSnapshot(client.hostId, normalizeSnapshot(message.session))
       return
     }
 
@@ -371,7 +389,7 @@ export function createServerCore(
     if (message.type === 'runner_status') {
       if (message.sessionGuid) {
         const session = getOrCreateSession(message.sessionGuid)
-        session.hostId = message.hostId || session.hostId
+        session.hostId = client.hostId
         session.runnerStatus = message.status || null
         session.updatedAt = Date.now()
       }
@@ -451,7 +469,7 @@ export function createServerCore(
     }
   }
 
-  function registerRunner(connId: string, message: HelloRunnerMessage): void {
+  function registerRunner(connId: string, message: HelloRunnerMessage, hostId: string): void {
     if (!message.sessionGuid) return
     const session = getOrCreateSession(message.sessionGuid)
     if (message.role === 'interactive') {
@@ -461,7 +479,7 @@ export function createServerCore(
       replaceConnection(session, 'backgroundConn', connId)
     }
 
-    session.hostId = message.hostId || session.hostId
+    session.hostId = hostId || session.hostId
     session.sessionFile = message.sessionFile || session.sessionFile
     session.sessionName = message.sessionName || session.sessionName
     session.cwd = message.cwd || session.cwd
@@ -644,6 +662,7 @@ export function createServerCore(
   function handleClose(connId: string): void {
     const client = clients.get(connId)
     clients.delete(connId)
+    authContexts.delete(connId)
 
     if (!client) return
 

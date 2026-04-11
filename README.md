@@ -159,16 +159,21 @@ npm run setup
 npm start
 ```
 
-On startup the server prints two important URLs:
-
-- **Admin URL** - browser URL with `#token=...` for seamless web login
-- **Connect URL** - `ws://` or `wss://` URL with `?token=...` for `/toilet-pi`
+On startup the server prints an **Admin URL** with `#token=...` for seamless web login.
 
 Open the **Admin URL** in your browser.
 
+Important distinction:
+
+- **Admin URL / admin token** - browser sign-in only
+- **Machine Connect URL** - used with `/toilet-pi` on one computer
+
 ### 3. Configure pi and start the host supervisor
 
-Install the extension package, then inside pi run `/toilet-pi` and paste the **Connect URL** printed by the server.
+After logging into the web UI, open **Installation** and mint a machine-scoped **Connect URL** for the computer you want to set up.
+
+Inside pi run `/toilet-pi` and paste that machine **Connect URL**.
+Do **not** paste the browser admin URL into `/toilet-pi`.
 
 You can skip the interactive prompt by passing the URL directly:
 
@@ -207,7 +212,7 @@ For one-off testing without installing, load the extension file directly:
 pi -e ~/Projects/toilet-pi/extension.ts
 ```
 
-On first run the extension stays unconfigured until you run `/toilet-pi` and give it your **Connect URL**.
+On first run the extension stays unconfigured until you run `/toilet-pi` and give it a machine-scoped **Connect URL** minted from the web UI.
 
 Because local-path installs are used in place, changes in this checkout are picked up after restarting pi or running `/reload`.
 
@@ -249,7 +254,7 @@ You do **not** need to create the Worker manually in the Cloudflare dashboard fi
 
 ### 3. Create a server token
 
-Generate a token and save it somewhere safe. You will use the same token for both the browser admin URL and the pi connect URL.
+Generate a token and save it somewhere safe. You will use it for browser admin login and for minting machine-scoped connect URLs from the web UI.
 
 ```bash
 node --input-type=module -e "import { randomBytes } from 'node:crypto'; console.log(randomBytes(32).toString('base64url'))"
@@ -288,23 +293,18 @@ https://toilet-pi.your-subdomain.workers.dev
 
 Toilet-Pi infers its public URLs automatically from the request origin, so no Cloudflare public URL config is required.
 
-Use:
+Use the **Admin URL**:
 
-- **Admin URL**
-  ```text
-  https://toilet-pi.your-subdomain.workers.dev/#token=YOUR_TOKEN
-  ```
-- **Connect URL**
-  ```text
-  wss://toilet-pi.your-subdomain.workers.dev/ws?token=YOUR_TOKEN
-  ```
+```text
+https://toilet-pi.your-subdomain.workers.dev/#token=YOUR_TOKEN
+```
 
 Open the **Admin URL** in your browser.
 
-Then inside `pi`, run:
+Then use **Installation** in the web UI to mint a machine-scoped **Connect URL** for each computer you want to set up, and run that inside `pi`:
 
 ```text
-/toilet-pi wss://toilet-pi.your-subdomain.workers.dev/ws?token=YOUR_TOKEN
+/toilet-pi wss://toilet-pi.your-subdomain.workers.dev/ws?token=...
 ```
 
 Then start the host supervisor on that machine:
@@ -396,7 +396,7 @@ Debug client commands:
 - `PORT`
   - default: `3457`
 - `TOILET_PI_PUBLIC_URL`
-  - optional Node-only public base URL override used when printing Admin/Connect URLs on startup
+  - optional Node-only public base URL override used when printing the Admin URL on startup
 
 ### Supervisor
 

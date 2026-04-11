@@ -298,12 +298,15 @@ export default function (pi: ExtensionAPI) {
     await new Promise<void>((resolve, reject) => {
       const socket = new WebSocket(connectUrl);
       let finished = false;
+      let helloSent = false;
+      let helloAcceptedTimer: NodeJS.Timeout | null = null;
       const timeout = setTimeout(() => {
         finish(new Error("Timed out connecting to toilet-pi server"));
       }, 5000);
 
       function cleanup() {
         clearTimeout(timeout);
+        if (helloAcceptedTimer) clearTimeout(helloAcceptedTimer);
         socket.removeAllListeners();
         try {
           socket.close();
@@ -320,7 +323,31 @@ export default function (pi: ExtensionAPI) {
         else resolve();
       }
 
-      socket.on("open", () => finish());
+      socket.on("open", () => {
+        helloSent = true;
+        socket.send(
+          JSON.stringify({
+            type: "hello",
+            role: ROLE,
+            hostId: HOST_ID,
+            sessionGuid: `verify-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+            history: [],
+            busy: false,
+          }),
+        );
+        helloAcceptedTimer = setTimeout(() => finish(), 350);
+      });
+      socket.on("message", (data) => {
+        let message;
+        try {
+          message = JSON.parse(data.toString());
+        } catch {
+          return;
+        }
+        if (message?.type === "error") {
+          finish(new Error(message.message || "toilet-pi rejected this connect URL"));
+        }
+      });
       socket.on("unexpected-response", (_request, response) => {
         finish(
           new Error(
@@ -332,7 +359,15 @@ export default function (pi: ExtensionAPI) {
         finish(new Error(error.message || "Could not connect to toilet-pi server"));
       });
       socket.on("close", () => {
-        if (!finished) finish(new Error("toilet-pi server closed the connection"));
+        if (!finished) {
+          finish(
+            new Error(
+              helloSent
+                ? "toilet-pi rejected this machine connect URL"
+                : "toilet-pi server closed the connection",
+            ),
+          );
+        }
       });
     });
   }
@@ -345,14 +380,14 @@ export default function (pi: ExtensionAPI) {
     shuttingDown = false;
     await connect(true);
     if (context.hasUI) {
-      context.ui.notify(`toilet-pi configured for ${connectionConfig.serverUrl}`, "info");
+      context.ui.notify(`toilet-pi machine connect URL saved for ${connectionConfig.serverUrl}`, "info");
     }
   }
 
   async function promptForToiletPiUrl(context: ExtensionContext) {
     if (!context.hasUI) return;
     const input = await context.ui.input(
-      "Paste your toilet-pi URL",
+      "Paste your toilet-pi machine connect URL",
       getConnectUrl() || "wss://host/ws?token=...",
     );
     if (!input?.trim()) return;

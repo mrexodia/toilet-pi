@@ -1,3 +1,4 @@
+import type { ConnectionAuth } from './auth.js'
 import type {
   OverviewHost,
   QueuedInput,
@@ -18,7 +19,7 @@ export interface Timers {
 }
 
 export interface ServerCore {
-  onConnect(connId: string, remoteAddr: string): void
+  onConnect(connId: string, remoteAddr: string, auth?: ConnectionAuth | null): void
   onMessage(connId: string, data: string): Promise<void>
   onClose(connId: string): void
 }

@@ -1,4 +1,14 @@
-import { hasMatchingToken } from '../shared/auth.js'
+import {
+  ADMIN_COOKIE_MAX_AGE_SECONDS,
+  ADMIN_COOKIE_NAME,
+  clearCookie,
+  createAdminSessionToken,
+  createMachineToken,
+  getConnectionAuthFromToken,
+  hasMatchingToken,
+  serializeCookie,
+  verifyAdminSessionCookie,
+} from '../shared/auth.js'
 import { createServerCore } from '../shared/server-core.js'
 import type { ServerConfig, ServerCore, Timers } from '../shared/types.js'
 import { createCloudflareTransport } from './transport.js'
@@ -63,13 +73,12 @@ export class ToiletPiHub {
     this.updatePublicUrls(request.url)
 
     if (!isWebSocketRequest(request)) {
-      return new Response('Expected WebSocket upgrade', { status: 426 })
+      return plainTextResponse('Expected WebSocket upgrade', 426)
     }
 
-    const url = new URL(request.url)
-    const token = url.searchParams.get('token')
-    if (!hasMatchingToken(this.env.TOILET_PI_SERVER_TOKEN, token)) {
-      return new Response('Unauthorized', { status: 401 })
+    const auth = await authorizeWebSocketRequest(request, this.env.TOILET_PI_SERVER_TOKEN)
+    if (!auth) {
+      return plainTextResponse('Unauthorized', 401)
     }
 
     const pair = new WebSocketPair()
@@ -80,7 +89,7 @@ export class ToiletPiHub {
     server.accept()
     this.connections.set(connId, server)
     this.attachSocket(connId, server)
-    this.core.onConnect(connId, request.headers.get('cf-connecting-ip') || 'unknown')
+    this.core.onConnect(connId, request.headers.get('cf-connecting-ip') || 'unknown', auth)
 
     return new Response(null, {
       status: 101,
@@ -115,13 +124,132 @@ export class ToiletPiHub {
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url)
+
+    if (url.pathname.endsWith('/auth/login')) {
+      return handleLoginRequest(request, env)
+    }
+
+    if (url.pathname.endsWith('/auth/logout')) {
+      return handleLogoutRequest(request, env)
+    }
+
+    if (url.pathname.endsWith('/auth/status')) {
+      return handleStatusRequest(request, env)
+    }
+
+    if (url.pathname.endsWith('/auth/machine-token')) {
+      return handleMachineTokenRequest(request, env)
+    }
+
     if (isWebSocketRequest(request) && url.pathname.endsWith(DEFAULT_WS_PATH)) {
       const id = env.TOILET_PI_HUB.idFromName('hub')
       return env.TOILET_PI_HUB.get(id).fetch(request)
     }
 
-    return env.ASSETS.fetch(request)
+    const assetResponse = await env.ASSETS.fetch(request)
+    return withSecurityHeaders(assetResponse)
   },
+}
+
+async function handleLoginRequest(request: Request, env: Env): Promise<Response> {
+  if (request.method !== 'POST') {
+    return methodNotAllowedResponse('POST')
+  }
+
+  const token = await extractTokenFromRequest(request)
+  if (!hasMatchingToken(env.TOILET_PI_SERVER_TOKEN, token)) {
+    return jsonResponse({ ok: false, message: 'Unauthorized' }, 401)
+  }
+
+  const sessionToken = await createAdminSessionToken(env.TOILET_PI_SERVER_TOKEN, {
+    expiresInSeconds: ADMIN_COOKIE_MAX_AGE_SECONDS,
+  })
+
+  return jsonResponse(
+    { ok: true },
+    200,
+    {
+      'Set-Cookie': serializeCookie(ADMIN_COOKIE_NAME, sessionToken, {
+        path: '/',
+        httpOnly: true,
+        secure: new URL(request.url).protocol === 'https:',
+        sameSite: 'Strict',
+        maxAge: ADMIN_COOKIE_MAX_AGE_SECONDS,
+      }),
+    },
+  )
+}
+
+async function handleLogoutRequest(request: Request, _env: Env): Promise<Response> {
+  if (request.method !== 'POST') {
+    return methodNotAllowedResponse('POST')
+  }
+
+  if (!isAllowedCookieOrigin(request)) {
+    return jsonResponse({ ok: false, message: 'Forbidden' }, 403)
+  }
+
+  return jsonResponse(
+    { ok: true },
+    200,
+    {
+      'Set-Cookie': clearCookie(ADMIN_COOKIE_NAME, {
+        path: '/',
+        httpOnly: true,
+        secure: new URL(request.url).protocol === 'https:',
+        sameSite: 'Strict',
+      }),
+    },
+  )
+}
+
+async function handleStatusRequest(request: Request, env: Env): Promise<Response> {
+  if (request.method !== 'GET') {
+    return methodNotAllowedResponse('GET')
+  }
+
+  const auth = await verifyAdminSessionCookie(
+    env.TOILET_PI_SERVER_TOKEN,
+    request.headers.get('cookie'),
+    ADMIN_COOKIE_NAME,
+  )
+
+  return jsonResponse({ authenticated: auth?.kind === 'admin' }, 200)
+}
+
+async function handleMachineTokenRequest(request: Request, env: Env): Promise<Response> {
+  if (request.method !== 'POST') {
+    return methodNotAllowedResponse('POST')
+  }
+
+  if (!isAllowedCookieOrigin(request)) {
+    return jsonResponse({ ok: false, message: 'Forbidden' }, 403)
+  }
+
+  const auth = await verifyAdminSessionCookie(
+    env.TOILET_PI_SERVER_TOKEN,
+    request.headers.get('cookie'),
+    ADMIN_COOKIE_NAME,
+  )
+  if (auth?.kind !== 'admin') {
+    return jsonResponse({ ok: false, message: 'Unauthorized' }, 401)
+  }
+
+  const machineToken = await createMachineToken(
+    env.TOILET_PI_SERVER_TOKEN,
+    globalThis.crypto?.randomUUID?.() || `machine-${Date.now()}-${Math.random()}`,
+  )
+
+  return jsonResponse({ token: machineToken }, 200)
+}
+
+async function authorizeWebSocketRequest(request: Request, expectedAdminToken: string) {
+  const url = new URL(request.url)
+  const bearerAuth = await getConnectionAuthFromToken(expectedAdminToken, url.searchParams.get('token'))
+  if (bearerAuth) return bearerAuth
+
+  if (!isAllowedWebSocketOrigin(request)) return null
+  return verifyAdminSessionCookie(expectedAdminToken, request.headers.get('cookie'), ADMIN_COOKIE_NAME)
 }
 
 function isWebSocketRequest(request: Request): boolean {
@@ -168,7 +296,117 @@ function decodeWebSocketMessage(message: unknown): string {
   if (typeof message === 'string') return message
   if (message instanceof ArrayBuffer) return new TextDecoder().decode(message)
   if (ArrayBuffer.isView(message)) {
-    return new TextDecoder().decode(message.buffer.slice(message.byteOffset, message.byteOffset + message.byteLength))
+    return new TextDecoder().decode(
+      message.buffer.slice(message.byteOffset, message.byteOffset + message.byteLength),
+    )
   }
   return String(message ?? '')
+}
+
+async function extractTokenFromRequest(request: Request): Promise<string | null> {
+  const contentType = request.headers.get('content-type') || ''
+  const body = await request.text()
+
+  if (contentType.includes('application/json')) {
+    try {
+      const parsed = JSON.parse(body)
+      return typeof parsed?.token === 'string' ? parsed.token : null
+    } catch {
+      return null
+    }
+  }
+
+  if (contentType.includes('application/x-www-form-urlencoded')) {
+    return new URLSearchParams(body).get('token')
+  }
+
+  try {
+    const parsed = JSON.parse(body)
+    return typeof parsed?.token === 'string' ? parsed.token : null
+  } catch {
+    return new URLSearchParams(body).get('token')
+  }
+}
+
+function isAllowedCookieOrigin(request: Request): boolean {
+  const origin = request.headers.get('origin')
+  if (!origin) return true
+  return safeGetOrigin(origin) === new URL(request.url).origin
+}
+
+function isAllowedWebSocketOrigin(request: Request): boolean {
+  const origin = request.headers.get('origin')
+  if (!origin) return false
+  return safeGetOrigin(origin) === new URL(request.url).origin
+}
+
+function safeGetOrigin(value: string): string | null {
+  try {
+    return new URL(value).origin
+  } catch {
+    return null
+  }
+}
+
+function withSecurityHeaders(response: Response): Response {
+  const headers = new Headers(response.headers)
+  applySecurityHeaders(headers)
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  })
+}
+
+function jsonResponse(
+  payload: unknown,
+  status = 200,
+  extraHeaders: Record<string, string> = {},
+): Response {
+  const headers = new Headers({
+    'Content-Type': 'application/json; charset=utf-8',
+    'Cache-Control': 'no-store',
+    ...extraHeaders,
+  })
+  applySecurityHeaders(headers)
+  return new Response(`${JSON.stringify(payload)}\n`, { status, headers })
+}
+
+function plainTextResponse(body: string, status = 200): Response {
+  const headers = new Headers({
+    'Content-Type': 'text/plain; charset=utf-8',
+    'Cache-Control': 'no-store',
+  })
+  applySecurityHeaders(headers)
+  return new Response(body, { status, headers })
+}
+
+function methodNotAllowedResponse(allowedMethod: string): Response {
+  const headers = new Headers({
+    'Content-Type': 'text/plain; charset=utf-8',
+    'Cache-Control': 'no-store',
+    Allow: allowedMethod,
+  })
+  applySecurityHeaders(headers)
+  return new Response('Method not allowed', { status: 405, headers })
+}
+
+function applySecurityHeaders(headers: Headers): void {
+  headers.set(
+    'Content-Security-Policy',
+    [
+      "default-src 'self'",
+      "script-src 'self'",
+      "style-src 'self' 'unsafe-inline'",
+      "img-src 'self' data:",
+      "connect-src 'self' ws: wss:",
+      "object-src 'none'",
+      "base-uri 'none'",
+      "frame-ancestors 'none'",
+      "form-action 'self'",
+    ].join('; '),
+  )
+  headers.set('Referrer-Policy', 'no-referrer')
+  headers.set('X-Content-Type-Options', 'nosniff')
+  headers.set('X-Frame-Options', 'DENY')
 }
