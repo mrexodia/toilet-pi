@@ -38,7 +38,12 @@
 
 		html, body {
 			height: 100%;
+			min-height: 100%;
 			overflow: hidden;
+		}
+
+		body {
+			min-height: 100svh;
 		}
 
 		[hidden] {
@@ -203,24 +208,12 @@
 		}
 
 		.app-shell {
-			height: 100dvh;
+			height: 100%;
+			min-height: 100svh;
 			display: grid;
 			grid-template-columns: minmax(320px, 390px) minmax(0, 1fr);
 			padding: 0;
 			overflow: hidden;
-		}
-
-		@media (display-mode: standalone), (display-mode: fullscreen) {
-			.app-shell {
-				padding-top: env(safe-area-inset-top, 0);
-				padding-bottom: env(safe-area-inset-bottom, 0);
-				padding-left: env(safe-area-inset-left, 0);
-				padding-right: env(safe-area-inset-right, 0);
-			}
-
-			.composer {
-				padding-bottom: calc(14px + env(safe-area-inset-bottom, 0));
-			}
 		}
 
 		.sidebar {
