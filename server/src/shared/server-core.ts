@@ -180,14 +180,18 @@ export function createServerCore(
       role: 'host-supervisor',
       hostId,
     })
+    const hostname = message.hostname || hostId
     hosts.set(hostId, {
       hostId,
-      hostname: message.hostname || hostId,
+      hostname,
       platform: message.platform || null,
       pid: typeof message.pid === 'number' ? message.pid : null,
       conn: connId,
       connectedAt: Date.now(),
     })
+    for (const session of sessions.values()) {
+      if (session.hostId === hostId) session.hostname = hostname
+    }
     broadcastOverview()
     broadcastNotice({
       type: 'notice',
@@ -457,6 +461,7 @@ export function createServerCore(
         'message',
         'busy',
         'model',
+        'usage',
         'tool_start',
         'tool_update',
         'tool_end',
@@ -481,6 +486,7 @@ export function createServerCore(
     }
 
     session.hostId = hostId || session.hostId
+    session.hostname = message.hostname || session.hostname || hosts.get(hostId)?.hostname || null
     session.sessionFile = message.sessionFile || session.sessionFile
     session.sessionName = message.sessionName || session.sessionName
     session.cwd = message.cwd || session.cwd
@@ -489,6 +495,18 @@ export function createServerCore(
         history: Array.isArray(message.history) ? message.history : [],
       }) || session.preview
     session.model = message.model || session.model
+    session.contextWindowTokens =
+      typeof message.contextWindowTokens === 'number' && Number.isFinite(message.contextWindowTokens)
+        ? message.contextWindowTokens
+        : session.contextWindowTokens
+    session.contextTokens =
+      typeof message.contextTokens === 'number' && Number.isFinite(message.contextTokens)
+        ? message.contextTokens
+        : session.contextTokens
+    session.costUsd =
+      typeof message.costUsd === 'number' && Number.isFinite(message.costUsd)
+        ? message.costUsd
+        : session.costUsd
     session.busy = !!message.busy
     session.history = Array.isArray(message.history) ? message.history : session.history
     session.streamingText =
@@ -525,6 +543,7 @@ export function createServerCore(
         requestId: message.launchRequestId,
         sessionGuid: session.sessionGuid,
         hostId: session.hostId,
+        hostname: session.hostname,
         cwd: session.cwd,
       })
     }
@@ -620,6 +639,21 @@ export function createServerCore(
 
       case 'model':
         session.model = event.modelId || null
+        if (
+          typeof event.contextWindowTokens === 'number' &&
+          Number.isFinite(event.contextWindowTokens)
+        ) {
+          session.contextWindowTokens = event.contextWindowTokens
+        }
+        break
+
+      case 'usage':
+        if (typeof event.contextTokens === 'number' && Number.isFinite(event.contextTokens)) {
+          session.contextTokens = event.contextTokens
+        }
+        if (typeof event.costUsd === 'number' && Number.isFinite(event.costUsd)) {
+          session.costUsd = event.costUsd
+        }
         break
 
       case 'session_name':
@@ -747,6 +781,7 @@ export function createServerCore(
 
     const session = createSessionState(sessionGuid)
     session.hostId = found.hostId
+    session.hostname = hosts.get(found.hostId)?.hostname || session.hostname
     session.sessionFile = found.session.sessionFile || null
     session.sessionName = found.session.sessionName || null
     session.cwd = found.session.cwd || null
@@ -776,10 +811,14 @@ export function createServerCore(
       pendingInteractiveConn: null,
       owner: null,
       hostId: null,
+      hostname: null,
       sessionFile: null,
       sessionName: null,
       cwd: null,
       model: null,
+      contextWindowTokens: null,
+      contextTokens: null,
+      costUsd: null,
       preview: null,
       busy: false,
       history: [],
@@ -798,10 +837,14 @@ export function createServerCore(
       sessionGuid: sessionGuid || null,
       owner: null,
       hostId: null,
+      hostname: null,
       sessionFile: null,
       sessionName: null,
       cwd: null,
       model: null,
+      contextWindowTokens: null,
+      contextTokens: null,
+      costUsd: null,
       busy: false,
       history: [],
       streamingText: null,
@@ -819,10 +862,14 @@ export function createServerCore(
       sessionGuid: session.sessionGuid,
       owner: session.owner,
       hostId: session.hostId,
+      hostname: session.hostname,
       sessionFile: session.sessionFile,
       sessionName: session.sessionName,
       cwd: session.cwd,
       model: session.model,
+      contextWindowTokens: session.contextWindowTokens,
+      contextTokens: session.contextTokens,
+      costUsd: session.costUsd,
       busy: session.busy,
       history: session.history,
       streamingText: session.streamingText,
@@ -876,10 +923,14 @@ export function createServerCore(
       sessionGuid,
       owner: session.owner,
       hostId: session.hostId,
+      hostname: session.hostname,
       sessionFile: session.sessionFile,
       sessionName: session.sessionName,
       cwd: session.cwd,
       model: session.model,
+      contextWindowTokens: session.contextWindowTokens,
+      contextTokens: session.contextTokens,
+      costUsd: session.costUsd,
       busy: session.busy,
     })
   }
@@ -1004,6 +1055,9 @@ export function createServerCore(
           owner: null,
           busy: false,
           model: null,
+          contextWindowTokens: null,
+          contextTokens: null,
+          costUsd: null,
           runnerStatus: null,
           queuedInputCount: 0,
         })
@@ -1026,6 +1080,9 @@ export function createServerCore(
           owner: session.owner,
           busy: session.busy,
           model: session.model,
+          contextWindowTokens: session.contextWindowTokens,
+          contextTokens: session.contextTokens,
+          costUsd: session.costUsd,
           runnerStatus: session.runnerStatus || null,
           queuedInputCount: session.queuedInputs.length,
         })
@@ -1034,9 +1091,12 @@ export function createServerCore(
       const sessionsForHost = Array.from(merged.values()).sort(
         (a, b) => (b.updatedAt || 0) - (a.updatedAt || 0),
       )
+      const sessionHostname = Array.from(sessions.values()).find(
+        (session) => session.hostId === hostId && session.hostname,
+      )?.hostname
       list.push({
         hostId,
-        hostname: host?.hostname || hostId,
+        hostname: host?.hostname || sessionHostname || hostId,
         platform: host?.platform || null,
         connected: !!host,
         sessions: sessionsForHost,

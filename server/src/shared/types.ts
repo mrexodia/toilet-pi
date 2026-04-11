@@ -91,10 +91,14 @@ export interface SessionState {
   pendingInteractiveConn: string | null
   owner: RunnerRole | null
   hostId: string | null
+  hostname: string | null
   sessionFile: string | null
   sessionName: string | null
   cwd: string | null
   model: string | null
+  contextWindowTokens: number | null
+  contextTokens: number | null
+  costUsd: number | null
   preview: string | null
   busy: boolean
   history: SanitizedMessage[]

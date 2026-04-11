@@ -18,6 +18,8 @@ const ROLE =
 const REQUIRE_SERVER = ROLE === "background";
 const STATUS_KEY = "toilet-pi";
 const LAUNCH_REQUEST_ID = process.env.TOILET_PI_LAUNCH_REQUEST_ID || null;
+const MAX_SERVER_TEXT_BYTES = 50 * 1024;
+const SERVER_TEXT_TRUNCATION_SUFFIX = "\n... (truncated for toilet-pi at 50KB)";
 
 interface ServerMessage {
   type: "input" | "abort" | "abort_and_release" | "terminate_session";
@@ -51,6 +53,7 @@ interface ToolCallInfo {
   toolName: string;
   args?: unknown;
   startedAt?: number;
+  text?: string;
   details?: unknown;
   durationMs?: number;
 }
@@ -72,10 +75,13 @@ export default function (pi: ExtensionAPI) {
   let lastReportedSessionName: string | null = null;
   let lastReportedHasPendingMessages = false;
   let connectionConfig: { serverUrl: string; token: string } | null = null;
+  let sessionContextTokens: number | null = null;
+  let sessionCostUsd: number | null = null;
   const pendingRemoteInputIds: string[] = [];
   const pendingLocalQueuedInputs: Array<{ inputId: string; text: string }> = [];
   const pendingToolCalls = new Map<string, ToolCallInfo>();
   const completedToolCalls = new Map<string, ToolCallInfo>();
+  const lastToolUpdateTimes = new Map<string, number>();
 
   function isOpen() {
     return ws?.readyState === WebSocket.OPEN;
@@ -184,18 +190,78 @@ export default function (pi: ExtensionAPI) {
     return Date.now();
   }
 
+  function getContextWindowTokens(model: any = ctx?.model) {
+    const candidates = [
+      model?.contextWindowTokens,
+      model?.contextWindow,
+      model?.context_window,
+      model?.contextLength,
+      model?.context_length,
+      model?.maxContextTokens,
+      model?.max_context_tokens,
+      model?.maxInputTokens,
+      model?.max_input_tokens,
+      model?.inputTokenLimit,
+      model?.input_token_limit,
+      model?.tokenLimit,
+      model?.token_limit,
+      model?.maxTokens,
+      model?.max_tokens,
+    ];
+    for (const value of candidates) {
+      if (typeof value === "number" && Number.isFinite(value) && value > 0) {
+        return value;
+      }
+    }
+    return null;
+  }
+
+  function getSessionUsageStats(context: ExtensionContext) {
+    let contextTokens: number | null = null;
+    let costUsd = 0;
+    let sawUsage = false;
+    try {
+      const branch = context.sessionManager.getBranch();
+      for (const entry of branch) {
+        if (entry?.type !== "message") continue;
+        const message = (entry as any)?.message;
+        if (message?.role !== "assistant") continue;
+        const usage = message?.usage;
+        if (!usage) continue;
+        sawUsage = true;
+        if (typeof usage.totalTokens === "number" && Number.isFinite(usage.totalTokens)) {
+          contextTokens = usage.totalTokens;
+        }
+        const cost = usage?.cost?.total;
+        if (typeof cost === "number" && Number.isFinite(cost)) {
+          costUsd += cost;
+        }
+      }
+    } catch {
+      // Ignore.
+    }
+    return {
+      contextTokens,
+      costUsd: sawUsage ? costUsd : null,
+    };
+  }
+
   function sendHello() {
     if (!ctx) return;
     send({
       type: "hello",
       role: ROLE,
       hostId: HOST_ID,
+      hostname: os.hostname(),
       launchRequestId: LAUNCH_REQUEST_ID,
       sessionGuid: ctx.sessionManager.getSessionId(),
       sessionFile: ctx.sessionManager.getSessionFile() || null,
       sessionName: getSessionName(ctx),
       cwd: ctx.sessionManager.getCwd(),
       model: ctx.model?.id || null,
+      contextWindowTokens: getContextWindowTokens(ctx.model),
+      contextTokens: sessionContextTokens,
+      costUsd: sessionCostUsd,
       busy: !ctx.isIdle(),
       streamingText: lastStreamText,
       streamingThinkingText: lastThinkingText,
@@ -524,12 +590,13 @@ export default function (pi: ExtensionAPI) {
     lastReportedHasPendingMessages = nextHasPendingMessages;
 
     const hasExplicitLocalQueue = pendingLocalQueuedInputs.length > 0;
-    if (nextHasPendingMessages && !hasExplicitLocalQueue) {
+    const hasKnownRemoteQueue = pendingRemoteInputIds.length > 0;
+    if (nextHasPendingMessages && !hasExplicitLocalQueue && !hasKnownRemoteQueue) {
       emitSessionEvent({
         type: "queued_input_add",
         queuedInput: {
           inputId: "__local_pending__",
-          text: "[queued tui message]",
+          text: "[queued local pi TUI message]",
           timestamp: Date.now(),
         },
       });
@@ -559,7 +626,9 @@ export default function (pi: ExtensionAPI) {
     pendingLocalQueuedInputs.length = 0;
     pendingToolCalls.clear();
     completedToolCalls.clear();
+    lastToolUpdateTimes.clear();
     shuttingDown = false;
+    ({ contextTokens: sessionContextTokens, costUsd: sessionCostUsd } = getSessionUsageStats(context));
     lastReportedSessionName = getSessionName(context);
     lastReportedHasPendingMessages = !!context.hasPendingMessages();
     startSessionStatePolling();
@@ -653,9 +722,12 @@ export default function (pi: ExtensionAPI) {
     if (event.message.role !== "assistant") return;
     const now = Date.now();
     if (now - lastUpdateTime < 120) return;
+    const nextStreamText = extractAssistantText(event.message.content);
+    const nextThinkingText = extractAssistantThinkingText(event.message.content);
+    if (nextStreamText === lastStreamText && nextThinkingText === lastThinkingText) return;
     lastUpdateTime = now;
-    lastStreamText = extractAssistantText(event.message.content);
-    lastThinkingText = extractAssistantThinkingText(event.message.content);
+    lastStreamText = nextStreamText;
+    lastThinkingText = nextThinkingText;
     emitSessionEvent({
       type: "assistant_stream_update",
       text: lastStreamText || "",
@@ -667,6 +739,21 @@ export default function (pi: ExtensionAPI) {
     if (event.message.role === "assistant") {
       pendingAssistantAbortMessage = false;
       emitSessionEvent({ type: "assistant_stream_end" });
+      const usage = (event.message as any)?.usage;
+      if (usage) {
+        if (typeof usage.totalTokens === "number" && Number.isFinite(usage.totalTokens)) {
+          sessionContextTokens = usage.totalTokens;
+        }
+        const cost = usage?.cost?.total;
+        if (typeof cost === "number" && Number.isFinite(cost)) {
+          sessionCostUsd = (sessionCostUsd ?? 0) + cost;
+        }
+        emitSessionEvent({
+          type: "usage",
+          contextTokens: sessionContextTokens,
+          costUsd: sessionCostUsd,
+        });
+      }
     }
     const message = sanitizeMessage(
       event.message,
@@ -718,27 +805,40 @@ export default function (pi: ExtensionAPI) {
       toolName: event.toolName,
       args: previous?.args ?? sanitizeStructuredData((event as any).args),
       startedAt: previous?.startedAt,
+      text: partial.text || previous?.text,
       details: partial.details ?? previous?.details,
       durationMs: previous?.durationMs,
     };
     pendingToolCalls.set(event.toolCallId, nextToolCall);
+    const now = Date.now();
+    const lastUpdate = lastToolUpdateTimes.get(event.toolCallId) || 0;
+    if (now - lastUpdate < 120) return;
+    if (
+      nextToolCall.text === previous?.text &&
+      JSON.stringify(nextToolCall.details ?? null) === JSON.stringify(previous?.details ?? null)
+    ) {
+      return;
+    }
+    lastToolUpdateTimes.set(event.toolCallId, now);
     emitSessionEvent({
       type: "tool_update",
       toolCallId: event.toolCallId,
       toolName: event.toolName,
       args: nextToolCall.args,
-      text: partial.text,
-      details: partial.details,
+      text: nextToolCall.text,
+      details: nextToolCall.details,
     });
   });
 
   pi.on("tool_execution_end", async (event) => {
     const started = pendingToolCalls.get(event.toolCallId);
+    lastToolUpdateTimes.delete(event.toolCallId);
     completedToolCalls.set(event.toolCallId, {
       toolCallId: event.toolCallId,
       toolName: event.toolName,
       args: started?.args ?? sanitizeStructuredData((event as any).args),
       startedAt: started?.startedAt,
+      text: extractToolResultText((event.result as any)?.content) || started?.text,
       details: sanitizeStructuredData((event.result as any)?.details) ?? started?.details,
       durationMs: started?.startedAt ? Date.now() - started.startedAt : undefined,
     });
@@ -754,6 +854,7 @@ export default function (pi: ExtensionAPI) {
     emitSessionEvent({
       type: "model",
       modelId: event.model.id,
+      contextWindowTokens: getContextWindowTokens(event.model),
     });
   });
 
@@ -780,6 +881,9 @@ export default function (pi: ExtensionAPI) {
     pendingLocalQueuedInputs.length = 0;
     pendingToolCalls.clear();
     completedToolCalls.clear();
+    lastToolUpdateTimes.clear();
+    sessionContextTokens = null;
+    sessionCostUsd = null;
     lastReportedSessionName = null;
     lastReportedHasPendingMessages = false;
     ctx = null;
@@ -888,7 +992,7 @@ function sanitizeMessage(
       timestamp: message.timestamp,
       toolCallId: message.toolCallId,
       toolName: message.toolName || toolCall?.toolName || "tool",
-      text: extractToolResultText(message.content),
+      text: extractToolResultText(message.content) || toolCall?.text || "",
       isError: !!message.isError,
       args: toolCall?.args,
       details: sanitizeStructuredData(message.details) ?? toolCall?.details,
@@ -963,9 +1067,11 @@ function extractContentPart(part: any) {
 }
 
 function normalizeText(text: string) {
-  return String(text || "")
-    .replace(/\r\n/g, "\n")
-    .trim();
+  return truncateTextForServer(
+    String(text || "")
+      .replace(/\r\n/g, "\n")
+      .trim(),
+  );
 }
 
 function parseToolArguments(argumentsValue: any) {
@@ -989,7 +1095,7 @@ function normalizeTimestamp(value: any) {
 function sanitizeStructuredData(value: any, depth = 0): any {
   if (value == null) return value;
   if (typeof value === "string") {
-    return value.replace(/\r\n/g, "\n");
+    return truncateTextForServer(value.replace(/\r\n/g, "\n"));
   }
   if (typeof value === "number" || typeof value === "boolean") return value;
   if (depth >= 5) return "[truncated nested data]";
@@ -1012,6 +1118,33 @@ async function waitUntilIdle(ctx: ExtensionContext, timeoutMs: number) {
     if (Date.now() - start > timeoutMs) return;
     await sleep(50);
   }
+}
+
+function truncateTextForServer(
+  value: string,
+  maxBytes = MAX_SERVER_TEXT_BYTES,
+  suffix = SERVER_TEXT_TRUNCATION_SUFFIX,
+) {
+  const text = String(value || "");
+  if (!text) return "";
+  if (Buffer.byteLength(text, "utf8") <= maxBytes) return text;
+
+  const safeSuffix = Buffer.byteLength(suffix, "utf8") >= maxBytes
+    ? ""
+    : suffix;
+  const suffixBytes = Buffer.byteLength(safeSuffix, "utf8");
+  let low = 0;
+  let high = text.length;
+  while (low < high) {
+    const mid = Math.ceil((low + high) / 2);
+    const candidate = text.slice(0, mid);
+    if (Buffer.byteLength(candidate, "utf8") + suffixBytes <= maxBytes) {
+      low = mid;
+    } else {
+      high = mid - 1;
+    }
+  }
+  return `${text.slice(0, low)}${safeSuffix}`;
 }
 
 function sleep(ms: number) {

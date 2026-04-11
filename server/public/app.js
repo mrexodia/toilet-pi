@@ -16,6 +16,11 @@ const pendingLaunchRequests = new Map();
 const thinkingOpenStateByKey = new Map();
 const collapsedThinkingSessions = new Set();
 const expandedToolKeys = new Set();
+let scheduledSessionUiFrame = null;
+let scheduledSessionUiForceScroll = false;
+let scheduledSessionUiHeader = false;
+let scheduledSessionUiControls = false;
+let collapseLiveTurnDetails = loadStoredBoolean("toilet-pi-collapse-live-turn-details", false);
 
 const bodyEl = document.body;
 const sidebarSummaryEl = document.getElementById("sidebar-summary");
@@ -50,6 +55,7 @@ const sessionSubtitleEl = document.getElementById("session-subtitle");
 const sessionPathEl = document.getElementById("session-path");
 const sessionWorkingIndicatorEl = document.getElementById("session-working-indicator");
 const headerMenuEl = document.getElementById("header-menu");
+const toggleLiveTurnDetailsBtnEl = document.getElementById("toggle-live-turn-details-btn");
 const newSessionBtnEl = document.getElementById("new-session-btn");
 const newSessionFabEl = document.getElementById("new-session-fab");
 const killSessionBtnEl = document.getElementById("kill-session-btn");
@@ -57,11 +63,14 @@ const noticeBarEl = document.getElementById("notice-bar");
 const messagesEl = document.getElementById("messages");
 const messagesContentEl = document.getElementById("messages-content");
 const workingPlaceholderRowEl = document.getElementById("working-placeholder-row");
+const workingPlaceholderLabelEl = document.getElementById("working-placeholder-label");
+const workingPlaceholderMetaEl = document.getElementById("working-placeholder-meta");
 const messageInputEl = document.getElementById("message-input");
 const sendBtnEl = document.getElementById("send-btn");
 const abortBtnEl = document.getElementById("abort-btn");
 
 registerPwa();
+updateLiveTurnDetailsToggleUi();
 renderInstallation();
 renderBrowserList();
 renderSession({ forceScroll: true });
@@ -81,6 +90,31 @@ async function initializeAuth() {
 		return;
 	}
 	await refreshAuthState({ connectWhenAuthenticated: true, suppressNotice: true });
+}
+
+function loadStoredBoolean(key, fallback = false) {
+	try {
+		const raw = localStorage.getItem(key);
+		if (raw == null) return fallback;
+		return raw === "1";
+	} catch {
+		return fallback;
+	}
+}
+
+function storeBoolean(key, value) {
+	try {
+		localStorage.setItem(key, value ? "1" : "0");
+	} catch {
+		// Ignore storage errors.
+	}
+}
+
+function updateLiveTurnDetailsToggleUi() {
+	if (!toggleLiveTurnDetailsBtnEl) return;
+	toggleLiveTurnDetailsBtnEl.textContent = collapseLiveTurnDetails
+		? "Show live turn details"
+		: "Collapse live turn details";
 }
 
 function getWebSocketUrl(token = null) {
@@ -318,6 +352,25 @@ function send(message) {
 	return true;
 }
 
+function scheduleSessionUiRefresh({ forceScroll = false, header = true, controls = true } = {}) {
+	scheduledSessionUiForceScroll = scheduledSessionUiForceScroll || !!forceScroll;
+	scheduledSessionUiHeader = scheduledSessionUiHeader || !!header;
+	scheduledSessionUiControls = scheduledSessionUiControls || !!controls;
+	if (scheduledSessionUiFrame) return;
+	scheduledSessionUiFrame = requestAnimationFrame(() => {
+		scheduledSessionUiFrame = null;
+		const nextForceScroll = scheduledSessionUiForceScroll;
+		const nextHeader = scheduledSessionUiHeader;
+		const nextControls = scheduledSessionUiControls;
+		scheduledSessionUiForceScroll = false;
+		scheduledSessionUiHeader = false;
+		scheduledSessionUiControls = false;
+		renderSession({ forceScroll: nextForceScroll });
+		if (nextHeader) updateHeader();
+		if (nextControls) updateControls();
+	});
+}
+
 function handleMessage(message) {
 	switch (message.type) {
 		case "overview":
@@ -348,19 +401,27 @@ function handleMessage(message) {
 		case "session_event":
 			if (message.sessionGuid !== currentSessionGuid) return;
 			applySessionEvent(currentSession, message.event);
-			renderSession();
-			updateHeader();
-			updateControls();
+			scheduleSessionUiRefresh();
 			break;
 
 		case "session_meta":
 			if (message.sessionGuid !== currentSessionGuid) return;
 			currentSession.owner = message.owner ?? null;
 			currentSession.hostId = message.hostId ?? null;
+			currentSession.hostname = message.hostname ?? currentSession.hostname ?? null;
 			currentSession.sessionFile = message.sessionFile ?? null;
 			currentSession.sessionName = message.sessionName ?? null;
 			currentSession.cwd = message.cwd ?? null;
 			currentSession.model = message.model ?? null;
+			currentSession.contextWindowTokens = Number.isFinite(message.contextWindowTokens)
+				? message.contextWindowTokens
+				: currentSession.contextWindowTokens ?? null;
+			currentSession.contextTokens = Number.isFinite(message.contextTokens)
+				? message.contextTokens
+				: currentSession.contextTokens ?? null;
+			currentSession.costUsd = Number.isFinite(message.costUsd)
+				? message.costUsd
+				: currentSession.costUsd ?? null;
 			currentSession.busy = !!message.busy;
 			hydrateCurrentSessionFromOverview();
 			renderSession();
@@ -372,9 +433,10 @@ function handleMessage(message) {
 			const pending = pendingLaunchRequests.get(message.requestId);
 			if (!pending) return;
 			pendingLaunchRequests.delete(message.requestId);
-			showNotice(`Background session started on ${pending.hostname || message.hostId || "unknown computer"}`, "info");
+			showNotice(`Background session started on ${pending.hostname || message.hostname || message.hostId || "unknown computer"}`, "info");
 			attachSession(message.sessionGuid, {
 				hostId: message.hostId,
+				hostname: message.hostname || pending.hostname || null,
 				cwd: message.cwd || pending.cwd,
 				closeSidebar: true,
 			});
@@ -577,6 +639,13 @@ function closeHeaderMenu() {
 	if (headerMenuEl) headerMenuEl.open = false;
 }
 
+function setCollapseLiveTurnDetails(value) {
+	collapseLiveTurnDetails = !!value;
+	storeBoolean("toilet-pi-collapse-live-turn-details", collapseLiveTurnDetails);
+	updateLiveTurnDetailsToggleUi();
+	renderSession();
+}
+
 function openAuthModal() {
 	closeInstallationModal();
 	closeHeaderMenu();
@@ -725,7 +794,7 @@ function renderSessionBrowser() {
 		});
 
 		const projectLabel = getProjectLabel(session.cwd);
-		row.appendChild(makeLine("item-title", projectLabel || getSessionTitle(session)));
+		row.appendChild(makeTitleLine("item-title", projectLabel || getSessionTitle(session), formatSessionUsage(session)));
 		const detailLabel = getSessionDetailLabel(session);
 		if (detailLabel) row.appendChild(makeLine("item-subtitle", detailLabel));
 		row.appendChild(makeLine("item-meta", `${session.model || "no model"}${session.hostname ? ` • ${session.hostname}` : ""}`));
@@ -770,7 +839,7 @@ function renderProjectBrowser() {
 			updateControls();
 			if (MOBILE_MEDIA.matches) showNotice(`Selected ${basenamePath(project.cwd)}`, "info");
 		};
-		selectBtn.appendChild(makeLine("project-title", basenamePath(project.cwd)));
+		selectBtn.appendChild(makeTitleLine("project-title", basenamePath(project.cwd), formatProjectUsage(project)));
 		selectBtn.appendChild(makeLine("project-meta", `${project.sessions.length} session${project.sessions.length === 1 ? "" : "s"} • ${project.hostConnected ? "online" : "offline"}${project.hostname ? ` • ${project.hostname}` : ""}`));
 		const projectPathEl = makeLine("project-path", project.cwd);
 		projectPathEl.title = project.cwd;
@@ -791,7 +860,7 @@ function renderProjectBrowser() {
 				hostConnected: session.hostConnected,
 				closeSidebar: true,
 			});
-			row.appendChild(makeLine("session-mini-title", getSessionDetailLabel(session) || session.sessionName || session.preview || shortId(session.sessionGuid)));
+			row.appendChild(makeTitleLine("session-mini-title", getSessionDetailLabel(session) || session.sessionName || session.preview || shortId(session.sessionGuid), formatSessionUsage(session)));
 			const subtitle = `${session.model || "no model"}${session.hostname ? ` • ${session.hostname}` : ""}`;
 			row.appendChild(makeLine("session-mini-subtitle", subtitle));
 			const itemBadges = document.createElement("div");
@@ -838,6 +907,23 @@ function makeLine(className, text) {
 	return el;
 }
 
+function makeTitleLine(className, text, meta = "") {
+	const el = document.createElement("div");
+	el.className = `${className} title-with-meta`;
+	const textEl = document.createElement("span");
+	textEl.className = "title-text";
+	textEl.textContent = text;
+	el.appendChild(textEl);
+	if (meta) {
+		const metaEl = document.createElement("span");
+		metaEl.className = "title-inline-meta";
+		metaEl.textContent = meta;
+		metaEl.title = meta;
+		el.appendChild(metaEl);
+	}
+	return el;
+}
+
 function attachSession(sessionGuid, context = {}) {
 	currentSessionGuid = sessionGuid;
 	selectedProjectContext = context.hostId && context.cwd
@@ -863,10 +949,14 @@ function hydrateCurrentSessionFromOverview() {
 	const summary = findSessionSummary(currentSessionGuid);
 	if (!summary) return;
 	currentSession.hostId = currentSession.hostId || summary.hostId;
+	currentSession.hostname = currentSession.hostname || summary.hostname || null;
 	currentSession.sessionFile = currentSession.sessionFile || summary.sessionFile || null;
 	currentSession.sessionName = summary.sessionName ?? currentSession.sessionName;
 	currentSession.cwd = summary.cwd ?? currentSession.cwd;
 	currentSession.model = summary.model ?? currentSession.model;
+	currentSession.contextWindowTokens = summary.contextWindowTokens ?? currentSession.contextWindowTokens;
+	currentSession.contextTokens = summary.contextTokens ?? currentSession.contextTokens;
+	currentSession.costUsd = summary.costUsd ?? currentSession.costUsd;
 	currentSession.owner = currentSession.owner ?? summary.owner ?? null;
 	currentSession.busy = currentSession.busy || !!summary.busy;
 	selectedProjectContext = summary.cwd
@@ -875,7 +965,6 @@ function hydrateCurrentSessionFromOverview() {
 }
 
 function renderSession({ forceScroll = false } = {}) {
-	const previousScrollTop = messagesEl.scrollTop;
 	const shouldStick = forceScroll || stickToBottom;
 	messagesContentEl.innerHTML = "";
 
@@ -891,8 +980,15 @@ function renderSession({ forceScroll = false } = {}) {
 		fragments.push(renderMessage(message));
 	}
 
-	for (const tool of currentSession.activeTools) {
-		fragments.push(renderActiveTool(tool));
+	const showCollapsedLiveToolSummary = collapseLiveTurnDetails
+		&& isSessionWorking(summary)
+		&& ((currentSession.liveTurnToolCount || 0) > 0 || currentSession.activeTools.length > 0);
+	if (showCollapsedLiveToolSummary) {
+		fragments.push(renderCollapsedLiveToolSummary());
+	} else {
+		for (const tool of currentSession.activeTools) {
+			fragments.push(renderActiveTool(tool));
+		}
 	}
 
 	if (currentSession.streamingText || currentSession.streamingThinkingText) {
@@ -903,7 +999,9 @@ function renderSession({ forceScroll = false } = {}) {
 		fragments.push(renderQueuedInput(queuedInput));
 	}
 
-	workingPlaceholderRowEl.hidden = !shouldRenderWorkingPlaceholder(summary);
+	const showWorkingPlaceholder = shouldRenderWorkingPlaceholder(summary);
+	updateWorkingPlaceholder(summary, showWorkingPlaceholder);
+	workingPlaceholderRowEl.hidden = !showWorkingPlaceholder;
 
 	if (fragments.length === 0) {
 		messagesContentEl.appendChild(renderMessagesEmpty("No messages in this session yet. Send a message to start working."));
@@ -917,8 +1015,6 @@ function renderSession({ forceScroll = false } = {}) {
 	requestAnimationFrame(() => {
 		if (shouldStick) {
 			scrollMessagesToBottom();
-		} else {
-			messagesEl.scrollTop = Math.min(previousScrollTop, Math.max(0, messagesEl.scrollHeight - messagesEl.clientHeight));
 		}
 	});
 }
@@ -952,7 +1048,13 @@ function renderMessage(message) {
 }
 
 function renderQueuedInput(queuedInput) {
-	return buildMessageElement("user queued", queuedInput?.text || "", queuedInput?.timestamp || null, "queued");
+	const isLocalTuiPlaceholder = queuedInput?.inputId === "__local_pending__";
+	return buildMessageElement(
+		"user queued",
+		isLocalTuiPlaceholder ? "Queued in local pi TUI" : (queuedInput?.text || ""),
+		queuedInput?.timestamp || null,
+		isLocalTuiPlaceholder ? "local queue" : "queued",
+	);
 }
 
 function shouldRenderWorkingPlaceholder(summary) {
@@ -962,6 +1064,164 @@ function shouldRenderWorkingPlaceholder(summary) {
 		&& !currentSession.streamingText
 		&& !currentSession.streamingThinkingText
 	);
+}
+
+function updateWorkingPlaceholder(summary, visible) {
+	if (!workingPlaceholderLabelEl || !workingPlaceholderMetaEl) return;
+	workingPlaceholderLabelEl.textContent = visible ? "Working…" : "Working...";
+	const meta = visible ? getWorkingPlaceholderMeta(summary) : null;
+	workingPlaceholderMetaEl.textContent = meta?.label || "";
+	workingPlaceholderMetaEl.title = meta?.title || "";
+	workingPlaceholderMetaEl.hidden = !meta?.label;
+}
+
+function getWorkingPlaceholderMeta(summary) {
+	const exactUsage = formatSessionUsage(currentSession);
+	if (exactUsage) {
+		return {
+			label: exactUsage,
+			title: buildUsageTitle(currentSession, summary),
+		};
+	}
+	const stats = estimateApproxContextUsage(currentSession);
+	if (!stats) return null;
+	if (stats.contextWindowTokens) {
+		return {
+			label: `${stats.percentLabel}/${formatPiTokenCount(stats.approxTokens)}`,
+			title: `Approx context usage: ~${formatCompactNumber(stats.approxTokens)} / ${formatCompactNumber(stats.contextWindowTokens)} tokens`,
+		};
+	}
+	return {
+		label: `~${formatCompactNumber(stats.approxChars)} chars`,
+		title: `Approx visible context size: ~${formatCompactNumber(stats.approxChars)} characters${summary?.model ? ` • ${summary.model}` : ""}`,
+	};
+}
+
+function estimateApproxContextUsage(session) {
+	if (!session) return null;
+	let approxChars = 0;
+	for (const message of Array.isArray(session.history) ? session.history : []) {
+		approxChars += estimateMessageContextChars(message);
+	}
+	if (session.streamingText) approxChars += String(session.streamingText).length;
+	if (!approxChars) return null;
+	const approxTokens = Math.max(1, Math.round(approxChars / 4));
+	const contextWindowTokens = Number.isFinite(session.contextWindowTokens) && session.contextWindowTokens > 0
+		? session.contextWindowTokens
+		: null;
+	const percent = contextWindowTokens
+		? Math.max(1, Math.round((approxTokens / contextWindowTokens) * 100))
+		: null;
+	return {
+		approxChars,
+		approxTokens,
+		contextWindowTokens,
+		percent,
+		percentLabel: percent == null ? "" : percent >= 100 ? "100%+" : `~${percent}%`,
+	};
+}
+
+function estimateMessageContextChars(message) {
+	if (!message || typeof message !== "object") return 0;
+	if (message.role === "toolResult") {
+		if (isToolExcludedFromContext(message)) return 0;
+		return [
+			String(message.toolName || "").length,
+			measureStructuredValue(message.args),
+			String(message.text || "").length,
+		].reduce((sum, value) => sum + value, 0);
+	}
+	return [
+		String(message.text || "").length,
+		String(message.thinkingText || "").length,
+	].reduce((sum, value) => sum + value, 0);
+}
+
+function measureStructuredValue(value) {
+	if (value == null) return 0;
+	if (typeof value === "string") return value.length;
+	try {
+		return JSON.stringify(value).length;
+	} catch {
+		return String(value).length;
+	}
+}
+
+function formatCompactNumber(value) {
+	const number = Number(value || 0);
+	if (!Number.isFinite(number) || number <= 0) return "0";
+	if (number >= 1000000) return `${(number / 1000000).toFixed(number >= 10000000 ? 0 : 1)}M`;
+	if (number >= 1000) return `${(number / 1000).toFixed(number >= 10000 ? 0 : 1)}k`;
+	return String(Math.round(number));
+}
+
+function formatPiTokenCount(value) {
+	const number = Number(value || 0);
+	if (!Number.isFinite(number) || number <= 0) return "0";
+	if (number < 1000) return `${Math.round(number)}`;
+	if (number < 10000) return `${(number / 1000).toFixed(1)}k`;
+	if (number < 1000000) return `${Math.round(number / 1000)}k`;
+	return `${(number / 1000000).toFixed(1)}M`;
+}
+
+function formatUsd(value) {
+	const number = Number(value);
+	if (!Number.isFinite(number) || number <= 0) return "";
+	return `$${number.toFixed(3)}`;
+}
+
+function formatUsagePercent(contextTokens, contextWindowTokens) {
+	const used = Number(contextTokens || 0);
+	const total = Number(contextWindowTokens || 0);
+	if (!Number.isFinite(used) || !Number.isFinite(total) || used <= 0 || total <= 0) return "";
+	const percent = Math.max(1, Math.round((used / total) * 100));
+	return percent >= 100 ? "100%+" : `${percent}%`;
+}
+
+function formatSessionUsage(session) {
+	if (!session || typeof session !== "object") return "";
+	const contextTokens = Number.isFinite(session.contextTokens) && session.contextTokens > 0
+		? session.contextTokens
+		: null;
+	const contextWindowTokens = Number.isFinite(session.contextWindowTokens) && session.contextWindowTokens > 0
+		? session.contextWindowTokens
+		: null;
+	const costUsd = Number.isFinite(session.costUsd) && session.costUsd > 0
+		? session.costUsd
+		: null;
+	const parts = [];
+	if (contextTokens) {
+		const tokenLabel = formatPiTokenCount(contextTokens);
+		const percentLabel = contextWindowTokens ? formatUsagePercent(contextTokens, contextWindowTokens) : "";
+		parts.push(percentLabel ? `${percentLabel}/${tokenLabel}` : tokenLabel);
+	}
+	if (costUsd) parts.push(formatUsd(costUsd));
+	return parts.filter(Boolean).join(", ");
+}
+
+function formatProjectUsage(project) {
+	if (!project?.sessions?.length) return "";
+	for (const session of project.sessions) {
+		const usage = formatSessionUsage(session);
+		if (usage) return usage;
+	}
+	return "";
+}
+
+function buildUsageTitle(session, summary) {
+	const parts = [];
+	if (Number.isFinite(session?.contextTokens) && session.contextTokens > 0) {
+		const percentLabel = Number.isFinite(session?.contextWindowTokens) && session.contextWindowTokens > 0
+			? formatUsagePercent(session.contextTokens, session.contextWindowTokens)
+			: "";
+		const tokenLabel = formatPiTokenCount(session.contextTokens);
+		parts.push(percentLabel ? `Context: ${percentLabel}/${tokenLabel}` : `Context: ${tokenLabel}`);
+	}
+	if (Number.isFinite(session?.costUsd) && session.costUsd > 0) {
+		parts.push(`Cost: ${formatUsd(session.costUsd)}`);
+	}
+	if (summary?.model || session?.model) parts.push(`Model: ${summary?.model || session?.model}`);
+	return parts.join(" • ");
 }
 
 function renderToolMessage(message) {
@@ -978,7 +1238,33 @@ function renderActiveTool(tool) {
 		status: "running",
 		isError: false,
 		isActive: true,
+		compact: collapseLiveTurnDetails,
 	});
+}
+
+function renderCollapsedLiveToolSummary() {
+	const totalCount = Math.max(currentSession.liveTurnToolCount || 0, currentSession.activeTools.length || 0);
+	const activeCount = currentSession.activeTools.length || 0;
+	const row = document.createElement("div");
+	row.className = "message-row tool";
+	const el = document.createElement("div");
+	el.className = "message tool running compact";
+	const headerEl = document.createElement("div");
+	headerEl.className = "tool-header";
+	headerEl.textContent = formatCollapsedLiveToolSummary(totalCount, activeCount);
+	el.appendChild(headerEl);
+	row.appendChild(el);
+	return row;
+}
+
+function formatCollapsedLiveToolSummary(totalCount, activeCount) {
+	const total = Math.max(0, Number(totalCount || 0));
+	const active = Math.max(0, Number(activeCount || 0));
+	if (active > 0 && total > active) return `${total} tools called • ${active} running`;
+	if (active > 1) return `${active} tools running`;
+	if (active === 1 && total <= 1) return "1 tool running";
+	if (total === 1) return "1 tool called";
+	return `${total} tools called`;
 }
 
 function buildToolElement(tool, options = {}) {
@@ -988,7 +1274,8 @@ function buildToolElement(tool, options = {}) {
 	const el = document.createElement("div");
 	const toolStateClass = options.isActive ? "running" : options.isError ? "error" : "success";
 	const isExcludedBash = isToolExcludedFromContext(tool);
-	el.className = `message tool ${toolStateClass}${isExcludedBash ? " excluded" : ""}`.trim();
+	const compact = !!options.compact;
+	el.className = `message tool ${toolStateClass}${isExcludedBash ? " excluded" : ""}${compact ? " compact" : ""}`.trim();
 
 	const toolKey = getToolUiKey(tool, options);
 	const expanded = isToolExpanded(tool, options, toolKey);
@@ -998,11 +1285,13 @@ function buildToolElement(tool, options = {}) {
 	headerEl.textContent = formatToolHeader(tool);
 	el.appendChild(headerEl);
 
-	const bodyEl = createToolBodyElement(tool, options.isActive, expanded);
-	if (bodyEl) el.appendChild(bodyEl);
+	if (!compact) {
+		const bodyEl = createToolBodyElement(tool, options.isActive, expanded);
+		if (bodyEl) el.appendChild(bodyEl);
 
-	const footerEl = createToolFooterElement(tool, options, toolKey, expanded);
-	if (footerEl) el.appendChild(footerEl);
+		const footerEl = createToolFooterElement(tool, options, toolKey, expanded);
+		if (footerEl) el.appendChild(footerEl);
+	}
 
 	row.appendChild(el);
 	return row;
@@ -1065,10 +1354,15 @@ function formatToolBody(tool, isActive = false, expanded = false) {
 function extractToolText(tool) {
 	const toolName = String(tool?.toolName || "tool").toLowerCase();
 	const details = tool?.details || {};
-	if (toolName === "edit" && typeof details?.diff === "string" && details.diff) {
-		return details.diff;
+	const fallbackErrorText = [details?.errorMessage, details?.error, details?.message]
+		.find((value) => typeof value === "string" && value.trim()) || "";
+	if (toolName === "edit") {
+		if (typeof details?.diff === "string" && details.diff) {
+			return details.diff;
+		}
+		return String(tool?.text || fallbackErrorText || "");
 	}
-	return String(tool?.text || "");
+	return String(tool?.text || fallbackErrorText || "");
 }
 
 function formatWriteToolBody(tool, isActive = false, expanded = false) {
@@ -1114,11 +1408,16 @@ function createToolBodyElement(tool, isActive = false, expanded = false) {
 
 	if (toolName === "edit") {
 		const diff = String(tool?.details?.diff || "");
-		if (!diff) {
+		if (diff) {
+			renderDiffBody(body, diff);
+			return body;
+		}
+		const text = String(tool?.text || "");
+		if (!text) {
 			body.textContent = isActive ? "" : "(no output)";
 			return body.textContent ? body : null;
 		}
-		renderDiffBody(body, diff);
+		body.textContent = expanded ? text : previewToolText(toolName, text);
 		return body;
 	}
 
@@ -1313,6 +1612,8 @@ function buildMessageElement(className, text, timestamp, status = "", thinkingTe
 	row.className = `message-row ${className}`;
 	const el = document.createElement("div");
 	el.className = `message ${className}`;
+	const compactLiveThinking = collapseLiveTurnDetails && String(className || "").includes("streaming");
+	const displayText = text || (compactLiveThinking && thinkingText ? "Thinking…" : "");
 	if (timestamp || status) {
 		const ts = document.createElement("div");
 		ts.className = "timestamp";
@@ -1322,7 +1623,7 @@ function buildMessageElement(className, text, timestamp, status = "", thinkingTe
 		ts.textContent = parts.join(" • ");
 		el.appendChild(ts);
 	}
-	if (thinkingText) {
+	if (thinkingText && !compactLiveThinking) {
 		const thinkingEl = document.createElement("details");
 		thinkingEl.className = "thinking-block";
 		const sessionCollapsed = !!(thinkingScope && collapsedThinkingSessions.has(thinkingScope));
@@ -1358,10 +1659,10 @@ function buildMessageElement(className, text, timestamp, status = "", thinkingTe
 		thinkingEl.appendChild(textEl);
 		el.appendChild(thinkingEl);
 	}
-	if (text) {
+	if (displayText) {
 		const textEl = document.createElement("div");
 		textEl.className = "message-text";
-		textEl.textContent = text || "";
+		textEl.textContent = displayText;
 		el.appendChild(textEl);
 	}
 	row.appendChild(el);
@@ -1418,7 +1719,7 @@ function updateHeader() {
 	}
 
 	const summary = findSessionSummary(currentSessionGuid);
-	const hostLabel = summary?.hostname || selectedProjectContext?.hostname || "unknown computer";
+	const hostLabel = summary?.hostname || currentSession.hostname || selectedProjectContext?.hostname || "unknown computer";
 	const owner = currentSession.owner || summary?.owner || "inactive";
 	const queuedCount = currentSession.queuedInputs.length || summary?.queuedInputCount || 0;
 	const queued = queuedCount ? ` • ${queuedCount} queued` : "";
@@ -1515,12 +1816,16 @@ function applySessionEvent(session, event) {
 				session.streamingText = null;
 				session.streamingThinkingText = null;
 				session.abortRequested = false;
+				session.liveTurnToolCount = 0;
+				session.liveTurnSeenToolIds = [];
 			}
 			break;
 
 		case "assistant_stream_start":
 			session.streamingText = "";
 			session.streamingThinkingText = "";
+			session.liveTurnToolCount = 0;
+			session.liveTurnSeenToolIds = [];
 			break;
 
 		case "assistant_stream_update":
@@ -1538,6 +1843,10 @@ function applySessionEvent(session, event) {
 					toolName: event.toolName || "tool",
 					args: event.args,
 				});
+				if (!session.liveTurnSeenToolIds.includes(event.toolCallId)) {
+					session.liveTurnSeenToolIds.push(event.toolCallId);
+					session.liveTurnToolCount = (session.liveTurnToolCount || 0) + 1;
+				}
 			}
 			break;
 
@@ -1576,6 +1885,8 @@ function applySessionEvent(session, event) {
 				session.streamingText = null;
 				session.streamingThinkingText = null;
 				session.activeTools = [];
+				session.liveTurnToolCount = 0;
+				session.liveTurnSeenToolIds = [];
 			}
 			break;
 		}
@@ -1598,6 +1909,14 @@ function applySessionEvent(session, event) {
 
 		case "model":
 			session.model = event.modelId || null;
+			if (Number.isFinite(event.contextWindowTokens)) {
+				session.contextWindowTokens = event.contextWindowTokens;
+			}
+			break;
+
+		case "usage":
+			if (Number.isFinite(event.contextTokens)) session.contextTokens = event.contextTokens;
+			if (Number.isFinite(event.costUsd)) session.costUsd = event.costUsd;
 			break;
 
 		case "session_name":
@@ -1621,10 +1940,16 @@ function createEmptySession(sessionGuid) {
 		sessionGuid,
 		owner: null,
 		hostId: null,
+		hostname: null,
 		sessionFile: null,
 		sessionName: null,
 		cwd: null,
 		model: null,
+		contextWindowTokens: null,
+		contextTokens: null,
+		costUsd: null,
+		liveTurnToolCount: 0,
+		liveTurnSeenToolIds: [],
 		busy: false,
 		history: [],
 		streamingText: null,
@@ -1640,10 +1965,16 @@ function normalizeSession(session) {
 		sessionGuid: session?.sessionGuid || null,
 		owner: session?.owner || null,
 		hostId: session?.hostId || null,
+		hostname: session?.hostname || null,
 		sessionFile: session?.sessionFile || null,
 		sessionName: session?.sessionName || null,
 		cwd: session?.cwd || null,
 		model: session?.model || null,
+		contextWindowTokens: Number.isFinite(session?.contextWindowTokens) ? session.contextWindowTokens : null,
+		contextTokens: Number.isFinite(session?.contextTokens) ? session.contextTokens : null,
+		costUsd: Number.isFinite(session?.costUsd) ? session.costUsd : null,
+		liveTurnToolCount: Number.isFinite(session?.liveTurnToolCount) ? session.liveTurnToolCount : 0,
+		liveTurnSeenToolIds: Array.isArray(session?.liveTurnSeenToolIds) ? session.liveTurnSeenToolIds : [],
 		busy: !!session?.busy,
 		history: Array.isArray(session?.history) ? session.history : [],
 		streamingText: typeof session?.streamingText === "string" ? session.streamingText : null,
@@ -1830,6 +2161,12 @@ confirmSubmitBtnEl.onclick = () => {
 	if (!currentSessionGuid) return;
 	send({ type: "terminate_session", sessionGuid: currentSessionGuid });
 };
+if (toggleLiveTurnDetailsBtnEl) {
+	toggleLiveTurnDetailsBtnEl.onclick = () => {
+		setCollapseLiveTurnDetails(!collapseLiveTurnDetails);
+		closeHeaderMenu();
+	};
+}
 function triggerNewSession() {
 	const context = getCurrentLaunchContext();
 	if (!context) {

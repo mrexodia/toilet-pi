@@ -52,10 +52,14 @@ export interface SessionSnapshot {
   sessionGuid: string | null
   owner: RunnerRole | null
   hostId: string | null
+  hostname: string | null
   sessionFile: string | null
   sessionName: string | null
   cwd: string | null
   model: string | null
+  contextWindowTokens: number | null
+  contextTokens: number | null
+  costUsd: number | null
   busy: boolean
   history: SanitizedMessage[]
   streamingText: string | null
@@ -74,6 +78,9 @@ export interface OverviewSession {
   owner: RunnerRole | null
   busy: boolean
   model: string | null
+  contextWindowTokens: number | null
+  contextTokens: number | null
+  costUsd: number | null
   runnerStatus: string | null
   queuedInputCount: number
 }
@@ -136,6 +143,13 @@ export interface BusyEvent {
 export interface ModelEvent {
   type: 'model'
   modelId: string | null
+  contextWindowTokens?: number | null
+}
+
+export interface UsageEvent {
+  type: 'usage'
+  contextTokens?: number | null
+  costUsd?: number | null
 }
 
 export interface SessionNameEvent {
@@ -168,6 +182,7 @@ export type SessionEvent =
   | ToolEndEvent
   | BusyEvent
   | ModelEvent
+  | UsageEvent
   | SessionNameEvent
   | RemoteInputFailedEvent
   | QueuedInputAddEvent
@@ -212,12 +227,16 @@ export interface HelloRunnerMessage {
   type: 'hello'
   role: RunnerRole
   hostId?: string | null
+  hostname?: string | null
   launchRequestId?: string | null
   sessionGuid?: string
   sessionFile?: string | null
   sessionName?: string | null
   cwd?: string | null
   model?: string | null
+  contextWindowTokens?: number | null
+  contextTokens?: number | null
+  costUsd?: number | null
   busy?: boolean
   streamingText?: string | null
   streamingThinkingText?: string | null
@@ -363,10 +382,14 @@ export interface SessionMetaMessage {
   sessionGuid: string
   owner: RunnerRole | null
   hostId: string | null
+  hostname: string | null
   sessionFile: string | null
   sessionName: string | null
   cwd: string | null
   model: string | null
+  contextWindowTokens: number | null
+  contextTokens: number | null
+  costUsd: number | null
   busy: boolean
 }
 
@@ -383,6 +406,7 @@ export interface BackgroundSessionStartedMessage {
   requestId: string
   sessionGuid: string
   hostId: string | null
+  hostname: string | null
   cwd: string | null
 }
 
