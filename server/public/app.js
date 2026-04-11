@@ -1250,9 +1250,12 @@ function buildMessageElement(className, text, timestamp, status = "", thinkingTe
 	if (thinkingText) {
 		const thinkingEl = document.createElement("details");
 		thinkingEl.className = "thinking-block";
-		const defaultOpen = thinkingKey && thinkingOpenStateByKey.has(thinkingKey)
-			? !!thinkingOpenStateByKey.get(thinkingKey)
-			: !thinkingScope || !collapsedThinkingSessions.has(thinkingScope);
+		const sessionCollapsed = !!(thinkingScope && collapsedThinkingSessions.has(thinkingScope));
+		const defaultOpen = sessionCollapsed
+			? false
+			: thinkingKey && thinkingOpenStateByKey.has(thinkingKey)
+				? !!thinkingOpenStateByKey.get(thinkingKey)
+				: true;
 		thinkingEl.open = defaultOpen;
 		if (thinkingKey) {
 			thinkingEl.addEventListener("toggle", () => {
@@ -1291,9 +1294,12 @@ function buildMessageElement(className, text, timestamp, status = "", thinkingTe
 }
 
 function collapseThinkingPreview(text) {
-	return String(text || "")
+	const collapsed = String(text || "")
 		.replace(/\s+/g, " ")
 		.trim();
+	const maxChars = 220;
+	if (collapsed.length <= maxChars) return collapsed;
+	return `…${collapsed.slice(-maxChars)}`;
 }
 
 function getThinkingScope() {
