@@ -73,6 +73,7 @@ export default function (pi: ExtensionAPI) {
   let lastReportedHasPendingMessages = false;
   let connectionConfig: { serverUrl: string; token: string } | null = null;
   const pendingRemoteInputIds: string[] = [];
+  const pendingLocalQueuedInputs: Array<{ inputId: string; text: string }> = [];
   const pendingToolCalls = new Map<string, ToolCallInfo>();
   const completedToolCalls = new Map<string, ToolCallInfo>();
 
@@ -486,12 +487,14 @@ export default function (pi: ExtensionAPI) {
     const nextHasPendingMessages = !!ctx.hasPendingMessages();
     if (!force && nextHasPendingMessages === lastReportedHasPendingMessages) return;
     lastReportedHasPendingMessages = nextHasPendingMessages;
-    if (nextHasPendingMessages) {
+
+    const hasExplicitLocalQueue = pendingLocalQueuedInputs.length > 0;
+    if (nextHasPendingMessages && !hasExplicitLocalQueue) {
       emitSessionEvent({
         type: "queued_input_add",
         queuedInput: {
           inputId: "__local_pending__",
-          text: "Queued in TUI…",
+          text: "[queued tui message]",
           timestamp: Date.now(),
         },
       });
@@ -518,6 +521,7 @@ export default function (pi: ExtensionAPI) {
     lastThinkingText = null;
     pendingAssistantAbortMessage = false;
     pendingRemoteInputIds.length = 0;
+    pendingLocalQueuedInputs.length = 0;
     pendingToolCalls.clear();
     completedToolCalls.clear();
     shuttingDown = false;
@@ -532,6 +536,26 @@ export default function (pi: ExtensionAPI) {
     }
     updateStatus("unconfigured", false);
     if (REQUIRE_SERVER) context.shutdown();
+  });
+
+  pi.on("input", async (event, context) => {
+    if (event.source !== "interactive") return;
+    if (context.isIdle()) return;
+
+    const text = String(event.text || "").trim();
+    if (!text) return;
+
+    const inputId = `local-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    pendingLocalQueuedInputs.push({ inputId, text });
+    emitSessionEvent({
+      type: "queued_input_add",
+      queuedInput: {
+        inputId,
+        text,
+        timestamp: Date.now(),
+      },
+    });
+    syncPendingMessages(true);
   });
 
   pi.on("agent_start", async () => {
@@ -566,6 +590,21 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("message_start", async (event) => {
+    if (event.message.role === "user") {
+      const text = extractUserText(event.message.content);
+      const localIndex = text
+        ? pendingLocalQueuedInputs.findIndex((entry) => entry.text === text)
+        : -1;
+      if (localIndex >= 0) {
+        const [queuedInput] = pendingLocalQueuedInputs.splice(localIndex, 1);
+        emitSessionEvent({
+          type: "queued_input_remove",
+          inputId: queuedInput?.inputId || null,
+        });
+        syncPendingMessages(true);
+      }
+    }
+
     if (event.message.role === "assistant") {
       pendingAssistantAbortMessage = true;
       lastStreamText = "";
@@ -681,6 +720,7 @@ export default function (pi: ExtensionAPI) {
     lastThinkingText = null;
     pendingAssistantAbortMessage = false;
     pendingRemoteInputIds.length = 0;
+    pendingLocalQueuedInputs.length = 0;
     pendingToolCalls.clear();
     completedToolCalls.clear();
     lastReportedSessionName = null;

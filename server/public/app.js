@@ -712,16 +712,16 @@ function renderSession({ forceScroll = false } = {}) {
 		fragments.push(renderMessage(message));
 	}
 
-	for (const queuedInput of currentSession.queuedInputs) {
-		fragments.push(renderQueuedInput(queuedInput));
-	}
-
 	for (const tool of currentSession.activeTools) {
 		fragments.push(renderActiveTool(tool));
 	}
 
 	if (currentSession.streamingText || currentSession.streamingThinkingText) {
 		fragments.push(renderAssistantStream(currentSession.streamingText, currentSession.streamingThinkingText));
+	}
+
+	for (const queuedInput of currentSession.queuedInputs) {
+		fragments.push(renderQueuedInput(queuedInput));
 	}
 
 	if (fragments.length === 0) {
