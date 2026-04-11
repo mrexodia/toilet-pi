@@ -335,7 +335,6 @@ tag = "v1"
 new_sqlite_classes = ["ToiletPiHub"]
 
 [vars]
-TOILET_PI_SERVER_HISTORY_LIMIT = "200"
 # TOILET_PI_SERVER_TOKEN: set via `wrangler secret put`
 ```
 
