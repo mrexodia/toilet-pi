@@ -24,6 +24,8 @@ const installationPanelEl = document.getElementById("installation-panel");
 const installationBtnEl = document.getElementById("installation-btn");
 const authModalScrimEl = document.getElementById("auth-modal-scrim");
 const authFormEl = document.getElementById("auth-form");
+const authFieldEl = authFormEl?.querySelector(".auth-field");
+const authSubmitBtnEl = authFormEl?.querySelector('button[type="submit"]');
 const authTokenInputEl = document.getElementById("auth-token-input");
 const authCloseBtnEl = document.getElementById("auth-close-btn");
 const authCancelBtnEl = document.getElementById("auth-cancel-btn");
@@ -459,31 +461,47 @@ function renderInstallation() {
 	const connectHint = document.createElement("div");
 	connectHint.className = "install-hint";
 	connectHint.textContent = connectUrl
-		? "Use this machine-scoped connect URL with `/toilet-pi` on the computer you are setting up."
+		? "This machine-scoped connect URL is meant for one computer. Generate a fresh one for each new machine you set up."
 		: isAuthenticated
 			? "Generate a machine-scoped connect URL for the computer you are setting up."
 			: "Sign in first, then mint a machine-scoped connect URL.";
 	const connectActions = document.createElement("div");
 	connectActions.className = "install-actions";
-	const connectCopyBtn = document.createElement("button");
-	connectCopyBtn.type = "button";
-	connectCopyBtn.textContent = connectUrl ? "Copy" : isAuthenticated ? "Generate machine URL" : "Sign in";
-	connectCopyBtn.disabled = !connectUrl && !isAuthenticated;
-	connectCopyBtn.onclick = async () => {
-		if (connectUrl) {
-			await copyText(`/toilet-pi ${connectUrl}`);
-			return;
-		}
-		await generateMachineConnectToken({ copyAfter: true });
-	};
-	connectActions.appendChild(connectCopyBtn);
+	if (isAuthenticated) {
+		const generateBtn = document.createElement("button");
+		generateBtn.type = "button";
+		generateBtn.textContent = connectUrl ? "Generate new machine URL" : "Generate machine URL";
+		generateBtn.onclick = async () => {
+			await generateMachineConnectToken();
+		};
+		connectActions.appendChild(generateBtn);
+
+		const copyBtn = document.createElement("button");
+		copyBtn.type = "button";
+		copyBtn.textContent = "Copy";
+		copyBtn.disabled = !connectUrl;
+		copyBtn.onclick = async () => {
+			if (!getConnectUrl()) {
+				const token = await generateMachineConnectToken();
+				if (!token) return;
+			}
+			await copyText(`/toilet-pi ${getConnectUrl()}`);
+		};
+		connectActions.appendChild(copyBtn);
+	} else {
+		const signInBtn = document.createElement("button");
+		signInBtn.type = "button";
+		signInBtn.textContent = "Sign in";
+		signInBtn.onclick = () => openAuthModal();
+		connectActions.appendChild(signInBtn);
+	}
 	const connectCode = document.createElement("pre");
 	connectCode.className = "install-code";
 	connectCode.textContent = connectUrl
 		? `/toilet-pi ${connectUrl}`
 		: isAuthenticated
-			? "Click Generate to mint a machine connect URL."
-			: "Log in to generate a machine connect URL.";
+			? "Generate a machine connect URL, then paste it into `/toilet-pi` on that computer."
+			: "Sign in to generate a machine connect URL.";
 	connectSection.appendChild(connectTitle);
 	connectSection.appendChild(connectHint);
 	connectSection.appendChild(connectActions);
@@ -532,7 +550,7 @@ function updateAuthConnectionState() {
 	authConnectionStatusEl.textContent = connected ? "Connected" : isAuthenticated ? "Disconnected" : "Unauthenticated";
 	authConnectionStatusEl.className = `status-pill ${connected ? "connected" : "disconnected"}`;
 	authConnectionDetailEl.textContent = connected
-		? "Server connected. You can mint machine connect URLs or log out."
+		? "You are signed in. Open Machine setup to mint machine connect URLs or log out here."
 		: isAuthenticated
 			? "You are signed in, but the live server connection is currently down."
 			: "Enter your admin token to sign in.";
@@ -551,8 +569,14 @@ function openAuthModal() {
 		authForgetBtnEl.disabled = !isAuthenticated;
 		authForgetBtnEl.textContent = "Log out";
 	}
+	if (authFieldEl) authFieldEl.hidden = !!isAuthenticated;
+	if (authSubmitBtnEl) authSubmitBtnEl.hidden = !!isAuthenticated;
+	if (authCancelBtnEl) authCancelBtnEl.textContent = isAuthenticated ? "Close" : "Cancel";
 	bodyEl.classList.add("auth-open");
-	requestAnimationFrame(() => authTokenInputEl?.focus());
+	requestAnimationFrame(() => {
+		if (isAuthenticated) installationBtnEl?.focus();
+		else authTokenInputEl?.focus();
+	});
 }
 
 function closeAuthModal() {
