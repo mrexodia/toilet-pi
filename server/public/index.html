@@ -246,7 +246,7 @@
 		}
 
 		.sidebar-header {
-			height: 80px;
+			min-height: 80px;
 			box-sizing: border-box;
 		}
 
@@ -1362,6 +1362,10 @@
 			.main-header {
 				padding-top: calc(4px + var(--safe-top));
 				padding-bottom: 6px;
+			}
+
+			.sidebar-header {
+				min-height: calc(80px + var(--safe-top));
 			}
 
 			.composer {
