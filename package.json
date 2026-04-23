@@ -27,6 +27,9 @@
   "dependencies": {
     "ws": "^8.18.0"
   },
+  "peerDependencies": {
+    "@mariozechner/pi-coding-agent": "*"
+  },
   "keywords": [
     "pi",
     "pi-package",
