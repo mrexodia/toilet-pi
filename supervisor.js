@@ -11,14 +11,13 @@ import {
 } from "./toilet-pi-config.js";
 import {
   findSessionFile,
-  getDefaultSessionDir,
   readSessionSnapshot,
   scanSessions,
 } from "./session-scanner.js";
+import { resolveRuntimeTarget } from "./runtime-target.js";
 
 const HOST_ID = process.env.TOILET_PI_HOST_ID || os.hostname();
-const PI_COMMAND = process.env.TOILET_PI_PI_COMMAND || "pi";
-const SESSION_DIR = process.env.TOILET_PI_SESSION_DIR || getDefaultSessionDir();
+const { command: PI_COMMAND, sessionDir: SESSION_DIR } = resolveRuntimeTarget();
 const SCAN_INTERVAL_MS = Number.parseInt(
   process.env.TOILET_PI_SCAN_INTERVAL_MS || "15000",
   10,
@@ -278,9 +277,7 @@ function startBackgroundRunner(message) {
   if (!createNew && sessionRef) {
     args.push("--session", sessionRef);
   }
-  if (process.env.TOILET_PI_SESSION_DIR) {
-    args.push("--session-dir", SESSION_DIR);
-  }
+  args.push("--session-dir", SESSION_DIR);
 
   log(
     `starting background runner (${createNew ? "new" : message.sessionGuid})`,

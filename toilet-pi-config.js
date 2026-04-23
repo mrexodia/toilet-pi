@@ -1,21 +1,13 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
 import path from "node:path";
+import { resolveRuntimeTarget } from "./runtime-target.js";
 
-const CONFIG_DIR_NAME = ".pi";
-const ENV_AGENT_DIR = "PI_CODING_AGENT_DIR";
 const TOILET_PI_CONFIG_FILE = "toilet-pi.json";
 const TOILET_PI_SERVER_STATE_FILE = "toilet-pi-server.json";
 
 export function getAgentDir() {
-  const envDir = process.env[ENV_AGENT_DIR];
-  if (envDir) {
-    if (envDir === "~") return homedir();
-    if (envDir.startsWith("~/")) return path.join(homedir(), envDir.slice(2));
-    return envDir;
-  }
-  return path.join(homedir(), CONFIG_DIR_NAME, "agent");
+  return resolveRuntimeTarget().agentDir;
 }
 
 export function getToiletPiConfigPath() {

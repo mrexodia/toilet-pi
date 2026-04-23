@@ -2,7 +2,6 @@ import { randomBytes, randomUUID } from 'node:crypto'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { readFile, mkdir, writeFile } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
-import { homedir } from 'node:os'
 import path from 'node:path'
 import { WebSocketServer, type WebSocket } from 'ws'
 import {
@@ -18,13 +17,16 @@ import {
 } from '../shared/auth.js'
 import { createServerCore } from '../shared/server-core.js'
 import type { ServerConfig, Timers } from '../shared/types.js'
+import { resolveRuntimeTarget } from './runtime-target.js'
 import { createNodeTransport } from './transport.js'
 
 const PORT = Number.parseInt(process.env.PORT || '3457', 10)
+const HOST = String(process.env.HOST || '').trim() || null
 const WS_PATH = process.env.TOILET_PI_WS_PATH || '/ws'
 const PUBLIC_URL = process.env.TOILET_PI_PUBLIC_URL || `http://localhost:${PORT}`
 const PUBLIC_SERVER_URL = getPublicServerUrl(PUBLIC_URL, WS_PATH)
 const PUBLIC_DIR = fileURLToPath(new URL('../../public/', import.meta.url))
+const SERVER_RUNTIME_TARGET = resolveRuntimeTarget()
 const SERVER_TOKEN = await ensureServerToken()
 
 const transport = createNodeTransport()
@@ -149,10 +151,11 @@ wss.on('connection', (ws, req) => {
   })
 })
 
-server.listen(PORT, () => {
+server.listen(PORT, HOST || undefined, () => {
   console.log('='.repeat(60))
   console.log('toilet-pi server')
   console.log('='.repeat(60))
+  console.log(`Bind: ${HOST || '*'}:${PORT}`)
   console.log(`Web UI: ${PUBLIC_URL}`)
   console.log(`WebSocket: ${PUBLIC_SERVER_URL}`)
   console.log(`Admin login URL: ${buildAdminUrl(PUBLIC_SERVER_URL, SERVER_TOKEN)}`)
@@ -358,18 +361,8 @@ function buildAdminUrl(serverUrl: string, token: string): string {
   return url.toString()
 }
 
-function getAgentDir(): string {
-  const envDir = process.env.PI_CODING_AGENT_DIR
-  if (envDir) {
-    if (envDir === '~') return homedir()
-    if (envDir.startsWith('~/')) return path.join(homedir(), envDir.slice(2))
-    return envDir
-  }
-  return path.join(homedir(), '.pi', 'agent')
-}
-
 function getServerStatePath(): string {
-  return path.join(getAgentDir(), 'toilet-pi-server.json')
+  return path.join(SERVER_RUNTIME_TARGET.agentDir, 'toilet-pi-server.json')
 }
 
 async function ensureServerToken(): Promise<string> {
@@ -387,7 +380,7 @@ async function ensureServerToken(): Promise<string> {
   }
 
   const token = randomBytes(32).toString('base64url')
-  await mkdir(getAgentDir(), { recursive: true })
+  await mkdir(SERVER_RUNTIME_TARGET.agentDir, { recursive: true })
   await writeFile(getServerStatePath(), `${JSON.stringify({ token }, null, 2)}\n`, {
     encoding: 'utf8',
     mode: 0o600,

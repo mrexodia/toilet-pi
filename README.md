@@ -1,27 +1,27 @@
 # Toilet-Pi
 
-Toilet-Pi is a central web control plane for pi.
+Toilet-Pi is a central web control plane for pi and oh-my-pi.
 
 The easiest way to describe it is:
 
-> It is basically the same idea as pizza, except it has a central server and a pi extension that connects over WebSocket. That means you can interact with all sessions on all machines live, and it also works for normal interactive pi sessions. If you send a message from your phone, the message shows up in the desktop TUI too, so the experience stays seamless.
+> It is basically the same idea as pizza, except it has a central server and a shared extension that connects over WebSocket. That means you can interact with all sessions on all machines live, and it also works for normal interactive pi and oh-my-pi sessions. If you send a message from your phone, the message shows up in the desktop TUI too, so the experience stays seamless.
 
 ## Why this exists
 
-Normal pi sessions live inside one terminal on one machine.
+Normal pi and oh-my-pi sessions live inside one terminal on one machine.
 
 Toilet-Pi adds a thin remote layer on top:
 
 - one **central server** with a web UI
 - one **host supervisor** per machine
-- one **pi extension** that connects interactive and background sessions to the server
+- one **extension** loaded by pi or oh-my-pi that connects interactive and background sessions to the server
 
 That gives you a few nice advantages:
 
 - **See sessions from every machine in one place**
 - **Control already-running interactive sessions remotely**
 - **Resume inactive sessions in background without going back to the desk first**
-- **Send a message from mobile and have it appear inside the real pi TUI**
+- **Send a message from mobile and have it appear inside the real TUI**
 - **Take over a background session locally and make the background runner abort automatically**
 - **Keep the architecture simple**: WebSocket + extension + one lightweight supervisor
 
@@ -34,7 +34,7 @@ There are four pieces:
 The server:
 
 - serves the web UI
-- accepts WebSocket connections from browsers, host supervisors, and pi extensions
+- accepts WebSocket connections from browsers, host supervisors, and pi or oh-my-pi extensions
 - keeps all state in memory
 - tracks the current owner of each session
 - routes messages and aborts to the active owner only
@@ -45,14 +45,14 @@ Each machine runs one long-lived supervisor process.
 
 It:
 
-- scans local pi session files
+- scans local pi and oh-my-pi session files
 - advertises them to the server
-- can start background pi runners on demand
+- can start background runners on demand
 - kills all of its children when it exits
 
-### 3. Interactive pi + extension
+### 3. Interactive pi or oh-my-pi + extension
 
-Normal pi sessions can load `extension.ts`.
+Normal pi and oh-my-pi sessions can load `extension.ts`.
 
 Those sessions:
 
@@ -61,9 +61,9 @@ Those sessions:
 - accept live remote input
 - stay fully usable even if the server is down
 
-### 4. Background pi + same extension
+### 4. Background pi or oh-my-pi + same extension
 
-The supervisor starts headless pi processes in RPC mode, using the same extension.
+The supervisor starts headless pi or oh-my-pi processes in RPC mode, using the same extension.
 
 Those background sessions:
 
@@ -73,24 +73,24 @@ Those background sessions:
 
 ## Ownership model
 
-For each pi session GUID, Toilet-Pi keeps exactly one active command target:
+For each session GUID, Toilet-Pi keeps exactly one active command target:
 
 - `interactive`
 - `background`
 - or `none`
 
-This prevents the web UI from blasting commands at multiple copies of pi at once.
+This prevents the web UI from blasting commands at multiple copies of the runtime at once.
 
 ### Takeover behavior
 
-Interactive pi wins.
+Interactive session wins.
 
 If a session is running in background and you resume it locally:
 
-1. the interactive pi instance connects
+1. the interactive session connects
 2. the server tells the background runner to `abort_and_release`
 3. the background runner aborts and exits
-4. ownership flips to the interactive pi session
+4. ownership flips to the interactive session
 
 That makes local takeover feel natural.
 
@@ -101,20 +101,20 @@ This project intentionally optimizes for simplicity over distributed-systems pur
 ### Things it does on purpose
 
 - **No startup blocking**
-  - pi does not wait for the server to come up
+  - the runtime does not wait for the server to come up
 - **No event-send blocking**
   - server sends are best effort
 - **No database**
   - server state is in memory only
 - **No SDK embedding**
-  - background sessions are just real pi processes in RPC mode
+  - background sessions are just real pi or oh-my-pi processes in RPC mode
 - **No auth or multi-user permissions yet**
   - this is still a focused personal tool
 
 ### Important asymmetry
 
-- **Interactive pi can survive without the server**
-- **Background pi cannot**
+- **Interactive sessions can survive without the server**
+- **Background sessions cannot**
 
 If a background runner loses its server connection, it exits. That avoids hidden orphan writers mutating a session in the dark.
 
@@ -131,15 +131,15 @@ Current capabilities:
 - send a message to an inactive session and have it auto-start in background
 - start a brand-new background session in a project
 - abort the currently active owner
-- take over a background session locally from the normal pi TUI
+- take over a background session locally from the normal TUI
 
 ## Files
 
 - `server/` - TypeScript server subproject for Node.js and Cloudflare Workers
 - `server/public/` - browser UI
-- `extension.ts` - Toilet-Pi pi extension used by interactive and background pi, and the package entrypoint for `pi install`
+- `extension.ts` - Toilet-Pi extension used by interactive and background pi/oh-my-pi sessions; loaded by `pi install` or direct `omp -e` loading
 - `supervisor.js` - one-per-machine supervisor
-- `session-scanner.js` - scans local pi session files
+- `session-scanner.js` - scans local session files
 - `scripts/test-client.js` - raw protocol debug client
 - `docs/quickstart.md` - short setup guide
 - `docs/archive/v2-plan.md` / `docs/archive/v3-plan.md` - archived architecture plans
@@ -168,12 +168,14 @@ Important distinction:
 - **Admin URL / admin token** - browser sign-in only
 - **Machine Connect URL** - used with `/toilet-pi` on one computer
 
-### 3. Configure pi and start the host supervisor
+### 3. Configure pi or oh-my-pi and start the host supervisor
 
 After logging into the web UI, open **Installation** and mint a machine-scoped **Connect URL** for the computer you want to set up.
 
-Inside pi run `/toilet-pi` and paste that machine **Connect URL**.
+For pi, run `/toilet-pi` inside pi and paste that machine **Connect URL**.
 Do **not** paste the browser admin URL into `/toilet-pi`.
+
+For oh-my-pi, load the extension with `omp -e ~/Projects/toilet-pi/extension.ts` or add that path to your configured `extensions` paths. Use the same machine **Connect URL** when the extension prompts.
 
 You can skip the interactive prompt by passing the URL directly:
 
@@ -181,7 +183,7 @@ You can skip the interactive prompt by passing the URL directly:
 /toilet-pi ws://your-server/ws?token=...
 ```
 
-That writes machine-local config to `~/.pi/agent/toilet-pi.json` (respecting `PI_CODING_AGENT_DIR` if set).
+That writes machine-local config to `~/.pi/agent/toilet-pi.json` for pi (respecting `PI_CODING_AGENT_DIR` if set) or `~/.omp/agent/toilet-pi.json` for oh-my-pi.
 
 Then start the host supervisor on that same machine:
 
@@ -190,9 +192,11 @@ cd ~/Projects/toilet-pi
 npm run supervisor
 ```
 
-### 4. Install and run the pi extension
+This advertises local pi and oh-my-pi session files and lets the web UI start background runners when needed.
 
-Recommended: install this repo as a local pi package, then start `pi` normally:
+### 4. Install and run the extension
+
+Recommended for pi users: install this repo as a local pi package, then start `pi` normally:
 
 ```bash
 pi install ~/Projects/toilet-pi
@@ -212,9 +216,17 @@ For one-off testing without installing, load the extension file directly:
 pi -e ~/Projects/toilet-pi/extension.ts
 ```
 
+For oh-my-pi, load the same extension directly:
+
+```bash
+omp -e ~/Projects/toilet-pi/extension.ts
+```
+
+To keep it loaded automatically, add `~/Projects/toilet-pi/extension.ts` to your configured `extensions` paths.
+
 On first run the extension stays unconfigured until you run `/toilet-pi` and give it a machine-scoped **Connect URL** minted from the web UI.
 
-Because local-path installs are used in place, changes in this checkout are picked up after restarting pi or running `/reload`.
+Because the extension loads from a local path, changes in this checkout are picked up after restarting the runtime or running `/reload`.
 
 ### 5. Use the web UI
 
@@ -234,7 +246,7 @@ The Cloudflare deployment only hosts the central server and web UI.
 You still run these locally on each machine you want to control:
 
 - `npm run supervisor`
-- the `extension.ts` pi extension inside `pi`
+- the `extension.ts` extension loaded by `pi` or `omp`
 
 ### 1. Install dependencies
 
@@ -301,7 +313,7 @@ https://toilet-pi.your-subdomain.workers.dev/#token=YOUR_TOKEN
 
 Open the **Admin URL** in your browser.
 
-Then use **Installation** in the web UI to mint a machine-scoped **Connect URL** for each computer you want to set up, and run that inside `pi`:
+Then use **Installation** in the web UI to mint a machine-scoped **Connect URL** for each computer you want to set up, and run that inside the local runtime on that machine:
 
 ```text
 /toilet-pi wss://toilet-pi.your-subdomain.workers.dev/ws?token=...
@@ -364,6 +376,12 @@ pi
 pi -e ~/Projects/toilet-pi/extension.ts
 ```
 
+### Interactive oh-my-pi (direct load)
+
+```bash
+omp -e ~/Projects/toilet-pi/extension.ts
+```
+
 ### Raw debug client
 
 ```bash
@@ -386,21 +404,23 @@ Debug client commands:
 - `TOILET_PI_HOST_ID`
   - default: hostname
 - `TOILET_PI_SESSION_DIR`
-  - default: `~/.pi/agent/sessions`
+  - default: `~/.pi/agent/sessions` for pi, `~/.omp/agent/sessions` for oh-my-pi
 - `PI_CODING_AGENT_DIR`
-  - overrides the base pi agent dir used for `~/.pi/agent/*`
+  - overrides the active runtime's agent dir (`~/.pi/agent/*` or `~/.omp/agent/*`)
 
 ### Server
 
 - `PORT`
   - default: `3457`
+- `HOST`
+  - optional bind host for the Node server; set `0.0.0.0` for direct LAN/VPS access
 - `TOILET_PI_PUBLIC_URL`
-  - optional Node-only public base URL override used when printing the Admin URL on startup
+  - optional Node-only public base URL override used for printed URLs and browser/WebSocket origin checks; set it to the exact browser origin clients use
 
 ### Supervisor
 
 - `TOILET_PI_PI_COMMAND`
-  - default: `pi`
+  - default: `pi` for pi, `omp` for oh-my-pi
 - `TOILET_PI_EXTENSION_PATH`
   - default: local `extension.ts`
 - `TOILET_PI_SCAN_INTERVAL_MS`
@@ -417,11 +437,13 @@ Debug client commands:
 - `TOILET_PI_MESSAGE_LIMIT`
   - max per-message text mirrored to the web UI
 
+For direct LAN access without a reverse proxy, start the Node server with `HOST=0.0.0.0` and `TOILET_PI_PUBLIC_URL=http://<LAN-IP>:3457`, then open that exact origin from other devices. If you want to serve Toilet-Pi at `http://<LAN-IP>/` or behind TLS, use a reverse proxy and forward both `/` and `/ws` to the Node server.
+
 ## Notes
 
 - server state is in-memory only
 - if the server restarts, clients reconnect and rebuild state
-- session identity uses pi's built-in session GUID
+- session identity uses the built-in session GUID
 - the project intentionally keeps the protocol and architecture small
 
 ## License

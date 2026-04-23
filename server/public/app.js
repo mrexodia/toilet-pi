@@ -503,22 +503,30 @@ function renderInstallation() {
 	const connectUrl = getConnectUrl();
 	installationPanelEl.innerHTML = "";
 
+	const piInstallCommand = "pi install git:https://github.com/mrexodia/toilet-pi";
+	const ompExtensionPath = "/path/to/toilet-pi/extension.ts";
+	const ompLoadCommand = `omp -e ${ompExtensionPath}`;
+
 	const installSection = document.createElement("section");
 	installSection.className = "install-section";
 	const installTitle = document.createElement("div");
 	installTitle.className = "install-copy";
-	installTitle.textContent = "Install package";
+	installTitle.textContent = "Install extension";
+	const installHint = document.createElement("div");
+	installHint.className = "install-hint";
+	installHint.textContent = `pi users can copy the command below. oh-my-pi users can run ${ompLoadCommand} or add ${ompExtensionPath} to their configured extensions path.`;
 	const installActions = document.createElement("div");
 	installActions.className = "install-actions";
 	const installCopyBtn = document.createElement("button");
 	installCopyBtn.type = "button";
-	installCopyBtn.textContent = "Copy";
-	installCopyBtn.onclick = () => copyText(`pi install git:https://github.com/mrexodia/toilet-pi`);
+	installCopyBtn.textContent = "Copy pi command";
+	installCopyBtn.onclick = () => copyText(piInstallCommand);
 	installActions.appendChild(installCopyBtn);
 	const installCode = document.createElement("pre");
 	installCode.className = "install-code";
-	installCode.textContent = "pi install git:https://github.com/mrexodia/toilet-pi";
+	installCode.textContent = `${piInstallCommand}\n${ompLoadCommand}`;
 	installSection.appendChild(installTitle);
+	installSection.appendChild(installHint);
 	installSection.appendChild(installActions);
 	installSection.appendChild(installCode);
 	installationPanelEl.appendChild(installSection);
@@ -777,7 +785,7 @@ function renderBrowserList() {
 function renderSessionBrowser() {
 	const sessions = flattenSessions();
 	if (sessions.length === 0) {
-		browserListEl.appendChild(renderEmpty("No sessions visible yet. Start pi with the websocket extension, or run the host supervisor to discover inactive local sessions."));
+		browserListEl.appendChild(renderEmpty("No sessions visible yet. Start pi or oh-my-pi with the websocket extension, or run the host supervisor to discover inactive local sessions."));
 		return;
 	}
 

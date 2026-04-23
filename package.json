@@ -8,8 +8,14 @@
       "./extension.ts"
     ]
   },
+  "omp": {
+    "extensions": [
+      "./extension.ts"
+    ]
+  },
   "scripts": {
     "start": "npm start --prefix server",
+    "start:lan": "node scripts/start-lan.js",
     "dev": "npm run dev --prefix server",
     "dev:cf": "npm run dev:cf --prefix server",
     "deploy": "npm run deploy --prefix server",

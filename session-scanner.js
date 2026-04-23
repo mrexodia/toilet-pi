@@ -1,8 +1,8 @@
 import { createReadStream } from "node:fs";
 import { access, readdir, stat } from "node:fs/promises";
-import { homedir } from "node:os";
 import path from "node:path";
 import readline from "node:readline";
+import { resolveRuntimeTarget } from "./runtime-target.js";
 
 const DEFAULT_MESSAGE_LIMIT = Number.parseInt(
   process.env.TOILET_PI_MESSAGE_LIMIT || "4000",
@@ -10,10 +10,7 @@ const DEFAULT_MESSAGE_LIMIT = Number.parseInt(
 );
 
 export function getDefaultSessionDir() {
-  return (
-    process.env.TOILET_PI_SESSION_DIR ||
-    path.join(homedir(), ".pi", "agent", "sessions")
-  );
+  return resolveRuntimeTarget().sessionDir;
 }
 
 export async function scanSessions(sessionDir = getDefaultSessionDir()) {

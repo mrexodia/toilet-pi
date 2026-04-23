@@ -1,4 +1,6 @@
 import os from "node:os";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import path from "node:path";
 import { WebSocket } from "ws";
 import type {
   ExtensionAPI,
@@ -6,11 +8,11 @@ import type {
 } from "@mariozechner/pi-coding-agent";
 import {
   buildConnectUrl,
+  normalizeConfig,
   parseToiletPiInput,
-  readToiletPiConfig,
   toBrowserBaseUrl,
-  writeToiletPiConfig,
 } from "./toilet-pi-config.js";
+import { resolveRuntimeTarget } from "./runtime-target.js";
 
 const HOST_ID = process.env.TOILET_PI_HOST_ID || os.hostname();
 const ROLE =
@@ -60,6 +62,49 @@ interface ToolCallInfo {
 
 type SanitizedMessage = WebMessage | WebToolResultMessage;
 
+const TOILET_PI_CONFIG_FILE = "toilet-pi.json";
+
+function getHostAgentDir(extensionApi: ExtensionAPI) {
+  try {
+    return (extensionApi as any)?.pi?.getAgentDir?.() ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function resolveExtensionRuntimeTarget(extensionApi: ExtensionAPI) {
+  return resolveRuntimeTarget({
+    hostAgentDir: getHostAgentDir(extensionApi),
+  });
+}
+
+function getToiletPiConfigPath(agentDir: string) {
+  return path.join(agentDir, TOILET_PI_CONFIG_FILE);
+}
+
+async function readToiletPiConfig(agentDir: string) {
+  try {
+    const raw = await readFile(getToiletPiConfigPath(agentDir), "utf8");
+    return normalizeConfig(JSON.parse(raw));
+  } catch {
+    return null;
+  }
+}
+
+async function writeToiletPiConfig(
+  agentDir: string,
+  config: { serverUrl: string; token: string },
+) {
+  const normalized = normalizeConfig(config);
+  await mkdir(agentDir, { recursive: true });
+  await writeFile(
+    getToiletPiConfigPath(agentDir),
+    `${JSON.stringify(normalized, null, 2)}\n`,
+    { encoding: "utf8", mode: 0o600 },
+  );
+  return normalized;
+}
+
 export default function (pi: ExtensionAPI) {
   let ws: WebSocket | null = null;
   let reconnectTimer: NodeJS.Timeout | null = null;
@@ -82,6 +127,7 @@ export default function (pi: ExtensionAPI) {
   const pendingToolCalls = new Map<string, ToolCallInfo>();
   const completedToolCalls = new Map<string, ToolCallInfo>();
   const lastToolUpdateTimes = new Map<string, number>();
+  const runtimeTarget = resolveExtensionRuntimeTarget(pi);
 
   function isOpen() {
     return ws?.readyState === WebSocket.OPEN;
@@ -95,7 +141,7 @@ export default function (pi: ExtensionAPI) {
         return null;
       }
     }
-    return readToiletPiConfig();
+    return readToiletPiConfig(runtimeTarget.agentDir);
   }
 
   function getConnectUrl() {
@@ -441,7 +487,7 @@ export default function (pi: ExtensionAPI) {
   async function configureToiletPi(input: string, context: ExtensionContext) {
     const config = parseToiletPiInput(input);
     await verifyConnectionConfig(config);
-    connectionConfig = await writeToiletPiConfig(config);
+    connectionConfig = await writeToiletPiConfig(runtimeTarget.agentDir, config);
     reconnectAttempt = 0;
     shuttingDown = false;
     await connect(true);
