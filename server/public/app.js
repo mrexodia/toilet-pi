@@ -23,6 +23,8 @@ let scheduledSessionUiHeader = false;
 let scheduledSessionUiControls = false;
 let lastSessionUiRefreshAt = 0;
 const SESSION_UI_REFRESH_MIN_INTERVAL_MS = 50;
+const HISTORY_RENDER_CHUNK = 200;
+let historyRenderLimit = HISTORY_RENDER_CHUNK;
 let collapseLiveTurnDetails = loadStoredBoolean("toilet-pi-collapse-live-turn-details", false);
 
 const bodyEl = document.body;
@@ -937,6 +939,7 @@ function makeTitleLine(className, text, meta = "") {
 
 function attachSession(sessionGuid, context = {}) {
 	currentSessionGuid = sessionGuid;
+	historyRenderLimit = HISTORY_RENDER_CHUNK;
 	selectedProjectContext = context.hostId && context.cwd
 		? {
 			hostId: context.hostId,
@@ -986,7 +989,8 @@ function renderSession({ forceScroll = false } = {}) {
 	}
 
 	const summary = findSessionSummary(currentSessionGuid);
-	const fragments = renderHistoryFragments(currentSession, summary);
+	const { fragments, hiddenCount, totalCount } = renderHistoryFragments(currentSession, summary);
+	if (hiddenCount > 0) messagesContentEl.appendChild(renderHistoryLoadMore(hiddenCount, totalCount));
 
 	const showCollapsedLiveTurnBubble = collapseLiveTurnDetails && isSessionWorking(summary);
 	if (showCollapsedLiveTurnBubble) {
@@ -1041,10 +1045,44 @@ function getVisibleHistoryMessages(session, summary) {
 	return history.slice(0, startIndex);
 }
 
-function renderHistoryFragments(session, summary) {
+function getRenderedHistoryWindow(session, summary) {
 	const history = getVisibleHistoryMessages(session, summary);
+	const totalCount = history.length;
+	const limit = Math.max(HISTORY_RENDER_CHUNK, historyRenderLimit || HISTORY_RENDER_CHUNK);
+	if (totalCount <= limit) return { history, hiddenCount: 0, totalCount };
+	return {
+		history: history.slice(totalCount - limit),
+		hiddenCount: totalCount - limit,
+		totalCount,
+	};
+}
+
+function renderHistoryLoadMore(hiddenCount, totalCount) {
+	const row = document.createElement("div");
+	row.className = "message-row system";
+	const button = document.createElement("button");
+	button.className = "subtle";
+	button.textContent = `Load ${Math.min(HISTORY_RENDER_CHUNK, hiddenCount)} older messages (${hiddenCount} hidden of ${totalCount})`;
+	button.onclick = () => {
+		historyRenderLimit += HISTORY_RENDER_CHUNK;
+		const previousHeight = messagesEl.scrollHeight;
+		renderSession();
+		requestAnimationFrame(() => {
+			messagesEl.scrollTop += messagesEl.scrollHeight - previousHeight;
+		});
+	};
+	row.appendChild(button);
+	return row;
+}
+
+function renderHistoryFragments(session, summary) {
+	const { history, hiddenCount, totalCount } = getRenderedHistoryWindow(session, summary);
 	if (!collapseLiveTurnDetails) {
-		return history.map((message) => renderMessage(message));
+		return {
+			fragments: history.map((message) => renderMessage(message)),
+			hiddenCount,
+			totalCount,
+		};
 	}
 
 	const fragments = [];
@@ -1084,7 +1122,7 @@ function renderHistoryFragments(session, summary) {
 	}
 
 	if (inCollapsedTurn) flushTurnPhaseBuffer();
-	return fragments;
+	return { fragments, hiddenCount, totalCount };
 }
 
 function isCollapsedTurnPhaseMessage(message) {
