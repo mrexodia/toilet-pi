@@ -68,11 +68,27 @@ const workingPlaceholderMetaEl = document.getElementById("working-placeholder-me
 const messageInputEl = document.getElementById("message-input");
 const sendBtnEl = document.getElementById("send-btn");
 const abortBtnEl = document.getElementById("abort-btn");
+let messageInputResizeFrame = null;
+let messageInputLastHeight = 0;
 
 function resizeMessageInput() {
 	if (!messageInputEl) return;
 	messageInputEl.style.height = "auto";
-	messageInputEl.style.height = `${Math.min(messageInputEl.scrollHeight, 160)}px`;
+	const nextHeight = Math.min(messageInputEl.scrollHeight, 160);
+	if (nextHeight !== messageInputLastHeight) {
+		messageInputEl.style.height = `${nextHeight}px`;
+		messageInputLastHeight = nextHeight;
+	} else {
+		messageInputEl.style.height = `${messageInputLastHeight}px`;
+	}
+}
+
+function scheduleMessageInputResize() {
+	if (messageInputResizeFrame) return;
+	messageInputResizeFrame = requestAnimationFrame(() => {
+		messageInputResizeFrame = null;
+		resizeMessageInput();
+	});
 }
 
 registerPwa();
@@ -2380,6 +2396,7 @@ sendBtnEl.onclick = () => {
 		showNotice("Starting background runner and delivering your message…", "info");
 	}
 	messageInputEl.value = "";
+	messageInputLastHeight = 0;
 	resizeMessageInput();
 };
 
@@ -2391,7 +2408,7 @@ abortBtnEl.onclick = () => {
 };
 
 messageInputEl.oninput = () => {
-	resizeMessageInput();
+	scheduleMessageInputResize();
 };
 
 messageInputEl.onkeydown = (event) => {
@@ -2401,7 +2418,12 @@ messageInputEl.onkeydown = (event) => {
 	}
 };
 
-resizeMessageInput();
+scheduleMessageInputResize();
+
+window.addEventListener("resize", () => {
+	messageInputLastHeight = 0;
+	scheduleMessageInputResize();
+});
 
 messagesEl.addEventListener("scroll", () => {
 	stickToBottom = isNearBottom();
