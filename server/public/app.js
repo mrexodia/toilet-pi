@@ -17,9 +17,12 @@ const thinkingOpenStateByKey = new Map();
 const collapsedThinkingSessions = new Set();
 const expandedToolKeys = new Set();
 let scheduledSessionUiFrame = null;
+let scheduledSessionUiTimer = null;
 let scheduledSessionUiForceScroll = false;
 let scheduledSessionUiHeader = false;
 let scheduledSessionUiControls = false;
+let lastSessionUiRefreshAt = 0;
+const SESSION_UI_REFRESH_MIN_INTERVAL_MS = 50;
 let collapseLiveTurnDetails = loadStoredBoolean("toilet-pi-collapse-live-turn-details", false);
 
 const bodyEl = document.body;
@@ -374,23 +377,31 @@ function send(message) {
 	return true;
 }
 
+function flushScheduledSessionUiRefresh() {
+	scheduledSessionUiFrame = null;
+	lastSessionUiRefreshAt = performance.now();
+	const nextForceScroll = scheduledSessionUiForceScroll;
+	const nextHeader = scheduledSessionUiHeader;
+	const nextControls = scheduledSessionUiControls;
+	scheduledSessionUiForceScroll = false;
+	scheduledSessionUiHeader = false;
+	scheduledSessionUiControls = false;
+	renderSession({ forceScroll: nextForceScroll });
+	if (nextHeader) updateHeader();
+	if (nextControls) updateControls();
+}
+
 function scheduleSessionUiRefresh({ forceScroll = false, header = true, controls = true } = {}) {
 	scheduledSessionUiForceScroll = scheduledSessionUiForceScroll || !!forceScroll;
 	scheduledSessionUiHeader = scheduledSessionUiHeader || !!header;
 	scheduledSessionUiControls = scheduledSessionUiControls || !!controls;
-	if (scheduledSessionUiFrame) return;
-	scheduledSessionUiFrame = requestAnimationFrame(() => {
-		scheduledSessionUiFrame = null;
-		const nextForceScroll = scheduledSessionUiForceScroll;
-		const nextHeader = scheduledSessionUiHeader;
-		const nextControls = scheduledSessionUiControls;
-		scheduledSessionUiForceScroll = false;
-		scheduledSessionUiHeader = false;
-		scheduledSessionUiControls = false;
-		renderSession({ forceScroll: nextForceScroll });
-		if (nextHeader) updateHeader();
-		if (nextControls) updateControls();
-	});
+	if (scheduledSessionUiFrame || scheduledSessionUiTimer) return;
+	const elapsed = performance.now() - lastSessionUiRefreshAt;
+	const delay = Math.max(0, SESSION_UI_REFRESH_MIN_INTERVAL_MS - elapsed);
+	scheduledSessionUiTimer = setTimeout(() => {
+		scheduledSessionUiTimer = null;
+		scheduledSessionUiFrame = requestAnimationFrame(flushScheduledSessionUiRefresh);
+	}, delay);
 }
 
 function handleMessage(message) {
