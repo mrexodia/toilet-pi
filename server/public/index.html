@@ -977,9 +977,10 @@
 
 		#message-input {
 			width: 100%;
+			height: 88px;
 			min-height: 44px;
 			max-height: 160px;
-			resize: none;
+			resize: vertical;
 			overflow-y: auto;
 			line-height: 1.4;
 		}
@@ -1586,7 +1587,7 @@
 			</div>
 
 			<div class="composer">
-				<textarea id="message-input" placeholder="Send a message to the active session…" autocomplete="off" rows="1"></textarea>
+				<textarea id="message-input" placeholder="Send a message to the active session…" autocomplete="off" rows="3"></textarea>
 				<button id="abort-btn" class="danger icon-button abort-button" title="Abort active generation" aria-label="Abort active generation" disabled>■</button>
 				<button id="send-btn" class="primary" title="Send" aria-label="Send" disabled>🎲</button>
 			</div>
