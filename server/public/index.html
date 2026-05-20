@@ -63,7 +63,7 @@
 			color: var(--text);
 		}
 
-		button, input {
+		button, input, textarea {
 			font: inherit;
 		}
 
@@ -142,7 +142,8 @@
 			transform: translateY(-1px);
 		}
 
-		input {
+		input,
+		textarea {
 			background: var(--bg);
 			color: var(--text);
 			border: 1px solid var(--border);
@@ -150,7 +151,8 @@
 			padding: 12px 14px;
 		}
 
-		input:focus {
+		input:focus,
+		textarea:focus {
 			outline: none;
 			border-color: #58a6ff;
 		}
@@ -968,13 +970,18 @@
 			display: grid;
 			grid-template-columns: auto minmax(0, 1fr) auto;
 			gap: 10px;
-			align-items: center;
+			align-items: end;
 			background: rgba(13, 17, 23, 0.78);
 			backdrop-filter: blur(10px);
 		}
 
 		#message-input {
 			width: 100%;
+			min-height: 44px;
+			max-height: 160px;
+			resize: none;
+			overflow-y: auto;
+			line-height: 1.4;
 		}
 
 		body.confirm-open .confirm-modal-scrim {
@@ -1579,7 +1586,7 @@
 			</div>
 
 			<div class="composer">
-				<input id="message-input" type="text" placeholder="Send a message to the active session…" autocomplete="off" />
+				<textarea id="message-input" placeholder="Send a message to the active session…" autocomplete="off" rows="1"></textarea>
 				<button id="abort-btn" class="danger icon-button abort-button" title="Abort active generation" aria-label="Abort active generation" disabled>■</button>
 				<button id="send-btn" class="primary" title="Send" aria-label="Send" disabled>🎲</button>
 			</div>

@@ -69,6 +69,12 @@ const messageInputEl = document.getElementById("message-input");
 const sendBtnEl = document.getElementById("send-btn");
 const abortBtnEl = document.getElementById("abort-btn");
 
+function resizeMessageInput() {
+	if (!messageInputEl) return;
+	messageInputEl.style.height = "auto";
+	messageInputEl.style.height = `${Math.min(messageInputEl.scrollHeight, 160)}px`;
+}
+
 registerPwa();
 updateLiveTurnDetailsToggleUi();
 renderInstallation();
@@ -2374,6 +2380,7 @@ sendBtnEl.onclick = () => {
 		showNotice("Starting background runner and delivering your message…", "info");
 	}
 	messageInputEl.value = "";
+	resizeMessageInput();
 };
 
 abortBtnEl.onclick = () => {
@@ -2383,12 +2390,18 @@ abortBtnEl.onclick = () => {
 	send({ type: "abort", sessionGuid: currentSessionGuid });
 };
 
+messageInputEl.oninput = () => {
+	resizeMessageInput();
+};
+
 messageInputEl.onkeydown = (event) => {
-	if (event.key === "Enter") {
+	if (event.key === "Enter" && !event.shiftKey) {
 		event.preventDefault();
 		sendBtnEl.onclick();
 	}
 };
+
+resizeMessageInput();
 
 messagesEl.addEventListener("scroll", () => {
 	stickToBottom = isNearBottom();
