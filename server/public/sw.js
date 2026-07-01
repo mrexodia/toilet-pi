@@ -1,11 +1,13 @@
-const CACHE_NAME = 'toilet-pi-v3';
+const CACHE_NAME = 'toilet-pi-v4';
 const APP_ASSETS = [
   './',
   './index.html',
   './app.js',
   './manifest.webmanifest',
   './favicon.svg',
+  './favicon.svg?v=4',
   './favicon.ico',
+  './favicon.ico?v=4',
   './apple-touch-icon.png',
   './icon-192.png',
   './icon-512.png',

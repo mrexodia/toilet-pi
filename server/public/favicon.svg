@@ -1,7 +1,12 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 800">
-  <rect width="800" height="800" rx="120" fill="#09090b"/>
-  <path fill="#fff" fill-rule="evenodd" d="
+  <style>
+    .mark { fill: #09090b; }
+    @media (prefers-color-scheme: dark) {
+      .mark { fill: #fff; }
+    }
+  </style>
+  <path class="mark" fill-rule="evenodd" d="
     M165.29 165.29
     H517.36
     V400
@@ -17,5 +22,5 @@
     V282.65
     Z
   "/>
-  <path fill="#fff" d="M517.36 400 H634.72 V634.72 H517.36 Z"/>
+  <path class="mark" d="M517.36 400 H634.72 V634.72 H517.36 Z"/>
 </svg>
