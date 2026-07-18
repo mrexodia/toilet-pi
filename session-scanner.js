@@ -8,6 +8,10 @@ const DEFAULT_MESSAGE_LIMIT = Number.parseInt(
   process.env.TOILET_PI_MESSAGE_LIMIT || "4000",
   10,
 );
+const DEFAULT_HISTORY_BYTES = Math.max(
+  1024,
+  Number.parseInt(process.env.TOILET_PI_HISTORY_BYTES || "", 10) || 4 * 1024 * 1024,
+);
 
 export function getDefaultSessionDir() {
   return (
@@ -115,13 +119,17 @@ export async function readSessionSnapshot(sessionFile, options = {}) {
   if (!header?.id) return null;
 
   const info = await stat(resolvedFile);
+  const maxHistoryBytes = Math.max(
+    1024,
+    Number(options.maxHistoryBytes) || DEFAULT_HISTORY_BYTES,
+  );
   return {
     sessionGuid: header.id,
     sessionFile: resolvedFile,
     cwd: header.cwd || null,
     sessionName,
     model,
-    history,
+    history: limitHistoryByBytes(history, maxHistoryBytes),
     updatedAt: updatedAt || info.mtimeMs,
   };
 }
@@ -325,6 +333,24 @@ function truncateText(text) {
   return text.length > DEFAULT_MESSAGE_LIMIT
     ? `${text.slice(0, DEFAULT_MESSAGE_LIMIT - 1)}…`
     : text;
+}
+
+function limitHistoryByBytes(history, maxBytes) {
+  let bytes = 0;
+  let start = history.length;
+  while (start > 0) {
+    let entryBytes = 0;
+    try {
+      entryBytes = Buffer.byteLength(JSON.stringify(history[start - 1]), "utf8");
+    } catch {
+      start -= 1;
+      continue;
+    }
+    if (bytes + entryBytes > maxBytes) break;
+    bytes += entryBytes;
+    start -= 1;
+  }
+  return history.slice(start);
 }
 
 function compactText(text) {

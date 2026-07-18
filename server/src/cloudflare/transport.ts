@@ -10,6 +10,11 @@ export function createCloudflareTransport(connections: Map<string, WebSocket>): 
         return true
       } catch {
         connections.delete(connId)
+        try {
+          connection.close(1011, 'send failed')
+        } catch {
+          // Ignore.
+        }
         return false
       }
     },

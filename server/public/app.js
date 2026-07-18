@@ -317,7 +317,8 @@ function connect() {
 		}
 	};
 
-	ws.onclose = async () => {
+	ws.onclose = async (event) => {
+		console.warn(`toilet-pi WebSocket closed: code=${event.code} reason=${event.reason || "none"}`);
 		ws = null;
 		setConnection(false);
 		if (!opened) {
@@ -330,7 +331,9 @@ function connect() {
 		scheduleReconnect();
 	};
 
-	ws.onerror = () => {};
+	ws.onerror = (event) => {
+		console.warn("toilet-pi WebSocket error", event);
+	};
 
 	ws.onmessage = (event) => {
 		let message;

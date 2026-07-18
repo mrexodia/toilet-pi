@@ -19,6 +19,10 @@ const REQUIRE_SERVER = ROLE === "background";
 const STATUS_KEY = "toilet-pi";
 const LAUNCH_REQUEST_ID = process.env.TOILET_PI_LAUNCH_REQUEST_ID || null;
 const MAX_SERVER_TEXT_BYTES = 50 * 1024;
+const MAX_SERVER_HISTORY_BYTES = Math.max(
+  1024,
+  Number.parseInt(process.env.TOILET_PI_HISTORY_BYTES || "", 10) || 4 * 1024 * 1024,
+);
 const SERVER_TEXT_TRUNCATION_SUFFIX = "\n... (truncated for toilet-pi at 50KB)";
 
 interface ServerMessage {
@@ -110,7 +114,7 @@ export default function (pi: ExtensionAPI) {
     if (!ctx?.hasUI || ROLE === "background") return;
     const normalized = String(status || "").trim().toLowerCase();
     const isConnecting = normalized.startsWith("connecting");
-    const isDisconnected = normalized === "disconnected";
+    const isDisconnected = normalized.startsWith("disconnected");
     const isError = normalized.includes("error");
 
     if (!isConnecting && !isDisconnected && !isError) {
@@ -171,7 +175,13 @@ export default function (pi: ExtensionAPI) {
       const message = sanitizeMessage(entry.message, toolCalls);
       if (message) history.push(message);
     }
-    return history;
+    const limited = limitHistoryByBytes(history, MAX_SERVER_HISTORY_BYTES);
+    if (limited.length < history.length) {
+      console.warn(
+        `[toilet-pi] Mirroring the newest ${limited.length} of ${history.length} history entries to stay below ${MAX_SERVER_HISTORY_BYTES} bytes`,
+      );
+    }
+    return limited;
   }
 
   function getSessionUpdatedAt(context: ExtensionContext) {
@@ -311,9 +321,11 @@ export default function (pi: ExtensionAPI) {
       `connecting ${reconnectAttempt > 0 ? `(${reconnectAttempt + 1})` : ""}`.trim(),
       false,
     );
-    ws = new WebSocket(connectUrl);
+    const socket = new WebSocket(connectUrl);
+    ws = socket;
 
-    ws.on("open", () => {
+    socket.on("open", () => {
+      if (ws !== socket) return;
       reconnectAttempt = 0;
       updateStatus(`${ROLE}`, true);
       sendHello();
@@ -321,7 +333,8 @@ export default function (pi: ExtensionAPI) {
       syncPendingMessages(true);
     });
 
-    ws.on("message", async (data: Buffer) => {
+    socket.on("message", async (data: Buffer) => {
+      if (ws !== socket) return;
       let message: ServerMessage;
       try {
         message = JSON.parse(data.toString());
@@ -331,18 +344,27 @@ export default function (pi: ExtensionAPI) {
       await handleServerMessage(message);
     });
 
-    ws.on("close", async () => {
+    socket.on("close", async (code, reason) => {
+      if (ws !== socket) return;
       ws = null;
       if (shuttingDown) return;
-      updateStatus("disconnected", false);
+      const closeReason = reason.toString();
+      const detail = `disconnected (${code}${closeReason ? `: ${closeReason}` : ""})`;
+      console.warn(`[toilet-pi] WebSocket ${detail}`);
+      updateStatus(detail, false);
       if (REQUIRE_SERVER) {
         await shutdownBackgroundProcess("server disconnected");
+        return;
+      }
+      if (closeReason === "replaced") {
+        console.warn("[toilet-pi] Another pi instance connected with this session ID; automatic reconnect stopped");
         return;
       }
       scheduleReconnect();
     });
 
-    ws.on("error", () => {
+    socket.on("error", (error) => {
+      if (ws === socket) console.warn(`[toilet-pi] WebSocket error: ${error.message}`);
       // The close handler handles reconnect/exit behavior.
     });
   }
@@ -1118,6 +1140,27 @@ async function waitUntilIdle(ctx: ExtensionContext, timeoutMs: number) {
     if (Date.now() - start > timeoutMs) return;
     await sleep(50);
   }
+}
+
+function limitHistoryByBytes(
+  history: SanitizedMessage[],
+  maxBytes: number,
+): SanitizedMessage[] {
+  let bytes = 0;
+  let start = history.length;
+  while (start > 0) {
+    let entryBytes = 0;
+    try {
+      entryBytes = Buffer.byteLength(JSON.stringify(history[start - 1]), "utf8");
+    } catch {
+      start -= 1;
+      continue;
+    }
+    if (bytes + entryBytes > maxBytes) break;
+    bytes += entryBytes;
+    start -= 1;
+  }
+  return history.slice(start);
 }
 
 function truncateTextForServer(

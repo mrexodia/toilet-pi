@@ -173,8 +173,8 @@ async function connect() {
     }
   });
 
-  ws.on("close", () => {
-    log("disconnected");
+  ws.on("close", (code, reason) => {
+    log(`disconnected (code=${code}, reason=${reason.toString() || "none"})`);
     ws = null;
     scheduleReconnect();
   });

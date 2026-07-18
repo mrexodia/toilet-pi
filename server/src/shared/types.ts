@@ -29,6 +29,7 @@ export interface ServerConfig {
   publicUrl: string
   publicServerUrl: string
   wsPath: string
+  maxSessionHistoryBytes?: number
   log?: (message: string) => void
 }
 
@@ -102,6 +103,7 @@ export interface SessionState {
   preview: string | null
   busy: boolean
   history: SanitizedMessage[]
+  historyBytes: number
   streamingText: string | null
   streamingThinkingText: string | null
   activeTools: Map<string, ActiveTool>

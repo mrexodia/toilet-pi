@@ -37,6 +37,8 @@ interface EnsureBackgroundOptions {
   requestId?: string | null
 }
 
+const DEFAULT_MAX_SESSION_HISTORY_BYTES = 4 * 1024 * 1024
+
 export function createServerCore(
   transport: Transport,
   timers: Timers,
@@ -49,6 +51,12 @@ export function createServerCore(
   const clients = new Map<string, ClientState>()
   const authContexts = new Map<string, ConnectionAuth>()
   const pendingSessionSnapshotLoads = new Map<string, unknown>()
+  const maxSessionHistoryBytes =
+    typeof config.maxSessionHistoryBytes === 'number' &&
+    Number.isFinite(config.maxSessionHistoryBytes) &&
+    config.maxSessionHistoryBytes > 0
+      ? Math.floor(config.maxSessionHistoryBytes)
+      : DEFAULT_MAX_SESSION_HISTORY_BYTES
 
   const log =
     config.log ??
@@ -508,7 +516,14 @@ export function createServerCore(
         ? message.costUsd
         : session.costUsd
     session.busy = !!message.busy
-    session.history = Array.isArray(message.history) ? message.history : session.history
+    if (Array.isArray(message.history)) {
+      const limited = limitHistoryByBytes(message.history, maxSessionHistoryBytes)
+      session.history = limited.history
+      session.historyBytes = limited.bytes
+      if (limited.dropped > 0) {
+        log(`trimmed ${limited.dropped} history entries for ${message.sessionGuid}`)
+      }
+    }
     session.streamingText =
       typeof message.streamingText === 'string' ? message.streamingText : null
     session.streamingThinkingText =
@@ -577,6 +592,8 @@ export function createServerCore(
       case 'message':
         if (event.message) {
           session.history.push(event.message)
+          session.historyBytes += serializedByteLength(event.message)
+          trimSessionHistory(session, maxSessionHistoryBytes)
         }
         if (event.message?.role === 'user' && event.message.remoteInputId) {
           removeQueuedInput(session, event.message.remoteInputId)
@@ -735,6 +752,12 @@ export function createServerCore(
 
     const session = sessions.get(client.sessionGuid)
     if (!session) return
+    const isCurrentConnection =
+      client.role === 'interactive'
+        ? session.interactiveConn === connId || session.pendingInteractiveConn === connId
+        : session.backgroundConn === connId
+    if (!isCurrentConnection) return
+
     const previousOwner = session.owner
 
     if (client.role === 'interactive') {
@@ -822,6 +845,7 @@ export function createServerCore(
       preview: null,
       busy: false,
       history: [],
+      historyBytes: 0,
       streamingText: null,
       streamingThinkingText: null,
       activeTools: new Map<string, ActiveTool>(),
@@ -983,7 +1007,12 @@ export function createServerCore(
 
     const loadedHistory = Array.isArray(snapshot.history) ? snapshot.history : []
     if (session.history.length === 0 || loadedHistory.length > session.history.length) {
-      session.history = loadedHistory
+      const limited = limitHistoryByBytes(loadedHistory, maxSessionHistoryBytes)
+      session.history = limited.history
+      session.historyBytes = limited.bytes
+      if (limited.dropped > 0) {
+        log(`trimmed ${limited.dropped} snapshot history entries for ${sessionGuid}`)
+      }
     }
 
     session.preview = getSessionPreview({ history: session.history }) || session.preview
@@ -1306,5 +1335,41 @@ export function createServerCore(
     onConnect,
     onMessage,
     onClose,
+  }
+}
+
+function serializedByteLength(value: unknown): number {
+  try {
+    return new TextEncoder().encode(JSON.stringify(value)).byteLength
+  } catch {
+    return 0
+  }
+}
+
+function limitHistoryByBytes(
+  history: SanitizedMessage[],
+  maxBytes: number,
+): { history: SanitizedMessage[]; bytes: number; dropped: number } {
+  let bytes = 0
+  let start = history.length
+
+  while (start > 0) {
+    const entryBytes = serializedByteLength(history[start - 1])
+    if (bytes + entryBytes > maxBytes) break
+    bytes += entryBytes
+    start -= 1
+  }
+
+  return {
+    history: history.slice(start),
+    bytes,
+    dropped: start,
+  }
+}
+
+function trimSessionHistory(session: SessionState, maxBytes: number): void {
+  while (session.history.length > 0 && session.historyBytes > maxBytes) {
+    const removed = session.history.shift()
+    session.historyBytes = Math.max(0, session.historyBytes - serializedByteLength(removed))
   }
 }

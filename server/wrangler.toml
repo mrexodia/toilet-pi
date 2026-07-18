@@ -1,6 +1,6 @@
 name = "toilet-pi"
 main = "src/cloudflare/entry.ts"
-compatibility_date = "2025-04-01"
+compatibility_date = "2026-04-07"
 preview_urls = false
 
 [assets]

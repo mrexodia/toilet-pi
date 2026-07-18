@@ -320,7 +320,7 @@ npm run supervisor
 ```toml
 name = "toilet-pi"
 main = "src/cloudflare/entry.ts"
-compatibility_date = "2025-04-01"
+compatibility_date = "2026-04-07"
 
 [assets]
 directory = "./public"
@@ -336,6 +336,7 @@ new_sqlite_classes = ["ToiletPiHub"]
 
 [vars]
 # TOILET_PI_SERVER_TOKEN: set via `wrangler secret put`
+# TOILET_PI_SERVER_HISTORY_BYTES = "4194304" # optional
 ```
 
 ## Commands
@@ -396,6 +397,8 @@ Debug client commands:
   - default: `3457`
 - `TOILET_PI_PUBLIC_URL`
   - optional Node-only public base URL override used when printing the Admin URL on startup
+- `TOILET_PI_SERVER_HISTORY_BYTES`
+  - max recent history retained per session; default: `4194304` (4 MiB)
 
 ### Supervisor
 
@@ -412,10 +415,10 @@ Debug client commands:
   - optional full connect URL override, including `?token=...`
 - `TOILET_PI_ROLE`
   - set automatically to `background` for supervisor-launched sessions
-- `TOILET_PI_HISTORY_LIMIT`
-  - how many recent messages are mirrored to the web UI on connect
+- `TOILET_PI_HISTORY_BYTES`
+  - max recent history mirrored in a connection or snapshot; default: `4194304` (4 MiB)
 - `TOILET_PI_MESSAGE_LIMIT`
-  - max per-message text mirrored to the web UI
+  - max per-message text read from inactive session files; default: `4000` characters
 
 ## Notes
 

@@ -72,7 +72,7 @@ class FakeTimers implements Timers {
   }
 }
 
-function createTestServer() {
+function createTestServer(overrides: Partial<ServerConfig> = {}) {
   const transport = new FakeTransport()
   const timers = new FakeTimers()
   const config: ServerConfig = {
@@ -80,6 +80,7 @@ function createTestServer() {
     publicUrl: 'http://localhost:3457',
     publicServerUrl: 'ws://localhost:3457/ws',
     wsPath: '/ws',
+    ...overrides,
   }
   const core = createServerCore(transport, timers, config)
   return { core, transport, timers }
@@ -123,6 +124,74 @@ describe('createServerCore', () => {
       type: 'overview',
       hosts: [],
     })
+  })
+
+  it('keeps recent history within the configured byte budget', async () => {
+    const { core, transport } = createTestServer({ maxSessionHistoryBytes: 150 })
+    connect(transport, core, 'interactive-1')
+    connect(transport, core, 'web-1')
+
+    const recent = { role: 'user', text: 'c'.repeat(80) }
+    await send(core, 'interactive-1', {
+      type: 'hello',
+      role: 'interactive',
+      sessionGuid: 'session-1',
+      history: [
+        { role: 'user', text: 'a'.repeat(80) },
+        { role: 'assistant', text: 'b'.repeat(80) },
+        recent,
+      ],
+      busy: false,
+    })
+    const latest = { role: 'assistant', text: 'd'.repeat(80) }
+    await send(core, 'interactive-1', {
+      type: 'session_event',
+      sessionGuid: 'session-1',
+      event: { type: 'message', message: latest },
+    })
+    await send(core, 'web-1', { type: 'hello', role: 'web' })
+    await send(core, 'web-1', { type: 'attach', sessionGuid: 'session-1' })
+
+    expect(transport.last('web-1')).toEqual(
+      expect.objectContaining({
+        type: 'session_snapshot',
+        session: expect.objectContaining({ history: [latest] }),
+      }),
+    )
+  })
+
+  it('ignores the stale close after replacing a duplicate runner', async () => {
+    const { core, transport } = createTestServer()
+    connect(transport, core, 'web-1')
+    connect(transport, core, 'interactive-1')
+    connect(transport, core, 'interactive-2')
+    await send(core, 'web-1', { type: 'hello', role: 'web' })
+    await send(core, 'interactive-1', {
+      type: 'hello',
+      role: 'interactive',
+      sessionGuid: 'session-1',
+      history: [],
+      busy: false,
+    })
+    transport.drain('web-1')
+
+    await send(core, 'interactive-2', {
+      type: 'hello',
+      role: 'interactive',
+      sessionGuid: 'session-1',
+      history: [],
+      busy: false,
+    })
+    expect(transport.closes).toContainEqual({
+      connId: 'interactive-1',
+      code: 1000,
+      reason: 'replaced',
+    })
+    transport.drain('web-1')
+
+    core.onClose('interactive-1')
+
+    expect(transport.drain('web-1')).toEqual([])
   })
 
   it('lets interactive take ownership over background', async () => {

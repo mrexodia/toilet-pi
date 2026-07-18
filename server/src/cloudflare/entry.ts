@@ -34,6 +34,7 @@ interface Env {
   ASSETS: AssetFetcher
   TOILET_PI_HUB: DurableObjectNamespaceLike
   TOILET_PI_SERVER_TOKEN: string
+  TOILET_PI_SERVER_HISTORY_BYTES?: string
 }
 
 type AcceptedWebSocket = WebSocket & {
@@ -63,6 +64,10 @@ export class ToiletPiHub {
       publicUrl: '',
       publicServerUrl: '',
       wsPath: DEFAULT_WS_PATH,
+      maxSessionHistoryBytes: Math.max(
+        1,
+        Number.parseInt(env.TOILET_PI_SERVER_HISTORY_BYTES || '', 10) || 4 * 1024 * 1024,
+      ),
       log: (message) => console.log(`[${new Date().toISOString()}] ${message}`),
     }
 
@@ -102,9 +107,18 @@ export class ToiletPiHub {
       void this.core.onMessage(connId, decodeWebSocketMessage((event as MessageEvent).data))
     })
 
-    ws.addEventListener('close', () => {
+    ws.addEventListener('close', (event) => {
       this.connections.delete(connId)
       this.core.onClose(connId)
+      const close = event as CloseEvent
+      console.log(
+        `[${new Date().toISOString()}] socket closed: ${connId} code=${close.code} reason=${close.reason || '(none)'}`,
+      )
+      try {
+        ws.close(close.code, close.reason)
+      } catch {
+        // The runtime may already have completed the close handshake.
+      }
     })
 
     ws.addEventListener('error', (event) => {

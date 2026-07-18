@@ -37,6 +37,10 @@ const config: ServerConfig = {
   publicUrl: PUBLIC_URL,
   publicServerUrl: PUBLIC_SERVER_URL,
   wsPath: WS_PATH,
+  maxSessionHistoryBytes: Math.max(
+    1,
+    Number.parseInt(process.env.TOILET_PI_SERVER_HISTORY_BYTES || '', 10) || 4 * 1024 * 1024,
+  ),
   log,
 }
 const core = createServerCore(transport, timers, config)
@@ -138,10 +142,11 @@ wss.on('connection', (ws, req) => {
     await core.onMessage(connId, data.toString())
   })
 
-  ws.on('close', () => {
+  ws.on('close', (code, reason) => {
     core.onClose(connId)
     transport.unregister(connId)
     connectionAuthById.delete(connId)
+    log(`socket closed: ${connId} code=${code} reason=${reason.toString() || '(none)'}`)
   })
 
   ws.on('error', (error) => {
