@@ -19,6 +19,9 @@ const REQUIRE_SERVER = ROLE === "background";
 const STATUS_KEY = "toilet-pi";
 const LAUNCH_REQUEST_ID = process.env.TOILET_PI_LAUNCH_REQUEST_ID || null;
 const MAX_SERVER_TEXT_BYTES = 50 * 1024;
+const WS_PING_INTERVAL_MS = 25_000;
+const WS_PONG_TIMEOUT_MS = 10_000;
+const MAX_RECONNECT_DELAY_MS = 30_000;
 const MAX_SERVER_HISTORY_BYTES = Math.max(
   1024,
   Number.parseInt(process.env.TOILET_PI_HISTORY_BYTES || "", 10) || 4 * 1024 * 1024,
@@ -67,11 +70,14 @@ type SanitizedMessage = WebMessage | WebToolResultMessage;
 export default function (pi: ExtensionAPI) {
   let ws: WebSocket | null = null;
   let reconnectTimer: NodeJS.Timeout | null = null;
+  let heartbeatTimer: NodeJS.Timeout | null = null;
+  let pongTimeout: NodeJS.Timeout | null = null;
   let ctx: ExtensionContext | null = null;
   let currentSessionGuid: string | null = null;
   let lastStreamText: string | null = null;
   let lastThinkingText: string | null = null;
   let reconnectAttempt = 0;
+  let connectedAt = 0;
   let shuttingDown = false;
   let releasing = false;
   let pendingAssistantAbortMessage = false;
@@ -134,7 +140,12 @@ export default function (pi: ExtensionAPI) {
     try {
       ws?.send(JSON.stringify(payload));
     } catch {
-      // Best effort only. Never block pi on server send.
+      // Force the close/reconnect path when a half-open socket rejects a send.
+      try {
+        ws?.terminate();
+      } catch {
+        // Ignore.
+      }
     }
   }
 
@@ -280,7 +291,46 @@ export default function (pi: ExtensionAPI) {
     });
   }
 
+  function clearSocketHeartbeat() {
+    if (heartbeatTimer) {
+      clearInterval(heartbeatTimer);
+      heartbeatTimer = null;
+    }
+    if (pongTimeout) {
+      clearTimeout(pongTimeout);
+      pongTimeout = null;
+    }
+  }
+
+  function startSocketHeartbeat(socket: WebSocket) {
+    clearSocketHeartbeat();
+    socket.on("pong", () => {
+      if (ws !== socket || !pongTimeout) return;
+      clearTimeout(pongTimeout);
+      pongTimeout = null;
+    });
+    heartbeatTimer = setInterval(() => {
+      if (ws !== socket || socket.readyState !== WebSocket.OPEN) {
+        clearSocketHeartbeat();
+        return;
+      }
+      try {
+        socket.ping();
+        if (pongTimeout) clearTimeout(pongTimeout);
+        pongTimeout = setTimeout(() => {
+          pongTimeout = null;
+          if (ws !== socket) return;
+          console.warn("[toilet-pi] WebSocket heartbeat timed out; reconnecting");
+          socket.terminate();
+        }, WS_PONG_TIMEOUT_MS);
+      } catch {
+        socket.terminate();
+      }
+    }, WS_PING_INTERVAL_MS);
+  }
+
   function closeSocket(reason = "reset") {
+    clearSocketHeartbeat();
     if (!ws) return;
     const socket = ws;
     ws = null;
@@ -326,8 +376,10 @@ export default function (pi: ExtensionAPI) {
 
     socket.on("open", () => {
       if (ws !== socket) return;
-      reconnectAttempt = 0;
+      connectedAt = Date.now();
+      startSocketHeartbeat(socket);
       updateStatus(`${ROLE}`, true);
+      console.log(`[toilet-pi] WebSocket connected as ${ROLE}`);
       sendHello();
       syncSessionName(true);
       syncPendingMessages(true);
@@ -347,17 +399,22 @@ export default function (pi: ExtensionAPI) {
     socket.on("close", async (code, reason) => {
       if (ws !== socket) return;
       ws = null;
+      clearSocketHeartbeat();
+      const connectionLifetimeMs = connectedAt ? Date.now() - connectedAt : 0;
+      connectedAt = 0;
+      if (connectionLifetimeMs >= 30_000) reconnectAttempt = 0;
       if (shuttingDown) return;
       const closeReason = reason.toString();
       const detail = `disconnected (${code}${closeReason ? `: ${closeReason}` : ""})`;
       console.warn(`[toilet-pi] WebSocket ${detail}`);
       updateStatus(detail, false);
-      if (REQUIRE_SERVER) {
-        await shutdownBackgroundProcess("server disconnected");
-        return;
-      }
       if (closeReason === "replaced") {
         console.warn("[toilet-pi] Another pi instance connected with this session ID; automatic reconnect stopped");
+        if (REQUIRE_SERVER) await shutdownBackgroundProcess("replaced");
+        return;
+      }
+      if (closeReason === "released" || code === 1008) {
+        if (REQUIRE_SERVER) await shutdownBackgroundProcess(closeReason || "connection rejected");
         return;
       }
       scheduleReconnect();
@@ -371,11 +428,17 @@ export default function (pi: ExtensionAPI) {
 
   function scheduleReconnect() {
     if (reconnectTimer || shuttingDown) return;
+    const baseDelay = Math.min(
+      MAX_RECONNECT_DELAY_MS,
+      1000 * 2 ** Math.min(reconnectAttempt, 5),
+    );
+    const delayMs = Math.round(baseDelay * (0.8 + Math.random() * 0.4));
+    updateStatus(`disconnected; reconnecting in ${(delayMs / 1000).toFixed(1)}s`, false);
     reconnectTimer = setTimeout(() => {
       reconnectTimer = null;
       reconnectAttempt += 1;
-      connect();
-    }, 3000);
+      void connect();
+    }, delayMs);
   }
 
   async function verifyConnectionConfig(config: {
@@ -891,6 +954,7 @@ export default function (pi: ExtensionAPI) {
       clearInterval(sessionStatePoller);
       sessionStatePoller = null;
     }
+    clearSocketHeartbeat();
     closeSocket("session shutdown");
     if (ctx?.hasUI) {
       ctx.ui.setStatus(STATUS_KEY, undefined);
