@@ -16,7 +16,17 @@ const HOST_ID = process.env.TOILET_PI_HOST_ID || os.hostname();
 const ROLE =
   process.env.TOILET_PI_ROLE === "background" ? "background" : "interactive";
 const REQUIRE_SERVER = ROLE === "background";
-const STATUS_KEY = "toilet-pi";
+const STATUS_WIDGET_KEY = "toilet-pi:status-bar";
+const LOG_HISTORY_MAX = Math.max(
+  0,
+  Number.parseInt(process.env.TOILET_PI_LOG_LINES || "", 10) || 4,
+);
+// Once the connection is healthy and stable, hide the status bar after this
+// delay. Any new activity (connecting / disconnect / error / log) shows it again.
+const STATUS_HIDE_DELAY_MS = Math.max(
+  0,
+  Number.parseInt(process.env.TOILET_PI_STATUS_HIDE_MS || "", 10) || 4000,
+);
 const LAUNCH_REQUEST_ID = process.env.TOILET_PI_LAUNCH_REQUEST_ID || null;
 const MAX_SERVER_TEXT_BYTES = 50 * 1024;
 const WS_PING_INTERVAL_MS = 25_000;
@@ -85,6 +95,10 @@ export default function (pi: ExtensionAPI) {
   let lastReportedSessionName: string | null = null;
   let lastReportedHasPendingMessages = false;
   let connectionConfig: { serverUrl: string; token: string } | null = null;
+  let lastStatusText = "";
+  let lastStatusConnected = false;
+  let statusHideTimer: NodeJS.Timeout | null = null;
+  const recentLogs: string[] = [];
   let sessionContextTokens: number | null = null;
   let sessionCostUsd: number | null = null;
   const pendingRemoteInputIds: string[] = [];
@@ -108,6 +122,34 @@ export default function (pi: ExtensionAPI) {
     return readToiletPiConfig();
   }
 
+  // Never write to stdout/stderr while a TUI is attached: it corrupts the
+  // rendered chat and the toilet-pi status bar. In headless/background mode all
+  // diagnostics go to stdout (supervisor logs). In TUI mode only errors are
+  // surfaced in the status bar (for debugging); routine info is dropped.
+  function log(...args: unknown[]) {
+    emitLog(false, args);
+  }
+
+  function logError(...args: unknown[]) {
+    emitLog(true, args);
+  }
+
+  function emitLog(isError: boolean, args: unknown[]) {
+    const line = args
+      .map((a) => (typeof a === "string" ? a : String(a)))
+      .join(" ");
+    if (!ctx?.hasUI) {
+      console.log("[toilet-pi]", line);
+      return;
+    }
+    // Only websocket errors / failures are kept in the status bar for debugging.
+    if (!isError) return;
+    const time = new Date().toTimeString().slice(0, 8);
+    recentLogs.push(`${time} ${line}`);
+    if (recentLogs.length > LOG_HISTORY_MAX) recentLogs.shift();
+    renderStatusBar();
+  }
+
   function getConnectUrl() {
     return connectionConfig ? buildConnectUrl(connectionConfig) : null;
   }
@@ -118,21 +160,99 @@ export default function (pi: ExtensionAPI) {
 
   function updateStatus(status: string, connected = false) {
     if (!ctx?.hasUI || ROLE === "background") return;
-    const normalized = String(status || "").trim().toLowerCase();
-    const isConnecting = normalized.startsWith("connecting");
-    const isDisconnected = normalized.startsWith("disconnected");
-    const isError = normalized.includes("error");
+    lastStatusText = String(status || "").trim();
+    lastStatusConnected = connected;
+    renderStatusBar();
+  }
 
-    if (!isConnecting && !isDisconnected && !isError) {
-      ctx.ui.setStatus(STATUS_KEY, undefined);
+  // Whether the connection is healthy and stable (nothing worth showing).
+  function isStatusStable() {
+    const normalized = lastStatusText.toLowerCase();
+    return (
+      lastStatusConnected &&
+      !normalized.startsWith("connecting") &&
+      !normalized.startsWith("disconnected") &&
+      !normalized.includes("error") &&
+      !normalized.includes("unconfigured")
+    );
+  }
+
+  function hideStatusBar() {
+    if (statusHideTimer) {
+      clearTimeout(statusHideTimer);
+      statusHideTimer = null;
+    }
+    // Drop retained error logs so a new incident starts fresh.
+    recentLogs.length = 0;
+    if (ctx?.hasUI) ctx.ui.setWidget(STATUS_WIDGET_KEY, undefined);
+  }
+
+  // Dedicated toilet-pi status bar, rendered as a widget below the editor.
+  // This is owned entirely by toilet-pi and does not share the built-in footer.
+  // It surfaces connecting / disconnected / error states and recent logs, then
+  // disappears once the connection is stable again.
+  function renderStatusBar() {
+    if (!ctx?.hasUI || ROLE === "background") return;
+
+    // Nothing to show until toilet-pi has been configured.
+    if (!connectionConfig && !lastStatusText && recentLogs.length === 0) {
+      hideStatusBar();
       return;
     }
 
-    const theme = ctx.ui.theme;
-    const icon = connected
-      ? theme.fg("success", "●")
-      : theme.fg(isError ? "error" : "warning", isError ? "●" : "○");
-    ctx.ui.setStatus(STATUS_KEY, `${icon} toilet-pi: ${status}`);
+    // Any activity (re)shows the bar; cancel any pending auto-hide.
+    if (statusHideTimer) {
+      clearTimeout(statusHideTimer);
+      statusHideTimer = null;
+    }
+
+    ctx.ui.setWidget(
+      STATUS_WIDGET_KEY,
+      (_tui, theme) => ({
+        invalidate() {},
+        render(): string[] {
+          const status = lastStatusText || (connectionConfig ? ROLE : "unconfigured");
+          const normalized = status.toLowerCase();
+          const isConnecting = normalized.startsWith("connecting");
+          const isDisconnected = normalized.startsWith("disconnected");
+          const isError =
+            normalized.includes("error") || normalized.includes("unconfigured");
+
+          const icon = lastStatusConnected
+            ? theme.fg("success", "●")
+            : theme.fg(
+                isError ? "error" : "warning",
+                isConnecting || isDisconnected ? "○" : "●",
+              );
+
+          const sep = theme.fg("dim", "  ·  ");
+          const parts = [
+            `${icon} ${theme.fg("accent", theme.bold("toilet-pi"))}`,
+            theme.fg("muted", status),
+          ];
+
+          const lines = [parts.join(sep)];
+          // Recent log lines, oldest first, shown beneath the status line.
+          for (const entry of recentLogs) {
+            lines.push(theme.fg("dim", `  ${entry}`));
+          }
+          return lines;
+        },
+      }),
+      { placement: "belowEditor" },
+    );
+
+    // When stable, fade the bar out after a short delay.
+    if (isStatusStable()) {
+      statusHideTimer = setTimeout(hideStatusBar, STATUS_HIDE_DELAY_MS);
+    }
+  }
+
+  function clearStatusBar() {
+    lastStatusText = "";
+    lastStatusConnected = false;
+    recentLogs.length = 0;
+    hideStatusBar();
   }
 
   function send(payload: unknown) {
@@ -188,8 +308,8 @@ export default function (pi: ExtensionAPI) {
     }
     const limited = limitHistoryByBytes(history, MAX_SERVER_HISTORY_BYTES);
     if (limited.length < history.length) {
-      console.warn(
-        `[toilet-pi] Mirroring the newest ${limited.length} of ${history.length} history entries to stay below ${MAX_SERVER_HISTORY_BYTES} bytes`,
+      log(
+        `Mirroring the newest ${limited.length} of ${history.length} history entries to stay below ${MAX_SERVER_HISTORY_BYTES} bytes`,
       );
     }
     return limited;
@@ -320,7 +440,7 @@ export default function (pi: ExtensionAPI) {
         pongTimeout = setTimeout(() => {
           pongTimeout = null;
           if (ws !== socket) return;
-          console.warn("[toilet-pi] WebSocket heartbeat timed out; reconnecting");
+          logError("WebSocket heartbeat timed out; reconnecting");
           socket.terminate();
         }, WS_PONG_TIMEOUT_MS);
       } catch {
@@ -379,7 +499,7 @@ export default function (pi: ExtensionAPI) {
       connectedAt = Date.now();
       startSocketHeartbeat(socket);
       updateStatus(`${ROLE}`, true);
-      console.log(`[toilet-pi] WebSocket connected as ${ROLE}`);
+      log(`WebSocket connected as ${ROLE}`);
       sendHello();
       syncSessionName(true);
       syncPendingMessages(true);
@@ -406,10 +526,10 @@ export default function (pi: ExtensionAPI) {
       if (shuttingDown) return;
       const closeReason = reason.toString();
       const detail = `disconnected (${code}${closeReason ? `: ${closeReason}` : ""})`;
-      console.warn(`[toilet-pi] WebSocket ${detail}`);
+      logError(`WebSocket ${detail}`);
       updateStatus(detail, false);
       if (closeReason === "replaced") {
-        console.warn("[toilet-pi] Another pi instance connected with this session ID; automatic reconnect stopped");
+        logError("Another pi instance connected with this session ID; automatic reconnect stopped");
         if (REQUIRE_SERVER) await shutdownBackgroundProcess("replaced");
         return;
       }
@@ -421,7 +541,7 @@ export default function (pi: ExtensionAPI) {
     });
 
     socket.on("error", (error) => {
-      if (ws === socket) console.warn(`[toilet-pi] WebSocket error: ${error.message}`);
+      if (ws === socket) logError(`WebSocket error: ${error.message}`);
       // The close handler handles reconnect/exit behavior.
     });
   }
@@ -956,9 +1076,7 @@ export default function (pi: ExtensionAPI) {
     }
     clearSocketHeartbeat();
     closeSocket("session shutdown");
-    if (ctx?.hasUI) {
-      ctx.ui.setStatus(STATUS_KEY, undefined);
-    }
+    clearStatusBar();
     currentSessionGuid = null;
     lastStreamText = null;
     lastThinkingText = null;
