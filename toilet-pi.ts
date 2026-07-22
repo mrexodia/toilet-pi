@@ -3,7 +3,7 @@ import { WebSocket } from "ws";
 import type {
   ExtensionAPI,
   ExtensionContext,
-} from "@mariozechner/pi-coding-agent";
+} from "@earendil-works/pi-coding-agent";
 import {
   buildConnectUrl,
   parseToiletPiInput,
@@ -456,6 +456,9 @@ export default function (pi: ExtensionAPI) {
     ws = null;
     try {
       socket.removeAllListeners();
+      // Closing during the opening handshake emits an asynchronous error in ws.
+      // Keep a no-op listener attached so shutdown cannot crash the pi process.
+      socket.on("error", () => {});
       socket.close(1000, reason);
     } catch {
       // Ignore.

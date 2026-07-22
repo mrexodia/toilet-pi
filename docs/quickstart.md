@@ -59,7 +59,7 @@ pi install --local ~/Projects/toilet-pi
 One-off testing without installing:
 
 ```bash
-pi -e ~/Projects/toilet-pi/extension.ts
+pi -e ~/Projects/toilet-pi/toilet-pi.ts
 ```
 
 ## 5. Use the web UI

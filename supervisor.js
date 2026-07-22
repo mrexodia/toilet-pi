@@ -25,7 +25,7 @@ const SCAN_INTERVAL_MS = Number.parseInt(
 );
 const EXTENSION_PATH =
   process.env.TOILET_PI_EXTENSION_PATH ||
-  fileURLToPath(new URL("./extension.ts", import.meta.url));
+  fileURLToPath(new URL("./toilet-pi.ts", import.meta.url));
 const PROJECT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const CHILD_SHUTDOWN_GRACE_MS = Number.parseInt(
   process.env.TOILET_PI_CHILD_SHUTDOWN_GRACE_MS || "3000",

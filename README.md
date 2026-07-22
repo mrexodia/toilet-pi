@@ -48,7 +48,7 @@ It:
 
 ### 3. Interactive pi + extension
 
-Normal pi sessions can load `extension.ts`.
+Normal pi sessions can load `toilet-pi.ts`.
 
 Those sessions:
 
@@ -133,7 +133,7 @@ Current capabilities:
 
 - `server/` - TypeScript server subproject for Node.js and Cloudflare Workers
 - `server/public/` - browser UI
-- `extension.ts` - Toilet-Pi pi extension used by interactive and background pi, and the package entrypoint for `pi install`
+- `toilet-pi.ts` - Toilet-Pi pi extension used by interactive and background pi, and the package entrypoint for `pi install`
 - `supervisor.js` - one-per-machine supervisor
 - `session-scanner.js` - scans local pi session files
 - `scripts/test-client.js` - raw protocol debug client
@@ -205,7 +205,7 @@ pi install -l ~/Projects/toilet-pi
 For one-off testing without installing, load the extension file directly:
 
 ```bash
-pi -e ~/Projects/toilet-pi/extension.ts
+pi -e ~/Projects/toilet-pi/toilet-pi.ts
 ```
 
 On first run the extension stays unconfigured until you run `/toilet-pi` and give it a machine-scoped **Connect URL** minted from the web UI.
@@ -230,7 +230,7 @@ The Cloudflare deployment only hosts the central server and web UI.
 You still run these locally on each machine you want to control:
 
 - `npm run supervisor`
-- the `extension.ts` pi extension inside `pi`
+- the `toilet-pi.ts` pi extension inside `pi`
 
 ### 1. Install dependencies
 
@@ -358,7 +358,7 @@ pi
 ### Interactive pi (direct from repo, no install)
 
 ```bash
-pi -e ~/Projects/toilet-pi/extension.ts
+pi -e ~/Projects/toilet-pi/toilet-pi.ts
 ```
 
 ### Raw debug client
@@ -401,7 +401,7 @@ Debug client commands:
 - `TOILET_PI_PI_COMMAND`
   - default: `pi`
 - `TOILET_PI_EXTENSION_PATH`
-  - default: local `extension.ts`
+  - default: local `toilet-pi.ts`
 - `TOILET_PI_SCAN_INTERVAL_MS`
   - default: `15000`
 
