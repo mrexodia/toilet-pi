@@ -1,427 +1,178 @@
 # Toilet-Pi
 
-Toilet-Pi is a central web control plane for pi. It allows you to interact with all your pi sessions from all your machines from anywhere (phone, computer, etc). Any messages typed in the web interface will appear as regular messages in your pi session, allowing you to transition seamlessly between machines.
+Control your [pi](https://github.com/earendil-works/pi) sessions from a browser.
 
-## Why this exists
+Toilet-Pi gives you one mobile-friendly view of pi sessions across your computers. You can watch active work, send prompts, abort a run, resume an inactive session in the background, or start a new session in a project.
 
-Normal pi sessions live inside one terminal on one machine.
+## What you get
 
-Toilet-Pi adds a thin remote layer on top:
+- Live access to normal interactive pi sessions
+- Sessions grouped by machine or project
+- Remote prompts and aborts
+- Background resume for inactive sessions
+- New background sessions from the browser
+- Seamless handoff back to the local pi TUI
 
-- one **central server** with a web UI
-- one **host supervisor** per machine
-- one **pi extension** that connects interactive and background sessions to the server
+Interactive pi remains usable if Toilet-Pi is offline. Background sessions stop when they lose the server, preventing hidden orphan processes from changing a session.
 
-That gives you a few nice advantages:
+## Requirements
 
-- **See sessions from every machine in one place**
-- **Control already-running interactive sessions remotely**
-- **Resume inactive sessions in background without going back to the desk first**
-- **Send a message from mobile and have it appear inside the real pi TUI**
-- **Take over a background session locally and make the background runner abort automatically**
-- **Keep the architecture simple**: WebSocket + extension + one lightweight supervisor
-
-## Core idea
-
-There are four pieces:
-
-### 1. Central server
-
-The server:
-
-- serves the web UI
-- accepts WebSocket connections from browsers, host supervisors, and pi extensions
-- keeps all state in memory
-- tracks the current owner of each session
-- routes messages and aborts to the active owner only
-
-### 2. Host supervisor
-
-Each machine runs one long-lived supervisor process.
-
-It:
-
-- scans local pi session files
-- advertises them to the server
-- can start background pi runners on demand
-- kills all of its children when it exits
-
-### 3. Interactive pi + extension
-
-Normal pi sessions can load `toilet-pi.ts`.
-
-Those sessions:
-
-- connect to the central server in the background
-- stream messages and status changes
-- accept live remote input
-- stay fully usable even if the server is down
-
-### 4. Background pi + same extension
-
-The supervisor starts headless pi processes in RPC mode, using the same extension.
-
-Those background sessions:
-
-- connect directly to the server
-- stream events live to the web UI
-- exit if the server connection disappears
-
-## Ownership model
-
-For each pi session GUID, Toilet-Pi keeps exactly one active command target:
-
-- `interactive`
-- `background`
-- or `none`
-
-This prevents the web UI from blasting commands at multiple copies of pi at once.
-
-### Takeover behavior
-
-Interactive pi wins.
-
-If a session is running in background and you resume it locally:
-
-1. the interactive pi instance connects
-2. the server tells the background runner to `abort_and_release`
-3. the background runner aborts and exits
-4. ownership flips to the interactive pi session
-
-That makes local takeover feel natural.
-
-## Design goals
-
-This project intentionally optimizes for simplicity over distributed-systems purity.
-
-### Things it does on purpose
-
-- **No startup blocking**
-  - pi does not wait for the server to come up
-- **No event-send blocking**
-  - server sends are best effort
-- **No database**
-  - server state is in memory only
-- **No SDK embedding**
-  - background sessions are just real pi processes in RPC mode
-- **No auth or multi-user permissions yet**
-  - this is still a focused personal tool
-
-### Important asymmetry
-
-- **Interactive pi can survive without the server**
-- **Background pi cannot**
-
-If a background runner loses its server connection, it exits. That avoids hidden orphan writers mutating a session in the dark.
-
-## User experience
-
-The web UI is meant to be useful from a phone.
-
-Current capabilities:
-
-- browse sessions across connected machines
-- switch between **Sessions** and **Projects** views
-- attach to a session and watch it live
-- send messages to active sessions
-- send a message to an inactive session and have it auto-start in background
-- start a brand-new background session in a project
-- abort the currently active owner
-- take over a background session locally from the normal pi TUI
-
-## Files
-
-- `server/` - TypeScript server subproject for Node.js and Cloudflare Workers
-- `server/public/` - browser UI
-- `toilet-pi.ts` - Toilet-Pi pi extension used by interactive and background pi, and the package entrypoint for `pi install`
-- `supervisor.js` - one-per-machine supervisor
-- `session-scanner.js` - scans local pi session files
-- `scripts/test-client.js` - raw protocol debug client
-- `docs/quickstart.md` - short setup guide
-- `docs/archive/v2-plan.md` / `docs/archive/v3-plan.md` - archived architecture plans
+- Node.js 22.19 or newer
+- [`@earendil-works/pi-coding-agent`](https://www.npmjs.com/package/@earendil-works/pi-coding-agent)
+- Git
 
 ## Quick start
 
-### 1. Install dependencies
+### 1. Install Toilet-Pi
+
+Clone the repository, install its dependencies, and install the pi package directly from GitHub:
 
 ```bash
-cd ~/Projects/toilet-pi
+git clone https://github.com/mrexodia/toilet-pi.git
+cd toilet-pi
 npm run setup
+pi install https://github.com/mrexodia/toilet-pi
 ```
 
-### 2. Start the central server
+To update the installed extension later, run `pi update --extensions` and restart pi or run `/reload`.
+
+### 2. Start the server
 
 ```bash
 npm start
 ```
 
-On startup the server prints an **Admin URL** with `#token=...` for seamless web login.
+The server prints an **Admin login URL**. Open that URL in your browser.
 
-Open the **Admin URL** in your browser.
+By default the server runs at `http://localhost:3457`. Its generated admin token is stored in `~/.pi/agent/toilet-pi-server.json`.
 
-Important distinction:
+### 3. Connect your machine
 
-- **Admin URL / admin token** - browser sign-in only
-- **Machine Connect URL** - used with `/toilet-pi` on one computer
+In the web UI:
 
-### 3. Configure pi and start the host supervisor
+1. Open **Installation**.
+2. Generate a machine connect URL.
+3. Copy the URL.
 
-After logging into the web UI, open **Installation** and mint a machine-scoped **Connect URL** for the computer you want to set up.
-
-Inside pi run `/toilet-pi` and paste that machine **Connect URL**.
-Do **not** paste the browser admin URL into `/toilet-pi`.
-
-You can skip the interactive prompt by passing the URL directly:
+Then open pi on that machine and run:
 
 ```text
-/toilet-pi ws://your-server/ws?token=...
+/toilet-pi wss://your-server/ws?token=...
 ```
 
-That writes machine-local config to `~/.pi/agent/toilet-pi.json` (respecting `PI_CODING_AGENT_DIR` if set).
+Use the exact `ws://` or `wss://` URL generated by the web UI. Do not use the browser Admin login URL.
 
-Then start the host supervisor on that same machine:
+### 4. Start the supervisor
+
+Keep this running on each connected machine:
 
 ```bash
-cd ~/Projects/toilet-pi
 npm run supervisor
 ```
 
-### 4. Install and run the pi extension
+The supervisor makes local sessions and projects visible and starts background pi processes when requested from the browser.
 
-Recommended: install this repo as a local pi package, then start `pi` normally:
+### 5. Use Toilet-Pi
 
-```bash
-pi install ~/Projects/toilet-pi
-pi
+Open the web UI to:
+
+- inspect sessions across connected machines
+- send a prompt to an active session
+- resume an inactive session by sending it a prompt
+- start a new session from the **Projects** view
+- abort an active run
+
+Normal local pi sessions connect automatically through `toilet-pi.ts`.
+
+## Useful pi commands
+
+```text
+/toilet-pi
 ```
 
-To install it only for the current project instead of globally:
+Enter or replace this machine's connect URL.
 
-```bash
-cd /path/to/your/project
-pi install -l ~/Projects/toilet-pi
+```text
+/ws
 ```
 
-For one-off testing without installing, load the extension file directly:
+Show the current Toilet-Pi connection status.
+
+To try the extension without installing it permanently:
 
 ```bash
-pi -e ~/Projects/toilet-pi/toilet-pi.ts
+pi -e https://github.com/mrexodia/toilet-pi
 ```
 
-On first run the extension stays unconfigured until you run `/toilet-pi` and give it a machine-scoped **Connect URL** minted from the web UI.
+## Adding another computer
 
-Because local-path installs are used in place, changes in this checkout are picked up after restarting pi or running `/reload`.
+On every additional computer:
 
-### 5. Use the web UI
+1. Clone the repository with `git clone https://github.com/mrexodia/toilet-pi.git`.
+2. Enter the repository and run `npm run setup`.
+3. Run `pi install https://github.com/mrexodia/toilet-pi`.
+4. Generate a fresh machine URL from **Installation** in the web UI.
+5. Run `/toilet-pi <machine-url>` inside pi.
+6. Start `npm run supervisor`.
 
-From the browser you can:
+Generate a separate machine URL for each computer.
 
-- inspect sessions from all connected hosts
-- open an existing session
-- send live prompts into the active owner
-- auto-start inactive sessions in background by just sending a message
-- start a brand-new session in a project
-- abort long-running work
+## Cloudflare Workers deployment
 
-## Deploying the server to Cloudflare Workers
-
-The Cloudflare deployment only hosts the central server and web UI.
-
-You still run these locally on each machine you want to control:
-
-- `npm run supervisor`
-- the `toilet-pi.ts` pi extension inside `pi`
-
-### 1. Install dependencies
-
-```bash
-cd ~/Projects/toilet-pi
-npm run setup
-```
-
-### 2. Log in to Cloudflare
-
-```bash
-cd server
-npx wrangler login
-```
-
-You do **not** need to create the Worker manually in the Cloudflare dashboard first. `wrangler deploy` creates it automatically.
-
-### 3. Create a server token
-
-Generate a token and save it somewhere safe. You will use it for browser admin login and for minting machine-scoped connect URLs from the web UI.
+First generate a strong server token:
 
 ```bash
 node --input-type=module -e "import { randomBytes } from 'node:crypto'; console.log(randomBytes(32).toString('base64url'))"
 ```
 
-Then store it as a Cloudflare secret:
+Then deploy the server and web UI. Paste the generated token when Wrangler asks for the secret value:
 
 ```bash
 cd server
+npx wrangler login
 npx wrangler secret put TOILET_PI_SERVER_TOKEN
-```
-
-Paste the generated token when prompted.
-
-### 4. Deploy
-
-From the repo root:
-
-```bash
+cd ..
 npm run deploy
 ```
 
-Or directly from `server/`:
-
-```bash
-npx wrangler deploy
-```
-
-### 5. Open the deployed URLs
-
-After deploy, Wrangler prints your Worker URL, for example:
+After deployment, open:
 
 ```text
-https://toilet-pi.your-subdomain.workers.dev
+https://your-worker.workers.dev/#token=YOUR_SERVER_TOKEN
 ```
 
-Toilet-Pi infers its public URLs automatically from the request origin, so no Cloudflare public URL config is required.
+The supervisor and pi extension still run locally on every connected computer.
 
-Use the **Admin URL**:
+## Configuration
 
-```text
-https://toilet-pi.your-subdomain.workers.dev/#token=YOUR_TOKEN
-```
+Common environment variables:
 
-Open the **Admin URL** in your browser.
+| Variable | Purpose |
+| --- | --- |
+| `PORT` | Local server port; defaults to `3457` |
+| `TOILET_PI_PUBLIC_URL` | Public URL override for the Node server |
+| `TOILET_PI_SERVER_TOKEN` | Fixed admin token instead of the generated local token |
+| `TOILET_PI_HOST_ID` | Custom name for a machine |
+| `TOILET_PI_SESSION_DIR` | Custom pi session directory |
+| `TOILET_PI_PI_COMMAND` | Path or command used to launch pi |
+| `TOILET_PI_SERVER_URL` | Machine connect URL override |
+| `PI_CODING_AGENT_DIR` | Override pi's configuration directory |
 
-Then use **Installation** in the web UI to mint a machine-scoped **Connect URL** for each computer you want to set up, and run that inside `pi`:
+Machine configuration is normally stored in `~/.pi/agent/toilet-pi.json`.
 
-```text
-/toilet-pi wss://toilet-pi.your-subdomain.workers.dev/ws?token=...
-```
+## Troubleshooting
 
-Then start the host supervisor on that machine:
+- **Machine not visible:** make sure `npm run supervisor` is running on that machine.
+- **Interactive session not visible:** confirm the package is installed with `pi list`, then restart pi or run `/reload`.
+- **Inactive session will not start:** the machine's supervisor must be connected.
+- **Wrong server configured:** run `/toilet-pi` again with a newly generated machine URL.
+- **Remote access fails:** use HTTPS/WSS when exposing Toilet-Pi outside your local network.
 
-```bash
-npm run supervisor
-```
+## Security and persistence
 
-### Cloudflare config used by this repo
+Treat the Admin login URL, server token, and machine URLs as secrets. Use HTTPS for remote deployments.
 
-`server/wrangler.toml` only needs:
-
-```toml
-name = "toilet-pi"
-main = "src/cloudflare/entry.ts"
-compatibility_date = "2026-04-07"
-
-[assets]
-directory = "./public"
-
-[durable_objects]
-bindings = [
-  { name = "TOILET_PI_HUB", class_name = "ToiletPiHub" }
-]
-
-[[migrations]]
-tag = "v1"
-new_sqlite_classes = ["ToiletPiHub"]
-
-[vars]
-# TOILET_PI_SERVER_TOKEN: set via `wrangler secret put`
-# TOILET_PI_SERVER_HISTORY_BYTES = "4194304" # optional
-```
-
-## Commands
-
-### Server
-
-```bash
-npm start
-```
-
-### Host supervisor
-
-```bash
-npm run supervisor
-```
-
-### Interactive pi (installed package)
-
-```bash
-pi
-```
-
-### Interactive pi (direct from repo, no install)
-
-```bash
-pi -e ~/Projects/toilet-pi/toilet-pi.ts
-```
-
-### Raw debug client
-
-```bash
-npm run client
-```
-
-Debug client commands:
-
-- `attach <sessionGuid>`
-- `input <text>`
-- `abort`
-- `start <hostId> <sessionGuid>`
-- `refresh <hostId>`
-- `quit`
-
-## Environment variables
-
-### Shared
-
-- `TOILET_PI_HOST_ID`
-  - default: hostname
-- `TOILET_PI_SESSION_DIR`
-  - default: `~/.pi/agent/sessions`
-- `PI_CODING_AGENT_DIR`
-  - overrides the base pi agent dir used for `~/.pi/agent/*`
-
-### Server
-
-- `PORT`
-  - default: `3457`
-- `TOILET_PI_PUBLIC_URL`
-  - optional Node-only public base URL override used when printing the Admin URL on startup
-- `TOILET_PI_SERVER_HISTORY_BYTES`
-  - max recent history retained per session; default: `4194304` (4 MiB)
-
-### Supervisor
-
-- `TOILET_PI_PI_COMMAND`
-  - default: `pi`
-- `TOILET_PI_EXTENSION_PATH`
-  - default: local `toilet-pi.ts`
-- `TOILET_PI_SCAN_INTERVAL_MS`
-  - default: `15000`
-
-### Extension / background runner
-
-- `TOILET_PI_SERVER_URL`
-  - optional full connect URL override, including `?token=...`
-- `TOILET_PI_ROLE`
-  - set automatically to `background` for supervisor-launched sessions
-- `TOILET_PI_HISTORY_BYTES`
-  - max recent history mirrored in a connection or snapshot; default: `4194304` (4 MiB)
-- `TOILET_PI_MESSAGE_LIMIT`
-  - max per-message text read from inactive session files; default: `4000` characters
-
-## Notes
-
-- server state is in-memory only
-- if the server restarts, clients reconnect and rebuild state
-- session identity uses pi's built-in session GUID
-- the project intentionally keeps the protocol and architecture small
+Server session state is held in memory and rebuilt as clients reconnect. Your actual pi session files remain on their original machines.
 
 ## License
 
