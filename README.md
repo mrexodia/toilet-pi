@@ -1,10 +1,6 @@
 # Toilet-Pi
 
-Toilet-Pi is a central web control plane for pi.
-
-The easiest way to describe it is:
-
-> It is basically the same idea as pizza, except it has a central server and a pi extension that connects over WebSocket. That means you can interact with all sessions on all machines live, and it also works for normal interactive pi sessions. If you send a message from your phone, the message shows up in the desktop TUI too, so the experience stays seamless.
+Toilet-Pi is a central web control plane for pi. It allows you to interact with all your pi sessions from all your machines from anywhere (phone, computer, etc). Any messages typed in the web interface will appear as regular messages in your pi session, allowing you to transition seamlessly between machines.
 
 ## Why this exists
 
