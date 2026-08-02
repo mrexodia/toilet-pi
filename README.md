@@ -32,7 +32,7 @@ This design provides one UI across multiple computers without moving session fil
 - New background sessions from the browser
 - Seamless handoff back to the local pi TUI
 
-Interactive pi remains usable if Toilet-Pi is offline. Background sessions stop when they lose the server, preventing hidden orphan processes from changing a session.
+Interactive pi remains usable if Toilet-Pi is offline. Background sessions keep running and reconnect after temporary server outages; they stop when their host supervisor shuts down, the session is closed, or an interactive pi takes ownership.
 
 ## Requirements
 

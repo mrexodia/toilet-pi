@@ -339,6 +339,13 @@ export interface UnknownClientMessage {
   raw: Record<string, unknown>
 }
 
+export interface InvalidClientMessage {
+  type: '__invalid__'
+  rawType: string | null
+  message: string
+  raw: Record<string, unknown>
+}
+
 export type ClientMessage =
   | HelloMessage
   | AttachMessage
@@ -355,6 +362,7 @@ export type ClientMessage =
   | ReleasedMessage
   | SessionEventEnvelope
   | UnknownClientMessage
+  | InvalidClientMessage
 
 export interface ErrorMessage {
   type: 'error'
@@ -475,28 +483,250 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === 'object' && !Array.isArray(value)
 }
 
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === 'string' && value.trim().length > 0
+}
+
+function isOptionalString(value: unknown): boolean {
+  return value === undefined || value === null || typeof value === 'string'
+}
+
+function isOptionalNumber(value: unknown): boolean {
+  return value === undefined || value === null || (typeof value === 'number' && Number.isFinite(value))
+}
+
+function isOptionalBoolean(value: unknown): boolean {
+  return value === undefined || typeof value === 'boolean'
+}
+
+function isQueuedInput(value: unknown): value is QueuedInput {
+  return (
+    isRecord(value) &&
+    isNonEmptyString(value.inputId) &&
+    typeof value.text === 'string' &&
+    typeof value.timestamp === 'number' &&
+    Number.isFinite(value.timestamp)
+  )
+}
+
+function isSanitizedMessage(value: unknown): value is SanitizedMessage {
+  if (!isRecord(value) || !isOptionalNumber(value.timestamp)) return false
+
+  switch (value.role) {
+    case 'user':
+      return typeof value.text === 'string' && isOptionalString(value.remoteInputId)
+    case 'assistant':
+      return (
+        typeof value.text === 'string' &&
+        isOptionalString(value.thinkingText) &&
+        isOptionalString(value.stopReason)
+      )
+    case 'toolResult':
+      return (
+        isNonEmptyString(value.toolName) &&
+        typeof value.text === 'string' &&
+        typeof value.isError === 'boolean' &&
+        isOptionalString(value.toolCallId) &&
+        isOptionalNumber(value.durationMs)
+      )
+    default:
+      return false
+  }
+}
+
+function isSessionEvent(value: unknown): value is SessionEvent {
+  if (!isRecord(value)) return false
+
+  switch (value.type) {
+    case 'message':
+      return isSanitizedMessage(value.message)
+    case 'assistant_stream_start':
+    case 'assistant_stream_end':
+      return true
+    case 'assistant_stream_update':
+      return typeof value.text === 'string' && isOptionalString(value.thinkingText)
+    case 'tool_start':
+      return isNonEmptyString(value.toolCallId) && isOptionalString(value.toolName)
+    case 'tool_update':
+      return (
+        isNonEmptyString(value.toolCallId) &&
+        isOptionalString(value.toolName) &&
+        isOptionalString(value.text)
+      )
+    case 'tool_end':
+      return (
+        isNonEmptyString(value.toolCallId) &&
+        isOptionalString(value.toolName) &&
+        isOptionalBoolean(value.isError)
+      )
+    case 'busy':
+      return typeof value.busy === 'boolean'
+    case 'model':
+      return isOptionalString(value.modelId) && isOptionalNumber(value.contextWindowTokens)
+    case 'usage':
+      return isOptionalNumber(value.contextTokens) && isOptionalNumber(value.costUsd)
+    case 'session_name':
+      return isOptionalString(value.sessionName)
+    case 'remote_input_failed':
+      return isOptionalString(value.inputId)
+    case 'queued_input_add':
+      return isQueuedInput(value.queuedInput)
+    case 'queued_input_remove':
+      return isOptionalString(value.inputId)
+    default:
+      return false
+  }
+}
+
+function isCatalogSession(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    isNonEmptyString(value.sessionGuid) &&
+    isOptionalString(value.sessionFile) &&
+    isOptionalString(value.sessionName) &&
+    isOptionalString(value.cwd) &&
+    isOptionalString(value.preview) &&
+    isOptionalNumber(value.updatedAt) &&
+    isOptionalString(value.model) &&
+    isOptionalBoolean(value.busy)
+  )
+}
+
+function isSnapshotData(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    isNonEmptyString(value.sessionGuid) &&
+    isOptionalString(value.sessionFile) &&
+    isOptionalString(value.sessionName) &&
+    isOptionalString(value.cwd) &&
+    isOptionalString(value.model) &&
+    isOptionalNumber(value.updatedAt) &&
+    (value.history === undefined ||
+      (Array.isArray(value.history) && value.history.every(isSanitizedMessage)))
+  )
+}
+
+function invalidClientMessage(
+  raw: Record<string, unknown>,
+  rawType: string | null,
+  message: string,
+): InvalidClientMessage {
+  return { type: '__invalid__', rawType, message, raw }
+}
+
+function parsedMessage(raw: Record<string, unknown>): ClientMessage {
+  return raw as unknown as ClientMessage
+}
+
 export function parseClientMessage(raw: unknown): ClientMessage {
   if (!isRecord(raw)) {
-    return { type: '__unknown__', rawType: null, raw: {} }
+    return { type: '__invalid__', rawType: null, message: 'Message must be an object', raw: {} }
   }
 
   const messageType = typeof raw.type === 'string' ? raw.type : null
   switch (messageType) {
-    case 'hello':
+    case 'hello': {
+      if (!['web', 'host-supervisor', 'interactive', 'background'].includes(String(raw.role || ''))) {
+        return invalidClientMessage(raw, messageType, 'hello.role is invalid')
+      }
+      if (raw.role === 'host-supervisor' && !isNonEmptyString(raw.hostId)) {
+        return invalidClientMessage(raw, messageType, 'hello.hostId must be a non-empty string')
+      }
+      if (
+        (raw.role === 'interactive' || raw.role === 'background') &&
+        !isNonEmptyString(raw.sessionGuid)
+      ) {
+        return invalidClientMessage(raw, messageType, 'hello.sessionGuid must be a non-empty string')
+      }
+      if (
+        !isOptionalString(raw.hostId) ||
+        !isOptionalString(raw.sessionGuid) ||
+        !isOptionalString(raw.hostname) ||
+        !isOptionalString(raw.platform) ||
+        !isOptionalString(raw.launchRequestId) ||
+        !isOptionalString(raw.sessionFile) ||
+        !isOptionalString(raw.sessionName) ||
+        !isOptionalString(raw.cwd) ||
+        !isOptionalString(raw.model) ||
+        !isOptionalNumber(raw.pid) ||
+        !isOptionalNumber(raw.contextWindowTokens) ||
+        !isOptionalNumber(raw.contextTokens) ||
+        !isOptionalNumber(raw.costUsd) ||
+        !isOptionalNumber(raw.updatedAt) ||
+        !isOptionalBoolean(raw.busy) ||
+        !isOptionalString(raw.streamingText) ||
+        !isOptionalString(raw.streamingThinkingText) ||
+        (raw.history !== undefined &&
+          (!Array.isArray(raw.history) || !raw.history.every(isSanitizedMessage)))
+      ) {
+        return invalidClientMessage(raw, messageType, 'hello contains invalid fields')
+      }
+      return parsedMessage(raw)
+    }
     case 'attach':
+      return raw.sessionGuid === null || isNonEmptyString(raw.sessionGuid)
+        ? parsedMessage(raw)
+        : invalidClientMessage(raw, messageType, 'attach.sessionGuid must be a string or null')
     case 'input':
+      return isNonEmptyString(raw.sessionGuid) && typeof raw.text === 'string'
+        ? parsedMessage(raw)
+        : invalidClientMessage(raw, messageType, 'input requires string sessionGuid and text fields')
     case 'abort':
     case 'terminate_session':
+      return isNonEmptyString(raw.sessionGuid)
+        ? parsedMessage(raw)
+        : invalidClientMessage(raw, messageType, `${messageType}.sessionGuid must be a non-empty string`)
     case 'start_background_session':
+      return isNonEmptyString(raw.sessionGuid) &&
+        isOptionalString(raw.hostId) &&
+        isOptionalString(raw.sessionFile) &&
+        isOptionalString(raw.cwd) &&
+        isOptionalString(raw.requestId)
+        ? parsedMessage(raw)
+        : invalidClientMessage(raw, messageType, 'start_background_session contains invalid fields')
     case 'create_background_session':
+      return isNonEmptyString(raw.hostId) && isNonEmptyString(raw.cwd) && isOptionalString(raw.requestId)
+        ? parsedMessage(raw)
+        : invalidClientMessage(raw, messageType, 'create_background_session requires hostId and cwd')
     case 'refresh_host_sessions':
+      return isNonEmptyString(raw.hostId)
+        ? parsedMessage(raw)
+        : invalidClientMessage(raw, messageType, 'refresh_host_sessions.hostId must be a non-empty string')
     case 'host_sessions':
+      return isNonEmptyString(raw.hostId) &&
+        (raw.sessions === undefined ||
+          (Array.isArray(raw.sessions) && raw.sessions.every(isCatalogSession)))
+        ? parsedMessage(raw)
+        : invalidClientMessage(raw, messageType, 'host_sessions contains an invalid session catalog')
     case 'session_snapshot_data':
+      return isOptionalString(raw.hostId) && isSnapshotData(raw.session)
+        ? parsedMessage(raw)
+        : invalidClientMessage(raw, messageType, 'session_snapshot_data.session is invalid')
     case 'session_snapshot_error':
+      return isOptionalString(raw.hostId) &&
+        isOptionalString(raw.sessionGuid) &&
+        isOptionalString(raw.message)
+        ? parsedMessage(raw)
+        : invalidClientMessage(raw, messageType, 'session_snapshot_error contains invalid fields')
     case 'runner_status':
+      return isOptionalString(raw.hostId) &&
+        isOptionalString(raw.sessionGuid) &&
+        isOptionalString(raw.requestId) &&
+        isNonEmptyString(raw.status) &&
+        isOptionalString(raw.error) &&
+        isOptionalNumber(raw.pid) &&
+        isOptionalNumber(raw.code) &&
+        isOptionalString(raw.signal)
+        ? parsedMessage(raw)
+        : invalidClientMessage(raw, messageType, 'runner_status contains invalid fields')
     case 'released':
+      return isOptionalString(raw.sessionGuid)
+        ? parsedMessage(raw)
+        : invalidClientMessage(raw, messageType, 'released.sessionGuid is invalid')
     case 'session_event':
-      return raw as unknown as ClientMessage
+      return isNonEmptyString(raw.sessionGuid) && isSessionEvent(raw.event)
+        ? parsedMessage(raw)
+        : invalidClientMessage(raw, messageType, 'session_event contains an invalid session event')
     default:
       return {
         type: '__unknown__',

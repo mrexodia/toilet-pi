@@ -126,6 +126,49 @@ describe('createServerCore', () => {
     })
   })
 
+  it('rejects malformed messages without changing session state', async () => {
+    const { core, transport } = createTestServer()
+    connect(transport, core, 'web-1')
+    await send(core, 'web-1', { type: 'hello', role: 'web' })
+    transport.drain('web-1')
+
+    await send(core, 'web-1', {
+      type: 'input',
+      sessionGuid: 'session-1',
+      text: { unexpected: true },
+    })
+
+    expect(transport.drain('web-1')).toEqual([
+      {
+        type: 'error',
+        message: 'Invalid message: input requires string sessionGuid and text fields',
+      },
+    ])
+  })
+
+  it('rejects malformed nested session events', async () => {
+    const { core, transport } = createTestServer()
+    connect(transport, core, 'interactive-1')
+    await send(core, 'interactive-1', {
+      type: 'hello',
+      role: 'interactive',
+      sessionGuid: 'session-1',
+      history: [],
+      busy: false,
+    })
+
+    await send(core, 'interactive-1', {
+      type: 'session_event',
+      sessionGuid: 'session-1',
+      event: { type: 'busy', busy: 'yes' },
+    })
+
+    expect(transport.last('interactive-1')).toEqual({
+      type: 'error',
+      message: 'Invalid message: session_event contains an invalid session event',
+    })
+  })
+
   it('keeps recent history within the configured byte budget', async () => {
     const { core, transport } = createTestServer({ maxSessionHistoryBytes: 150 })
     connect(transport, core, 'interactive-1')
@@ -192,6 +235,52 @@ describe('createServerCore', () => {
     core.onClose('interactive-1')
 
     expect(transport.drain('web-1')).toEqual([])
+  })
+
+  it('safely replaces a duplicate host supervisor', async () => {
+    const { core, transport } = createTestServer()
+    connect(transport, core, 'host-old')
+    await send(core, 'host-old', {
+      type: 'hello',
+      role: 'host-supervisor',
+      hostId: 'claimed-host',
+      hostname: 'old-hostname',
+    })
+    await send(core, 'host-old', {
+      type: 'host_sessions',
+      hostId: 'claimed-host',
+      sessions: [{ sessionGuid: 'session-1', updatedAt: 1 }],
+    })
+
+    connect(transport, core, 'host-new')
+    await send(core, 'host-new', {
+      type: 'hello',
+      role: 'host-supervisor',
+      hostId: 'claimed-host',
+      hostname: 'new-hostname',
+    })
+
+    expect(transport.closes).toContainEqual({
+      connId: 'host-old',
+      code: 1000,
+      reason: 'replaced',
+    })
+
+    core.onClose('host-old')
+    connect(transport, core, 'web-1', { kind: 'admin' })
+    await send(core, 'web-1', { type: 'hello', role: 'web' })
+
+    expect(transport.last('web-1')).toEqual({
+      type: 'overview',
+      hosts: [
+        expect.objectContaining({
+          hostId: 'host-1',
+          hostname: 'new-hostname',
+          connected: true,
+          sessions: [expect.objectContaining({ sessionGuid: 'session-1' })],
+        }),
+      ],
+    })
   })
 
   it('lets interactive take ownership over background', async () => {

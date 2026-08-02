@@ -98,6 +98,11 @@ export function createServerCore(
       return
     }
 
+    if (message.type === '__invalid__') {
+      send(connId, { type: 'error', message: `Invalid message: ${message.message}` })
+      return
+    }
+
     if (message.type === '__unknown__') {
       return
     }
@@ -184,6 +189,10 @@ export function createServerCore(
     message: HelloHostSupervisorMessage,
     hostId: string,
   ): void {
+    const previous = hosts.get(hostId)
+    if (previous && previous.conn !== connId && transport.isOpen(previous.conn)) {
+      transport.close(previous.conn, 1000, 'replaced')
+    }
     clients.set(connId, {
       role: 'host-supervisor',
       hostId,
@@ -370,6 +379,7 @@ export function createServerCore(
   async function handleHostMessage(connId: string, message: ClientMessage): Promise<void> {
     const client = clients.get(connId)
     if (!client || client.role !== 'host-supervisor') return
+    if (hosts.get(client.hostId)?.conn !== connId) return
 
     if (message.type === 'host_sessions') {
       hostCatalogs.set(client.hostId, {
@@ -738,14 +748,15 @@ export function createServerCore(
 
     if (client.role === 'host-supervisor') {
       const host = hosts.get(client.hostId)
-      if (host?.conn === connId) hosts.delete(client.hostId)
+      if (host?.conn !== connId) return
+      hosts.delete(client.hostId)
       hostCatalogs.delete(client.hostId)
       pruneInactiveSessionsForHost(client.hostId)
       broadcastOverview()
       broadcastNotice({
         type: 'notice',
         level: 'error',
-        message: `Host disconnected: ${host?.hostname || client.hostId}`,
+        message: `Host disconnected: ${host.hostname || client.hostId}`,
       })
       return
     }

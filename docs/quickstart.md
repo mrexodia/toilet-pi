@@ -151,4 +151,4 @@ PORT=3457
 
 - interactive pi does not block on server startup or event sends
 - background runners are started by `supervisor.js`
-- if a background runner loses the server, it exits
+- background runners keep running and reconnect after temporary server outages; the host supervisor stops them when it shuts down
