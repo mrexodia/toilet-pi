@@ -1,3 +1,5 @@
+import { groupCollapsedHistory } from "./history-grouping.js";
+
 const MOBILE_MEDIA = window.matchMedia("(max-width: 900px)");
 
 let ws = null;
@@ -1088,50 +1090,13 @@ function renderHistoryFragments(session, summary) {
 		};
 	}
 
-	const fragments = [];
-	let turnPhaseBuffer = [];
-	let inCollapsedTurn = false;
-
-	const flushTurnPhaseBuffer = () => {
-		if (!turnPhaseBuffer.length) return;
-		fragments.push(renderCollapsedHistoryTurnSummary(turnPhaseBuffer));
-		turnPhaseBuffer = [];
-	};
-
-	for (const message of history) {
-		if (message?.role === "user") {
-			flushTurnPhaseBuffer();
-			inCollapsedTurn = true;
-			fragments.push(renderMessage(message));
-			continue;
+	const fragments = groupCollapsedHistory(history).map((group) => {
+		if (group.type === "collapsedTurn") {
+			return renderCollapsedHistoryTurnSummary(group.messages);
 		}
-
-		if (isCollapsedTurnPhaseMessage(message)) {
-			turnPhaseBuffer.push(message);
-			inCollapsedTurn = true;
-			continue;
-		}
-
-		if (message?.role === "assistant") {
-			flushTurnPhaseBuffer();
-			fragments.push(renderMessage(message));
-			inCollapsedTurn = false;
-			continue;
-		}
-
-		flushTurnPhaseBuffer();
-		fragments.push(renderMessage(message));
-		inCollapsedTurn = false;
-	}
-
-	if (inCollapsedTurn) flushTurnPhaseBuffer();
+		return renderMessage(group.message);
+	});
 	return { fragments, hiddenCount, totalCount };
-}
-
-function isCollapsedTurnPhaseMessage(message) {
-	if (!message || typeof message !== "object") return false;
-	if (message.role === "toolResult") return true;
-	return message.role === "assistant" && message.stopReason === "toolUse";
 }
 
 function renderCollapsedHistoryTurnSummary(messages) {
@@ -1141,10 +1106,21 @@ function renderCollapsedHistoryTurnSummary(messages) {
 	const count = toolMessages.length;
 	const errorCount = toolMessages.filter((message) => !!message?.isError).length;
 	const detail = getCollapsedHistoryTurnDetail(messages);
+	const finalAssistant = getFinalAssistantMessage(messages);
+	const status = getAssistantMessageStatus(finalAssistant);
 	const row = document.createElement("div");
 	row.className = "message-row tool";
 	const el = document.createElement("div");
-	el.className = `message tool ${errorCount > 0 ? "error" : "success"} compact`;
+	el.className = `message tool ${errorCount > 0 || status === "error" ? "error" : "success"} compact`;
+	if (finalAssistant?.timestamp || status) {
+		const timestampEl = document.createElement("div");
+		timestampEl.className = "timestamp";
+		const timestampParts = [];
+		if (finalAssistant?.timestamp) timestampParts.push(new Date(finalAssistant.timestamp).toLocaleTimeString());
+		if (status) timestampParts.push(status);
+		timestampEl.textContent = timestampParts.join(" • ");
+		el.appendChild(timestampEl);
+	}
 	const headerEl = document.createElement("div");
 	headerEl.className = "tool-header";
 	headerEl.textContent = formatCollapsedHistoryToolSummaryText(count, errorCount);
@@ -1161,11 +1137,22 @@ function renderCollapsedHistoryTurnSummary(messages) {
 
 function getCollapsedHistoryTurnDetail(messages) {
 	if (!Array.isArray(messages) || messages.length === 0) return "";
+	const assistantText = messages
+		.filter((message) => message?.role === "assistant")
+		.map((message) => getAssistantMessageText(message))
+		.filter(Boolean)
+		.join("\n\n");
+	const latestThinking = [...messages]
+		.reverse()
+		.find((message) => message?.role === "assistant" && message?.thinkingText)
+		?.thinkingText;
+	const detailParts = [];
+	if (latestThinking) detailParts.push(`Thinking: ${collapseThinkingPreview(latestThinking)}`);
+	if (assistantText) detailParts.push(assistantText);
+	if (detailParts.length > 0) return detailParts.join("\n\n");
+
 	for (let i = messages.length - 1; i >= 0; i -= 1) {
 		const message = messages[i];
-		if (message?.role === "assistant" && message?.thinkingText) {
-			return `Thinking: ${collapseThinkingPreview(message.thinkingText)}`;
-		}
 		if (message?.role === "toolResult") {
 			const label = formatToolHeader(message);
 			if (message?.isError) return `${label} • error`;
@@ -1173,6 +1160,14 @@ function getCollapsedHistoryTurnDetail(messages) {
 		}
 	}
 	return "Working…";
+}
+
+function getFinalAssistantMessage(messages) {
+	if (!Array.isArray(messages)) return null;
+	for (let i = messages.length - 1; i >= 0; i -= 1) {
+		if (messages[i]?.role === "assistant") return messages[i];
+	}
+	return null;
 }
 
 function formatCollapsedHistoryToolSummaryText(count, errorCount) {
