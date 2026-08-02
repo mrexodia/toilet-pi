@@ -16,6 +16,7 @@
     "server": "npm start --prefix server",
     "supervisor": "node supervisor.js",
     "client": "node scripts/test-client.js",
+    "test": "node --test test/*.test.js",
     "setup": "npm install && npm install --prefix server"
   },
   "dependencies": {

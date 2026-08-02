@@ -13,6 +13,8 @@ const DEFAULT_HISTORY_BYTES = Math.max(
   Number.parseInt(process.env.TOILET_PI_HISTORY_BYTES || "", 10) || 4 * 1024 * 1024,
 );
 
+const summaryCache = new Map();
+
 export function getDefaultSessionDir() {
   return (
     process.env.TOILET_PI_SESSION_DIR ||
@@ -21,9 +23,11 @@ export function getDefaultSessionDir() {
 }
 
 export async function scanSessions(sessionDir = getDefaultSessionDir()) {
+  const resolvedSessionDir = path.resolve(sessionDir);
   try {
     await access(sessionDir);
   } catch {
+    pruneCaches(resolvedSessionDir, new Set());
     return [];
   }
 
@@ -31,11 +35,35 @@ export async function scanSessions(sessionDir = getDefaultSessionDir()) {
   await collectJsonlFiles(sessionDir, files);
 
   const sessions = [];
+  const seenFiles = new Set();
   for (const file of files) {
-    const summary = await summarizeSessionFile(file);
-    if (summary) sessions.push(summary);
+    const cacheKey = path.resolve(file);
+    seenFiles.add(cacheKey);
+
+    let info;
+    try {
+      info = await stat(file);
+    } catch (error) {
+      if (error?.code === "ENOENT") {
+        summaryCache.delete(cacheKey);
+        continue;
+      }
+      throw error;
+    }
+
+    const fingerprint = getFileFingerprint(info);
+    const cached = summaryCache.get(cacheKey);
+    let summary;
+    if (cached && hasSameFingerprint(cached.fingerprint, fingerprint)) {
+      summary = cached.summary;
+    } else {
+      summary = await summarizeSessionFile(file, info);
+      summaryCache.set(cacheKey, { fingerprint, summary });
+    }
+    if (summary) sessions.push(cloneSummary(summary));
   }
 
+  pruneCaches(resolvedSessionDir, seenFiles);
   sessions.sort((a, b) => b.updatedAt - a.updatedAt);
   return sessions;
 }
@@ -56,6 +84,11 @@ export async function readSessionSnapshot(sessionFile, options = {}) {
   const resolvedFile =
     typeof sessionFile === "string" && sessionFile.trim() ? sessionFile : null;
   if (!resolvedFile) return null;
+
+  const maxHistoryBytes = Math.max(
+    1024,
+    Number(options.maxHistoryBytes) || DEFAULT_HISTORY_BYTES,
+  );
 
   let header = null;
   let sessionName = null;
@@ -119,10 +152,6 @@ export async function readSessionSnapshot(sessionFile, options = {}) {
   if (!header?.id) return null;
 
   const info = await stat(resolvedFile);
-  const maxHistoryBytes = Math.max(
-    1024,
-    Number(options.maxHistoryBytes) || DEFAULT_HISTORY_BYTES,
-  );
   return {
     sessionGuid: header.id,
     sessionFile: resolvedFile,
@@ -146,7 +175,7 @@ async function collectJsonlFiles(dir, files) {
   }
 }
 
-async function summarizeSessionFile(sessionFile) {
+async function summarizeSessionFile(sessionFile, info) {
   let header = null;
   let sessionName = null;
   let firstUserText = null;
@@ -200,7 +229,6 @@ async function summarizeSessionFile(sessionFile) {
 
   if (!header?.id) return null;
 
-  const info = await stat(sessionFile);
   return {
     sessionGuid: header.id,
     sessionFile,
@@ -209,6 +237,48 @@ async function summarizeSessionFile(sessionFile) {
     preview: firstUserText,
     updatedAt: updatedAt || info.mtimeMs,
   };
+}
+
+function getFileFingerprint(info) {
+  return {
+    size: info.size,
+    mtimeMs: info.mtimeMs,
+    ctimeMs: info.ctimeMs,
+    dev: info.dev,
+    ino: info.ino,
+  };
+}
+
+function hasSameFingerprint(left, right) {
+  return (
+    left.size === right.size &&
+    left.mtimeMs === right.mtimeMs &&
+    left.ctimeMs === right.ctimeMs &&
+    left.dev === right.dev &&
+    left.ino === right.ino
+  );
+}
+
+function cloneSummary(summary) {
+  return summary ? { ...summary } : null;
+}
+
+function pruneCaches(sessionDir, seenFiles) {
+  for (const cacheKey of summaryCache.keys()) {
+    if (isWithinDirectory(sessionDir, cacheKey) && !seenFiles.has(cacheKey)) {
+      summaryCache.delete(cacheKey);
+    }
+  }
+}
+
+function isWithinDirectory(directory, file) {
+  const relative = path.relative(directory, file);
+  return (
+    relative === "" ||
+    (relative !== ".." &&
+      !relative.startsWith(`..${path.sep}`) &&
+      !path.isAbsolute(relative))
+  );
 }
 
 function normalizeTimestamp(value) {
