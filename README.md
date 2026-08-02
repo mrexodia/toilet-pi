@@ -4,6 +4,25 @@ Control your [pi](https://github.com/earendil-works/pi) sessions from a browser.
 
 Toilet-Pi gives you one mobile-friendly view of pi sessions across your computers. You can watch active work, send prompts, abort a run, resume an inactive session in the background, or start a new session in a project.
 
+## How it works
+
+```text
+Browser
+   │
+   ▼
+Central Toilet-Pi server
+   ▲                 ▲
+   │                 │
+Host supervisor      Pi extension
+(one per machine)    (one per running session)
+   │
+   └── starts background pi sessions on demand
+```
+
+The central server is a lightweight WebSocket hub: it keeps a live overview of connected machines and routes browser commands and session events. Each machine runs a supervisor that discovers local session files and can launch background pi processes. Normal interactive pi sessions connect directly through the Toilet-Pi extension.
+
+This design provides one UI across multiple computers without moving session files or model credentials to the server. Connections are outbound from each machine, interactive pi remains independent when Toilet-Pi is unavailable, and server state can be rebuilt as machines and sessions reconnect.
+
 ## What you get
 
 - Live access to normal interactive pi sessions
