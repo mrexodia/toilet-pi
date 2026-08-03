@@ -1,4 +1,4 @@
-const CACHE_NAME = 'toilet-pi-v5';
+const CACHE_NAME = 'toilet-pi-v6';
 const APP_ASSETS = [
   './',
   './index.html',

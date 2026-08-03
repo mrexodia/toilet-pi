@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { groupCollapsedHistory } from "../server/public/history-grouping.js";
 
-test("groups an entire tool-using assistant turn into one collapsed item", () => {
+test("collapses tool work but leaves the final assistant message visible", () => {
   const user = { role: "user", text: "inspect it" };
   const thinking = {
     role: "assistant",
@@ -35,8 +35,9 @@ test("groups an entire tool-using assistant turn into one collapsed item", () =>
     { type: "message", message: user },
     {
       type: "collapsedTurn",
-      messages: [thinking, firstTool, followUp, secondTool, finalResponse],
+      messages: [thinking, firstTool, followUp, secondTool],
     },
+    { type: "message", message: finalResponse },
   ]);
 });
 
@@ -63,11 +64,21 @@ test("uses user and non-agent messages as turn boundaries", () => {
       { type: "message", message: firstUser },
       {
         type: "collapsedTurn",
-        messages: [toolUse, toolResult, finalWithoutStopReason],
+        messages: [toolUse, toolResult],
       },
+      { type: "message", message: finalWithoutStopReason },
       { type: "message", message: system },
       { type: "message", message: secondUser },
       { type: "message", message: plainResponse },
     ],
   );
+});
+
+test("keeps unfinished tool work collapsed when there is no final assistant message", () => {
+  const toolUse = { role: "assistant", stopReason: "toolUse" };
+  const toolResult = { role: "toolResult", toolCallId: "tool-1" };
+
+  assert.deepEqual(groupCollapsedHistory([toolUse, toolResult]), [
+    { type: "collapsedTurn", messages: [toolUse, toolResult] },
+  ]);
 });

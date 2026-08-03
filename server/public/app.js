@@ -1106,21 +1106,10 @@ function renderCollapsedHistoryTurnSummary(messages) {
 	const count = toolMessages.length;
 	const errorCount = toolMessages.filter((message) => !!message?.isError).length;
 	const detail = getCollapsedHistoryTurnDetail(messages);
-	const finalAssistant = getFinalAssistantMessage(messages);
-	const status = getAssistantMessageStatus(finalAssistant);
 	const row = document.createElement("div");
 	row.className = "message-row tool";
 	const el = document.createElement("div");
-	el.className = `message tool ${errorCount > 0 || status === "error" ? "error" : "success"} compact`;
-	if (finalAssistant?.timestamp || status) {
-		const timestampEl = document.createElement("div");
-		timestampEl.className = "timestamp";
-		const timestampParts = [];
-		if (finalAssistant?.timestamp) timestampParts.push(new Date(finalAssistant.timestamp).toLocaleTimeString());
-		if (status) timestampParts.push(status);
-		timestampEl.textContent = timestampParts.join(" • ");
-		el.appendChild(timestampEl);
-	}
+	el.className = `message tool ${errorCount > 0 ? "error" : "success"} compact`;
 	const headerEl = document.createElement("div");
 	headerEl.className = "tool-header";
 	headerEl.textContent = formatCollapsedHistoryToolSummaryText(count, errorCount);
@@ -1137,22 +1126,11 @@ function renderCollapsedHistoryTurnSummary(messages) {
 
 function getCollapsedHistoryTurnDetail(messages) {
 	if (!Array.isArray(messages) || messages.length === 0) return "";
-	const assistantText = messages
-		.filter((message) => message?.role === "assistant")
-		.map((message) => getAssistantMessageText(message))
-		.filter(Boolean)
-		.join("\n\n");
-	const latestThinking = [...messages]
-		.reverse()
-		.find((message) => message?.role === "assistant" && message?.thinkingText)
-		?.thinkingText;
-	const detailParts = [];
-	if (latestThinking) detailParts.push(`Thinking: ${collapseThinkingPreview(latestThinking)}`);
-	if (assistantText) detailParts.push(assistantText);
-	if (detailParts.length > 0) return detailParts.join("\n\n");
-
 	for (let i = messages.length - 1; i >= 0; i -= 1) {
 		const message = messages[i];
+		if (message?.role === "assistant" && message?.thinkingText) {
+			return `Thinking: ${collapseThinkingPreview(message.thinkingText)}`;
+		}
 		if (message?.role === "toolResult") {
 			const label = formatToolHeader(message);
 			if (message?.isError) return `${label} • error`;
@@ -1160,14 +1138,6 @@ function getCollapsedHistoryTurnDetail(messages) {
 		}
 	}
 	return "Working…";
-}
-
-function getFinalAssistantMessage(messages) {
-	if (!Array.isArray(messages)) return null;
-	for (let i = messages.length - 1; i >= 0; i -= 1) {
-		if (messages[i]?.role === "assistant") return messages[i];
-	}
-	return null;
 }
 
 function formatCollapsedHistoryToolSummaryText(count, errorCount) {
