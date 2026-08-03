@@ -98,6 +98,8 @@ export default function (pi: ExtensionAPI) {
   let lastStatusText = "";
   let lastStatusConnected = false;
   let statusHideTimer: NodeJS.Timeout | null = null;
+  let statusWidgetMounted = false;
+  let requestStatusRender: (() => void) | null = null;
   const recentLogs: string[] = [];
   let sessionContextTokens: number | null = null;
   let sessionCostUsd: number | null = null;
@@ -184,6 +186,8 @@ export default function (pi: ExtensionAPI) {
     }
     // Drop retained error logs so a new incident starts fresh.
     recentLogs.length = 0;
+    statusWidgetMounted = false;
+    requestStatusRender = null;
     if (ctx?.hasUI) ctx.ui.setWidget(STATUS_WIDGET_KEY, undefined);
   }
 
@@ -206,41 +210,58 @@ export default function (pi: ExtensionAPI) {
       statusHideTimer = null;
     }
 
-    ctx.ui.setWidget(
-      STATUS_WIDGET_KEY,
-      (_tui, theme) => ({
-        invalidate() {},
-        render(): string[] {
-          const status = lastStatusText || (connectionConfig ? ROLE : "unconfigured");
-          const normalized = status.toLowerCase();
-          const isConnecting = normalized.startsWith("connecting");
-          const isDisconnected = normalized.startsWith("disconnected");
-          const isError =
-            normalized.includes("error") || normalized.includes("unconfigured");
+    // Pi currently removes and reinserts a widget every time setWidget() is
+    // called, which changes Map insertion order relative to other extensions.
+    // Mount once per visible lifecycle and rerender mutable state in place.
+    if (!statusWidgetMounted) {
+      statusWidgetMounted = true;
+      ctx.ui.setWidget(
+        STATUS_WIDGET_KEY,
+        (tui, theme) => {
+          const requestRender = () => tui.requestRender();
+          requestStatusRender = requestRender;
+          return {
+            invalidate() {},
+            dispose() {
+              if (requestStatusRender === requestRender) {
+                requestStatusRender = null;
+              }
+            },
+            render(): string[] {
+              const status = lastStatusText || (connectionConfig ? ROLE : "unconfigured");
+              const normalized = status.toLowerCase();
+              const isConnecting = normalized.startsWith("connecting");
+              const isDisconnected = normalized.startsWith("disconnected");
+              const isError =
+                normalized.includes("error") || normalized.includes("unconfigured");
 
-          const icon = lastStatusConnected
-            ? theme.fg("success", "●")
-            : theme.fg(
-                isError ? "error" : "warning",
-                isConnecting || isDisconnected ? "○" : "●",
-              );
+              const icon = lastStatusConnected
+                ? theme.fg("success", "●")
+                : theme.fg(
+                    isError ? "error" : "warning",
+                    isConnecting || isDisconnected ? "○" : "●",
+                  );
 
-          const sep = theme.fg("dim", "  ·  ");
-          const parts = [
-            `${icon} ${theme.fg("accent", theme.bold("toilet-pi"))}`,
-            theme.fg("muted", status),
-          ];
+              const sep = theme.fg("dim", "  ·  ");
+              const parts = [
+                `${icon} ${theme.fg("accent", theme.bold("toilet-pi"))}`,
+                theme.fg("muted", status),
+              ];
 
-          const lines = [parts.join(sep)];
-          // Recent log lines, oldest first, shown beneath the status line.
-          for (const entry of recentLogs) {
-            lines.push(theme.fg("dim", `  ${entry}`));
-          }
-          return lines;
+              const lines = [parts.join(sep)];
+              // Recent log lines, oldest first, shown beneath the status line.
+              for (const entry of recentLogs) {
+                lines.push(theme.fg("dim", `  ${entry}`));
+              }
+              return lines;
+            },
+          };
         },
-      }),
-      { placement: "belowEditor" },
-    );
+        { placement: "belowEditor" },
+      );
+    } else {
+      requestStatusRender?.();
+    }
 
     // When stable, fade the bar out after a short delay.
     if (isStatusStable()) {
