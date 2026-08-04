@@ -104,7 +104,11 @@ export default function (pi: ExtensionAPI) {
   let sessionContextTokens: number | null = null;
   let sessionCostUsd: number | null = null;
   const pendingRemoteInputIds: string[] = [];
-  const pendingLocalQueuedInputs: Array<{ inputId: string; text: string }> = [];
+  const pendingLocalQueuedInputs: Array<{
+    inputId: string;
+    text: string;
+    timestamp: number;
+  }> = [];
   const pendingToolCalls = new Map<string, ToolCallInfo>();
   const completedToolCalls = new Map<string, ToolCallInfo>();
   const lastToolUpdateTimes = new Map<string, number>();
@@ -815,12 +819,46 @@ export default function (pi: ExtensionAPI) {
   function syncPendingMessages(force = false) {
     if (!ctx) return;
     const nextHasPendingMessages = !!ctx.hasPendingMessages();
-    if (!force && nextHasPendingMessages === lastReportedHasPendingMessages) return;
+    const hasStaleLocalQueue = !nextHasPendingMessages && pendingLocalQueuedInputs.length > 0;
+    if (
+      !force &&
+      !hasStaleLocalQueue &&
+      nextHasPendingMessages === lastReportedHasPendingMessages
+    ) {
+      return;
+    }
     lastReportedHasPendingMessages = nextHasPendingMessages;
+
+    if (!nextHasPendingMessages) {
+      // A queued prompt can be transformed before message_start, or restored to
+      // the editor without ever producing a message. In both cases exact text
+      // matching cannot remove it, so reconcile every explicit local entry once
+      // pi reports that its queue is empty.
+      const settledInputs = pendingLocalQueuedInputs.splice(0);
+      for (const queuedInput of settledInputs) {
+        emitSessionEvent({
+          type: "queued_input_remove",
+          inputId: queuedInput.inputId,
+        });
+      }
+      emitSessionEvent({
+        type: "queued_input_remove",
+        inputId: "__local_pending__",
+      });
+      return;
+    }
 
     const hasExplicitLocalQueue = pendingLocalQueuedInputs.length > 0;
     const hasKnownRemoteQueue = pendingRemoteInputIds.length > 0;
-    if (nextHasPendingMessages && !hasExplicitLocalQueue && !hasKnownRemoteQueue) {
+    if (hasExplicitLocalQueue) {
+      // queued_input_add is idempotent on the server. Re-send explicit entries
+      // after reconnect so queue state is not lost while the socket was down.
+      if (force) {
+        for (const queuedInput of pendingLocalQueuedInputs) {
+          emitSessionEvent({ type: "queued_input_add", queuedInput });
+        }
+      }
+    } else if (!hasKnownRemoteQueue) {
       emitSessionEvent({
         type: "queued_input_add",
         queuedInput: {
@@ -831,6 +869,7 @@ export default function (pi: ExtensionAPI) {
       });
       return;
     }
+
     emitSessionEvent({
       type: "queued_input_remove",
       inputId: "__local_pending__",
@@ -873,22 +912,27 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("input", async (event, context) => {
     if (event.source !== "interactive") return;
-    if (context.isIdle()) return;
+    const isQueuedInput =
+      event.streamingBehavior === "steer" ||
+      event.streamingBehavior === "followUp" ||
+      (!("streamingBehavior" in event) && !context.isIdle());
+    if (!isQueuedInput) return;
 
     const text = String(event.text || "").trim();
     if (!text) return;
 
-    const inputId = `local-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-    pendingLocalQueuedInputs.push({ inputId, text });
+    const queuedInput = {
+      inputId: `local-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      text,
+      timestamp: Date.now(),
+    };
+    pendingLocalQueuedInputs.push(queuedInput);
     emitSessionEvent({
       type: "queued_input_add",
-      queuedInput: {
-        inputId,
-        text,
-        timestamp: Date.now(),
-      },
+      queuedInput,
     });
-    syncPendingMessages(true);
+    // The input event runs just before pi inserts the prompt into its queue, so
+    // polling hasPendingMessages() here would still observe the old state.
   });
 
   pi.on("agent_start", async () => {
