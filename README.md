@@ -1,5 +1,7 @@
 # Toilet-Pi
 
+<img width="3024" height="1562" alt="image" src="https://github.com/user-attachments/assets/f70a7b2d-83ce-4813-905d-58bc3fd37886" />
+
 Control your [pi](https://github.com/earendil-works/pi) sessions from a browser.
 
 Toilet-Pi gives you one mobile-friendly view of pi sessions across your computers. You can watch active work, send prompts, abort a run, resume an inactive session in the background, or start a new session in a project.
