@@ -720,14 +720,34 @@ export default function (pi: ExtensionAPI) {
     }
   }
 
+  function isExtensionCommandInput(text: string) {
+    if (!text.startsWith("/") || typeof pi.getCommands !== "function") return false;
+    const spaceIndex = text.indexOf(" ");
+    const commandName = spaceIndex === -1 ? text.slice(1) : text.slice(1, spaceIndex);
+    return pi.getCommands().some(
+      (command) => command.source === "extension" && command.name === commandName,
+    );
+  }
+
   async function dispatchIncomingInput(text: string, inputId: string | null = null) {
     if (!ctx) return;
-    if (inputId) pendingRemoteInputIds.push(inputId);
+    const isExtensionCommand = isExtensionCommandInput(text);
+    if (inputId && isExtensionCommand) {
+      // Extension commands execute without producing a user message, so there
+      // will be no message event that can acknowledge this remote input. Remove
+      // it before dispatch because the command may replace the session/runtime.
+      emitSessionEvent({ type: "queued_input_remove", inputId });
+    } else if (inputId) {
+      pendingRemoteInputIds.push(inputId);
+    }
     try {
       if (ctx.isIdle()) {
-        pi.sendUserMessage(text);
+        pi.sendUserMessage(text, { expandPromptTemplates: true });
       } else {
-        pi.sendUserMessage(text, { deliverAs: "steer" });
+        pi.sendUserMessage(text, {
+          deliverAs: "steer",
+          expandPromptTemplates: true,
+        });
       }
     } catch {
       if (inputId) {
