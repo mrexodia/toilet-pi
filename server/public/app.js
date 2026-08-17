@@ -580,7 +580,7 @@ function renderInstallation() {
 				const token = await generateMachineConnectToken();
 				if (!token) return;
 			}
-			await copyText(`/toilet-pi ${getConnectUrl()}`);
+			await copyText(`/toilet-pi setup ${getConnectUrl()}`);
 		};
 		connectActions.appendChild(copyBtn);
 	} else {
@@ -595,9 +595,9 @@ function renderInstallation() {
 	connectCode.textContent = isMintingMachineConnectToken
 		? "Minting machine connect URL…"
 		: connectUrl
-			? `/toilet-pi ${connectUrl}`
+			? `/toilet-pi setup ${connectUrl}`
 			: isAuthenticated
-				? "Generate a machine connect URL, then paste it into `/toilet-pi` on that computer."
+				? "Generate a machine connect URL, then run `/toilet-pi setup` on that computer."
 				: "Sign in to generate a machine connect URL.";
 	connectSection.appendChild(connectTitle);
 	connectSection.appendChild(connectHint);

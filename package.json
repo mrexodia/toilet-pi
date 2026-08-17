@@ -3,6 +3,11 @@
   "version": "2.0.0",
   "description": "Remote control pi sessions from a central web UI",
   "type": "module",
+  "omp": {
+    "extensions": [
+      "./toilet-pi.ts"
+    ]
+  },
   "pi": {
     "extensions": [
       "./toilet-pi.ts"
@@ -25,9 +30,15 @@
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*"
   },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    }
+  },
   "keywords": [
     "pi",
     "pi-package",
+    "omp-extension",
     "websocket",
     "remote-control",
     "daemon"

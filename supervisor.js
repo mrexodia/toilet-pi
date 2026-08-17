@@ -9,16 +9,18 @@ import {
   parseToiletPiInput,
   readToiletPiConfig,
 } from "./toilet-pi-config.js";
+import { readSessionSnapshot } from "./session-scanner.js";
 import {
-  findSessionFile,
-  getDefaultSessionDir,
-  readSessionSnapshot,
-  scanSessions,
-} from "./session-scanner.js";
+  buildRunnerInvocation,
+  getConfigAgentDirs,
+  resolveSupervisorRuntimeConfig,
+  scanSupervisorSessions,
+  selectSupervisorTarget,
+} from "./supervisor-runtime.js";
 
 const HOST_ID = process.env.TOILET_PI_HOST_ID || os.hostname();
-const PI_COMMAND = process.env.TOILET_PI_PI_COMMAND || "pi";
-const SESSION_DIR = process.env.TOILET_PI_SESSION_DIR || getDefaultSessionDir();
+const RUNTIME_CONFIG = resolveSupervisorRuntimeConfig();
+const CONFIG_AGENT_DIRS = getConfigAgentDirs(RUNTIME_CONFIG);
 const SCAN_INTERVAL_MS = Number.parseInt(
   process.env.TOILET_PI_SCAN_INTERVAL_MS || "15000",
   10,
@@ -38,6 +40,7 @@ const CHILD_SHUTDOWN_FORCE_MS = Number.parseInt(
 const USE_PROCESS_GROUPS = process.platform !== "win32";
 
 const children = new Map();
+const catalogSessionsByGuid = new Map();
 let ws = null;
 let reconnectTimer = null;
 let shuttingDown = false;
@@ -73,12 +76,26 @@ function send(message) {
   }
 }
 
+async function scanSessionCatalog() {
+  const sessions = await scanSupervisorSessions(RUNTIME_CONFIG);
+  catalogSessionsByGuid.clear();
+  for (const session of sessions) {
+    catalogSessionsByGuid.set(session.sessionGuid, session);
+  }
+  return sessions;
+}
+
 async function sendSessionCatalog() {
-  const sessions = await scanSessions(SESSION_DIR);
+  const sessions = await scanSessionCatalog();
+  const wireSessions = sessions.map((session) => {
+    const wireSession = { ...session };
+    delete wireSession.runtime;
+    return wireSession;
+  });
   send({
     type: "host_sessions",
     hostId: HOST_ID,
-    sessions,
+    sessions: wireSessions,
   });
 }
 
@@ -114,7 +131,11 @@ async function loadConnectionConfig() {
     }
   }
 
-  return readToiletPiConfig();
+  for (const agentDir of CONFIG_AGENT_DIRS) {
+    const config = await readToiletPiConfig(agentDir);
+    if (config) return config;
+  }
+  return null;
 }
 
 async function connect() {
@@ -164,7 +185,7 @@ async function connect() {
     }
 
     if (message.type === "start_background_session") {
-      startBackgroundRunner(message);
+      await startBackgroundRunner(message);
       return;
     }
 
@@ -191,7 +212,12 @@ async function sendSessionSnapshot(message) {
     typeof message.sessionFile === "string" ? message.sessionFile : null;
 
   if (!sessionFile && sessionGuid) {
-    sessionFile = await findSessionFile(sessionGuid, SESSION_DIR);
+    let catalogSession = catalogSessionsByGuid.get(sessionGuid);
+    if (!catalogSession) {
+      await scanSessionCatalog();
+      catalogSession = catalogSessionsByGuid.get(sessionGuid);
+    }
+    sessionFile = catalogSession?.sessionFile || null;
   }
 
   if (!sessionFile) {
@@ -236,7 +262,7 @@ async function sendSessionSnapshot(message) {
   }
 }
 
-function startBackgroundRunner(message) {
+async function startBackgroundRunner(message) {
   if (shuttingDown) return;
 
   const requestId = message.requestId || null;
@@ -274,29 +300,42 @@ function startBackgroundRunner(message) {
     return;
   }
 
-  const args = ["--mode", "rpc", "-e", EXTENSION_PATH];
-  if (!createNew && sessionRef) {
-    args.push("--session", sessionRef);
+  if (!createNew && message.sessionGuid && !catalogSessionsByGuid.has(message.sessionGuid)) {
+    await scanSessionCatalog();
   }
-  if (process.env.TOILET_PI_SESSION_DIR) {
-    args.push("--session-dir", SESSION_DIR);
-  }
+  const target = selectSupervisorTarget(
+    message,
+    RUNTIME_CONFIG,
+    catalogSessionsByGuid,
+  );
+  const invocation = buildRunnerInvocation({
+    target,
+    extensionPath: EXTENSION_PATH,
+    sessionRef,
+    createNew,
+  });
 
   log(
-    `starting background runner (${createNew ? "new" : message.sessionGuid})`,
+    `starting ${target.runtime} background runner (${createNew ? "new" : message.sessionGuid})`,
   );
-  const child = spawn(PI_COMMAND, args, {
+  const childEnv = {
+    ...process.env,
+    TOILET_PI_SERVER_URL: currentConnectUrl || "",
+    TOILET_PI_HOST_ID: HOST_ID,
+    TOILET_PI_ROLE: "background",
+    TOILET_PI_SESSION_DIR: target.sessionDir,
+    TOILET_PI_LAUNCH_REQUEST_ID: requestId || "",
+  };
+  if (invocation.clearInheritedAgentDir) {
+    delete childEnv.PI_CODING_AGENT_DIR;
+  } else if (invocation.agentDirOverride) {
+    childEnv.PI_CODING_AGENT_DIR = invocation.agentDirOverride;
+  }
+  const child = spawn(invocation.command, invocation.args, {
     cwd: message.cwd || PROJECT_DIR,
     stdio: ["pipe", "pipe", "pipe"],
     detached: USE_PROCESS_GROUPS,
-    env: {
-      ...process.env,
-      TOILET_PI_SERVER_URL: currentConnectUrl || "",
-      TOILET_PI_HOST_ID: HOST_ID,
-      TOILET_PI_ROLE: "background",
-      TOILET_PI_SESSION_DIR: SESSION_DIR,
-      TOILET_PI_LAUNCH_REQUEST_ID: requestId || "",
-    },
+    env: childEnv,
   });
 
   children.set(childKey, {

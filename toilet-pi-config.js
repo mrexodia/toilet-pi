@@ -18,17 +18,17 @@ export function getAgentDir() {
   return path.join(homedir(), CONFIG_DIR_NAME, "agent");
 }
 
-export function getToiletPiConfigPath() {
-  return path.join(getAgentDir(), TOILET_PI_CONFIG_FILE);
+export function getToiletPiConfigPath(agentDir = getAgentDir()) {
+  return path.join(agentDir, TOILET_PI_CONFIG_FILE);
 }
 
 export function getToiletPiServerStatePath() {
   return path.join(getAgentDir(), TOILET_PI_SERVER_STATE_FILE);
 }
 
-export async function readToiletPiConfig() {
+export async function readToiletPiConfig(agentDir = getAgentDir()) {
   try {
-    const raw = await readFile(getToiletPiConfigPath(), "utf8");
+    const raw = await readFile(getToiletPiConfigPath(agentDir), "utf8");
     const parsed = JSON.parse(raw);
     return normalizeConfig(parsed);
   } catch {
@@ -36,13 +36,20 @@ export async function readToiletPiConfig() {
   }
 }
 
-export async function writeToiletPiConfig(config) {
+export async function writeToiletPiConfig(
+  config,
+  agentDir = getAgentDir(),
+) {
   const normalized = normalizeConfig(config);
-  await mkdir(getAgentDir(), { recursive: true });
-  await writeFile(getToiletPiConfigPath(), `${JSON.stringify(normalized, null, 2)}\n`, {
-    encoding: "utf8",
-    mode: 0o600,
-  });
+  await mkdir(agentDir, { recursive: true });
+  await writeFile(
+    getToiletPiConfigPath(agentDir),
+    `${JSON.stringify(normalized, null, 2)}\n`,
+    {
+      encoding: "utf8",
+      mode: 0o600,
+    },
+  );
   return normalized;
 }
 
@@ -72,6 +79,27 @@ export async function ensureToiletPiServerToken() {
     },
   );
   return token;
+}
+
+export const TOILET_PI_COMMAND_USAGE =
+  "Usage: /toilet-pi status | /toilet-pi setup [connect-url]";
+
+export function parseToiletPiCommand(input) {
+  const trimmed = String(input || "").trim();
+  if (!trimmed || trimmed === "help") return { action: "help" };
+
+  const separator = trimmed.search(/\s/);
+  const action = separator < 0 ? trimmed : trimmed.slice(0, separator);
+  const argument = separator < 0 ? "" : trimmed.slice(separator).trim();
+
+  if (action === "status") {
+    if (argument) throw new Error(TOILET_PI_COMMAND_USAGE);
+    return { action: "status" };
+  }
+  if (action === "setup") {
+    return { action: "setup", connectUrl: argument || null };
+  }
+  throw new Error(TOILET_PI_COMMAND_USAGE);
 }
 
 export function parseToiletPiInput(input) {

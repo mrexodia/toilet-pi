@@ -6,8 +6,10 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import {
   buildConnectUrl,
+  parseToiletPiCommand,
   parseToiletPiInput,
   readToiletPiConfig,
+  TOILET_PI_COMMAND_USAGE,
   toBrowserBaseUrl,
   writeToiletPiConfig,
 } from "./toilet-pi-config.js";
@@ -1182,42 +1184,44 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.registerCommand("toilet-pi", {
-    description: "Configure toilet-pi for this machine",
+    description: "Manage toilet-pi setup and status",
     handler: async (args, context) => {
       try {
-        if (args.trim()) {
-          await configureToiletPi(args.trim(), context);
+        const command = parseToiletPiCommand(args);
+        if (command.action === "help") {
+          if (context.hasUI) context.ui.notify(TOILET_PI_COMMAND_USAGE, "info");
+          return;
+        }
+        if (command.action === "status") {
+          if (!context.hasUI) return;
+          const status = connectionConfig
+            ? isOpen()
+              ? "connected"
+              : ws?.readyState === WebSocket.CONNECTING
+                ? "connecting"
+                : "disconnected"
+            : "unconfigured";
+          const mobileUrl = getMobileUrl();
+          context.ui.notify(
+            connectionConfig
+              ? `toilet-pi ${ROLE}: ${status} (${connectionConfig.serverUrl})${mobileUrl ? ` · mobile: ${mobileUrl}` : ""}`
+              : "toilet-pi is not configured yet. Run /toilet-pi setup.",
+            "info",
+          );
+          return;
+        }
+        if (command.connectUrl) {
+          await configureToiletPi(command.connectUrl, context);
           return;
         }
         await promptForToiletPiUrl(context);
       } catch (error) {
         if (!context.hasUI) return;
         context.ui.notify(
-          error instanceof Error ? error.message : "Failed to configure toilet-pi",
+          error instanceof Error ? error.message : "Failed to run toilet-pi command",
           "error",
         );
       }
-    },
-  });
-
-  pi.registerCommand("ws", {
-    description: "Show toilet-pi connection status",
-    handler: async (_args, context) => {
-      if (!context.hasUI) return;
-      const status = connectionConfig
-        ? isOpen()
-          ? "connected"
-          : ws?.readyState === WebSocket.CONNECTING
-            ? "connecting"
-            : "disconnected"
-        : "unconfigured";
-      const mobileUrl = getMobileUrl();
-      context.ui.notify(
-        connectionConfig
-          ? `toilet-pi ${ROLE}: ${status} (${connectionConfig.serverUrl})${mobileUrl ? ` · mobile: ${mobileUrl}` : ""}`
-          : "toilet-pi is not configured yet. Run /toilet-pi.",
-        "info",
-      );
     },
   });
 }
