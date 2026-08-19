@@ -171,6 +171,13 @@ export function buildConnectUrl(config) {
   return url.toString();
 }
 
+export function redactUrlTokens(value) {
+  return String(value).replace(
+    /([?&]token=)[^\s&#"'<>]*/gi,
+    "$1[REDACTED]",
+  );
+}
+
 export function buildAdminUrl(configOrServerUrl, token) {
   const baseUrl =
     typeof configOrServerUrl === "string"

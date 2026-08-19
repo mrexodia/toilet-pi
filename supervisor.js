@@ -8,6 +8,7 @@ import {
   buildConnectUrl,
   parseToiletPiInput,
   readToiletPiConfig,
+  redactUrlTokens,
 } from "./toilet-pi-config.js";
 import { readSessionSnapshot } from "./session-scanner.js";
 import {
@@ -51,7 +52,7 @@ let shutdownFinished = false;
 let currentConnectUrl = null;
 
 function log(message) {
-  console.log(`[supervisor ${HOST_ID}] ${message}`);
+  console.log(`[supervisor ${HOST_ID}] ${redactUrlTokens(message)}`);
 }
 
 function isOpen(socket) {

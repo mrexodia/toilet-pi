@@ -9,6 +9,7 @@ import {
   parseToiletPiCommand,
   parseToiletPiInput,
   readToiletPiConfig,
+  redactUrlTokens,
   TOILET_PI_COMMAND_USAGE,
   toBrowserBaseUrl,
   writeToiletPiConfig,
@@ -143,9 +144,11 @@ export default function (pi: ExtensionAPI) {
   }
 
   function emitLog(isError: boolean, args: unknown[]) {
-    const line = args
-      .map((a) => (typeof a === "string" ? a : String(a)))
-      .join(" ");
+    const line = redactUrlTokens(
+      args
+        .map((a) => (typeof a === "string" ? a : String(a)))
+        .join(" "),
+    );
     if (!ctx?.hasUI) {
       console.log("[toilet-pi]", line);
       return;
@@ -168,7 +171,7 @@ export default function (pi: ExtensionAPI) {
 
   function updateStatus(status: string, connected = false) {
     if (!ctx?.hasUI || ROLE === "background") return;
-    lastStatusText = String(status || "").trim();
+    lastStatusText = redactUrlTokens(String(status || "").trim());
     lastStatusConnected = connected;
     renderStatusBar();
   }
@@ -1218,7 +1221,9 @@ export default function (pi: ExtensionAPI) {
       } catch (error) {
         if (!context.hasUI) return;
         context.ui.notify(
-          error instanceof Error ? error.message : "Failed to run toilet-pi command",
+          redactUrlTokens(
+            error instanceof Error ? error.message : "Failed to run toilet-pi command",
+          ),
           "error",
         );
       }
