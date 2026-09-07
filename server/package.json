@@ -6,6 +6,7 @@
     "start": "tsx src/node/entry.ts",
     "dev": "tsx --watch src/node/entry.ts",
     "build": "tsc",
+    "build:client": "node scripts/build-client.js",
     "check": "tsc --noEmit",
     "dev:cf": "wrangler dev",
     "deploy": "wrangler deploy",
@@ -13,10 +14,14 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "dompurify": "^3.4.15",
+    "marked": "^18.0.11",
     "ws": "^8.18.0"
   },
   "devDependencies": {
     "@types/node": "^22.15.0",
+    "esbuild": "0.27.7",
+    "jsdom": "^30.0.1",
     "tsx": "^4.19.0",
     "typescript": "^5.8.3",
     "vitest": "^3.1.2",

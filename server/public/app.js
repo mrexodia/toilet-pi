@@ -1,4 +1,5 @@
 import { groupCollapsedHistory } from "./history-grouping.js";
+import { renderMarkdown } from "./markdown.js";
 
 const MOBILE_MEDIA = window.matchMedia("(max-width: 900px)");
 
@@ -1811,7 +1812,12 @@ function buildMessageElement(className, text, timestamp, status = "", thinkingTe
 	if (displayText) {
 		const textEl = document.createElement("div");
 		textEl.className = "message-text";
-		textEl.textContent = displayText;
+		if (el.classList.contains("assistant")) {
+			textEl.classList.add("markdown");
+			textEl.innerHTML = renderMarkdown(displayText);
+		} else {
+			textEl.textContent = displayText;
+		}
 		el.appendChild(textEl);
 	}
 	row.appendChild(el);
