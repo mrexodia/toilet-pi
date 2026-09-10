@@ -3,9 +3,11 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "prestart": "npm run build:client",
     "start": "tsx src/node/entry.ts",
+    "predev": "npm run build:client",
     "dev": "tsx --watch src/node/entry.ts",
-    "build": "tsc",
+    "build": "tsc && npm run build:client",
     "build:client": "node scripts/build-client.js",
     "check": "tsc --noEmit",
     "dev:cf": "wrangler dev",

@@ -19,6 +19,8 @@ const pendingLaunchRequests = new Map();
 const thinkingOpenStateByKey = new Map();
 const collapsedThinkingSessions = new Set();
 const expandedToolKeys = new Set();
+// Cache only completed messages; discarded history can be garbage-collected.
+const markdownByMessage = new WeakMap();
 let scheduledSessionUiFrame = null;
 let scheduledSessionUiTimer = null;
 let scheduledSessionUiForceScroll = false;
@@ -1166,6 +1168,7 @@ function renderMessage(message) {
 			message.thinkingText || "",
 			getThinkingKey(message),
 			getThinkingScope(),
+			message,
 		);
 	}
 	if (message.role === "toolResult") {
@@ -1757,7 +1760,7 @@ function renderSystemMessage(text) {
 	return row;
 }
 
-function buildMessageElement(className, text, timestamp, status = "", thinkingText = "", thinkingKey = "", thinkingScope = "") {
+function buildMessageElement(className, text, timestamp, status = "", thinkingText = "", thinkingKey = "", thinkingScope = "", markdownCacheKey = null) {
 	const row = document.createElement("div");
 	row.className = `message-row ${className}`;
 	const el = document.createElement("div");
@@ -1814,7 +1817,12 @@ function buildMessageElement(className, text, timestamp, status = "", thinkingTe
 		textEl.className = "message-text";
 		if (el.classList.contains("assistant")) {
 			textEl.classList.add("markdown");
-			textEl.innerHTML = renderMarkdown(displayText);
+			let cached = markdownCacheKey ? markdownByMessage.get(markdownCacheKey) : null;
+			if (!cached || cached.text !== displayText) {
+				cached = { text: displayText, html: renderMarkdown(displayText) };
+				if (markdownCacheKey) markdownByMessage.set(markdownCacheKey, cached);
+			}
+			textEl.innerHTML = cached.html;
 		} else {
 			textEl.textContent = displayText;
 		}

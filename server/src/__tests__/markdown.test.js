@@ -4,7 +4,8 @@ import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { renderMarkdown } from '../client/markdown.js';
 import { groupCollapsedHistory } from '../../public/history-grouping.js';
 
-let renderMessage, renderAssistantStream, renderToolMessage;
+const renderMarkdownSpy = vi.fn(renderMarkdown);
+let renderMessage, renderAssistantStream, renderToolMessage, renderHistoryFragments;
 beforeAll(() => {
 	document.body.innerHTML = readFileSync('public/index.html', 'utf8');
 	vi.stubGlobal('matchMedia', () => ({ matches: false, addEventListener() {} }));
@@ -12,10 +13,10 @@ beforeAll(() => {
 	vi.stubGlobal('requestAnimationFrame', () => 0);
 	const source = readFileSync('public/app.js', 'utf8')
 		.replace(/^import .*;\n/gm, '');
-	({ renderMessage, renderAssistantStream, renderToolMessage } = new Function(
+	({ renderMessage, renderAssistantStream, renderToolMessage, renderHistoryFragments } = new Function(
 		'renderMarkdown', 'groupCollapsedHistory',
-		`${source}\nreturn { renderMessage, renderAssistantStream, renderToolMessage };`,
-	)(renderMarkdown, groupCollapsedHistory));
+		`${source}\nreturn { renderMessage, renderAssistantStream, renderToolMessage, renderHistoryFragments };`,
+	)(renderMarkdownSpy, groupCollapsedHistory));
 });
 
 const markdown = '**Bold**\n\n| Name | Value |\n| --- | --- |\n| Test | 42 |\n\n## Heading\n\n- Item\n\n`code`\n\n```js\nconst x = "<tag>";\n```';
@@ -45,6 +46,40 @@ describe('assistant Markdown', () => {
 		expect(row.querySelector('script,img,svg,iframe,[style],[onclick],[onerror]')).toBeNull();
 		expect(row.querySelector('a').hasAttribute('href')).toBe(false);
 		expect(row.querySelector('a[href]').getAttribute('href')).toBe('https://example.com');
+	});
+	it('reuses completed Markdown while streaming instead of reparsing history', () => {
+		const session = { history: Array.from({ length: 200 }, (_, i) => ({
+			role: 'assistant', text: `**Reply ${i}**`,
+		})) };
+		renderMarkdownSpy.mockClear();
+		renderHistoryFragments(session);
+		expect(renderMarkdownSpy).toHaveBeenCalledTimes(200);
+		for (const text of ['**Live', '**Live reply**']) {
+			renderHistoryFragments(session);
+			renderAssistantStream(text);
+		}
+		expect(renderMarkdownSpy).toHaveBeenCalledTimes(202);
+	});
+	it('invalidates cached Markdown when message text changes', () => {
+		const message = { role: 'assistant', text: '**Before**' };
+		renderMessage(message);
+		message.text = '**After**';
+		renderMarkdownSpy.mockClear();
+		const row = renderMessage(message);
+		expect(row.querySelector('strong').textContent).toBe('After');
+		expect(renderMarkdownSpy).toHaveBeenCalledTimes(1);
+	});
+	it('keeps cached HTML sanitized and distinct messages independent', () => {
+		const message = { role: 'assistant', timestamp: 1, text: '**Safe**<img src=x onerror=alert(1)>' };
+		renderMessage(message);
+		renderMarkdownSpy.mockClear();
+		const cached = renderMessage(message);
+		expect(cached.querySelector('strong').textContent).toBe('Safe');
+		expect(cached.querySelector('img,[onerror]')).toBeNull();
+		expect(renderMarkdownSpy).not.toHaveBeenCalled();
+		const other = renderMessage({ ...message, text: '**Other**' });
+		expect(other.querySelector('strong').textContent).toBe('Other');
+		expect(renderMarkdownSpy).toHaveBeenCalledTimes(1);
 	});
 	it('keeps user messages, thinking, and tool output literal', () => {
 		expect(renderMessage({ role: 'user', text: markdown }).querySelector('strong,table')).toBeNull();
