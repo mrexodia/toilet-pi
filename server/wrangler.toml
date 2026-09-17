@@ -3,6 +3,9 @@ main = "src/cloudflare/entry.ts"
 compatibility_date = "2026-04-07"
 preview_urls = false
 
+[build]
+command = "npm run build:client"
+
 [assets]
 directory = "./public"
 

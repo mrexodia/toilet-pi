@@ -30,3 +30,7 @@ temp/
 .wrangler/
 
 dist/
+
+# Generated browser bundle and dependency licenses
+/server/public/markdown.js
+/server/public/markdown.LICENSE.txt

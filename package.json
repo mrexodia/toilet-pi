@@ -22,7 +22,7 @@
     "supervisor": "node supervisor.js",
     "client": "node scripts/test-client.js",
     "test": "node --test test/*.test.js",
-    "setup": "npm install && npm install --prefix server"
+    "setup": "npm install && npm install --prefix server && npm run build:client --prefix server"
   },
   "dependencies": {
     "ws": "^8.18.0"
