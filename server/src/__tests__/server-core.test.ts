@@ -122,6 +122,7 @@ describe('createServerCore', () => {
 
     expect(transport.last('web-1')).toEqual({
       type: 'overview',
+      capabilities: ['orchestration_v1', 'scoped_tokens_v1'],
       hosts: [],
     })
   })
@@ -272,6 +273,7 @@ describe('createServerCore', () => {
 
     expect(transport.last('web-1')).toEqual({
       type: 'overview',
+      capabilities: ['orchestration_v1', 'scoped_tokens_v1'],
       hosts: [
         expect.objectContaining({
           hostId: 'host-1',

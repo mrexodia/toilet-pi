@@ -1510,6 +1510,10 @@
 				min-width: 48px;
 			}
 		}
+		.model-controls { margin-top: 8px; font-size: 0.85rem; }
+		.model-controls > div { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 0; }
+		.model-controls select { max-width: min(100%, 32rem); }
+		.model-controls span { flex-basis: 100%; overflow-wrap: anywhere; }
 	</style>
 </head>
 <body>
@@ -1621,6 +1625,11 @@
 					</div>
 				</div>
 			</div>
+
+			<details class="model-controls">
+				<summary>Session model / thinking</summary>
+				<div id="model-picker"></div>
+			</details>
 
 			<div id="notice-bar" class="notice-bar"></div>
 

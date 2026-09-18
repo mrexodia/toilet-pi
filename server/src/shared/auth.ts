@@ -16,11 +16,24 @@ export interface MachineTokenClaims {
   exp?: number
 }
 
-export type SignedTokenClaims = AdminSessionClaims | MachineTokenClaims
+export const ORCHESTRATOR_SCOPES = ['read', 'input', 'abort', 'start', 'configure'] as const
+export type OrchestratorScope = typeof ORCHESTRATOR_SCOPES[number]
+export interface OrchestratorClaims {
+  kind: 'orchestrator'
+  sub: string
+  jti: string
+  iat: number
+  exp: number
+  scopes: OrchestratorScope[]
+  hostIds?: string[]
+  sessionIds?: string[]
+}
+export type SignedTokenClaims = AdminSessionClaims | MachineTokenClaims | OrchestratorClaims
 
 export type ConnectionAuth =
   | { kind: 'admin' }
   | { kind: 'machine'; machineId: string }
+  | OrchestratorClaims
 
 export interface CookieOptions {
   maxAge?: number
@@ -84,6 +97,32 @@ export async function createMachineToken(
   })
 }
 
+export function validateOrchestratorGrant(value: unknown): value is {
+  subject: string; scopes: OrchestratorScope[]; hostIds?: string[]; sessionIds?: string[]; expiresInSeconds: number
+} {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  const v = value as Record<string, unknown>
+  const ids = (x: unknown) => x === undefined || (Array.isArray(x) && x.length > 0 && x.length <= 100 && x.every(id => typeof id === 'string' && id.length > 0 && id.length <= 256))
+  return Object.keys(v).every(k => ['subject', 'scopes', 'hostIds', 'sessionIds', 'expiresInSeconds'].includes(k)) &&
+    typeof v.subject === 'string' && v.subject.length > 0 && v.subject.length <= 128 &&
+    Array.isArray(v.scopes) && v.scopes.length <= 5 && v.scopes.includes('read') && v.scopes.every(s => ORCHESTRATOR_SCOPES.includes(s)) &&
+    ids(v.hostIds) && ids(v.sessionIds) && Number.isInteger(v.expiresInSeconds) && Number(v.expiresInSeconds) >= 1 && Number(v.expiresInSeconds) <= 86400
+}
+
+export async function createOrchestratorToken(signingSecret: string, grant: unknown): Promise<string> {
+  if (!validateOrchestratorGrant(grant)) throw new Error('Invalid orchestrator grant')
+  return signToken(signingSecret, { kind: 'orchestrator', sub: grant.subject, jti: crypto.randomUUID(),
+    iat: getUnixTimeNow(), exp: getUnixTimeNow() + grant.expiresInSeconds, scopes: [...new Set(grant.scopes)],
+    ...(grant.hostIds ? { hostIds: grant.hostIds } : {}), ...(grant.sessionIds ? { sessionIds: grant.sessionIds } : {}) })
+}
+
+export function permits(auth: ConnectionAuth | undefined, scope: OrchestratorScope, hostId?: string | null, sessionId?: string | null): boolean {
+  if (auth?.kind === 'admin') return true
+  if (auth?.kind !== 'orchestrator' || auth.exp <= getUnixTimeNow() || !auth.scopes.includes(scope)) return false
+  return (!auth.hostIds || (!!hostId && auth.hostIds.includes(hostId))) &&
+    (!auth.sessionIds || (!!sessionId && auth.sessionIds.includes(sessionId)))
+}
+
 export async function getConnectionAuthFromToken(
   expectedAdminToken: string,
   candidateToken: string | null | undefined,
@@ -93,6 +132,8 @@ export async function getConnectionAuthFromToken(
 
   const claims = await verifySignedToken(expectedAdminToken, token)
   if (!claims) return null
+
+  if (claims.kind === 'orchestrator') return claims
 
   if (claims.kind === 'admin-session') {
     return { kind: 'admin' }
@@ -188,7 +229,7 @@ export async function verifySignedToken(
   token: string,
 ): Promise<SignedTokenClaims | null> {
   const normalized = String(token || '').trim()
-  if (!normalized) return null
+  if (!normalized || normalized.length > 32768) return null
 
   const parts = normalized.split('.')
   if (parts.length !== 3) return null
@@ -218,7 +259,7 @@ export async function verifySignedToken(
 
   if (!claims || typeof claims !== 'object') return null
   if (typeof claims.iat !== 'number' || !Number.isFinite(claims.iat)) return null
-  if (claims.exp != null && (!Number.isFinite(claims.exp) || getUnixTimeNow() > claims.exp)) {
+  if (claims.exp != null && (!Number.isFinite(claims.exp) || getUnixTimeNow() >= claims.exp)) {
     return null
   }
 
@@ -228,6 +269,14 @@ export async function verifySignedToken(
       iat: claims.iat,
       exp: typeof claims.exp === 'number' ? claims.exp : undefined,
     }
+  }
+
+  if (claims.kind === 'orchestrator') {
+    const grant = { subject: claims.sub, scopes: claims.scopes, hostIds: claims.hostIds, sessionIds: claims.sessionIds,
+      expiresInSeconds: claims.exp - claims.iat }
+    if (!validateOrchestratorGrant(grant) || !Number.isFinite(claims.exp) || typeof claims.jti !== 'string' || !claims.jti || claims.jti.length > 128) return null
+    return { kind: 'orchestrator', sub: claims.sub, jti: claims.jti, iat: claims.iat, exp: claims.exp,
+      scopes: claims.scopes, ...(claims.hostIds ? { hostIds: claims.hostIds } : {}), ...(claims.sessionIds ? { sessionIds: claims.sessionIds } : {}) }
   }
 
   if (claims.kind === 'machine' && typeof claims.machineId === 'string' && claims.machineId) {

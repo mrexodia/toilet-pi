@@ -10,15 +10,18 @@ test("extension routes configuration queries and broadcasts local selections on 
   process.env.TOILET_PI_SERVER_URL = `ws://127.0.0.1:${server.address().port}/ws?token=isolated-test`;
   const handlers = new Map();
   let level = "off", idle = true;
+  const injected = [];
+  let aborts = 0;
   const pi = {
     on: (name, handler) => handlers.set(name, handler),
     registerCommand() {}, getThinkingLevel: () => level,
+    sendUserMessage: (text, options) => injected.push({ text, options }),
     setModel() { throw new Error("Busy configuration must never call this"); },
     setThinkingLevel() { throw new Error("Busy configuration must never call this"); },
   };
   const ctx = {
     model: { provider: "fake", id: "small", contextWindow: 1000 }, hasUI: false,
-    isIdle: () => idle, hasPendingMessages: () => false,
+    isIdle: () => idle, hasPendingMessages: () => false, abort: async () => { aborts++; },
     sessionManager: {
       getSessionId: () => "isolated-session", getSessionFile: () => null,
       getSessionName: () => null, getCwd: () => "/fake", getBranch: () => [],
@@ -56,6 +59,27 @@ test("extension routes configuration queries and broadcasts local selections on 
     idle = false;
     socket.send(JSON.stringify({ type: "session_request", requestId: "busy", sessionGuid: "isolated-session", operation: "configure", thinkingLevel: "high" }));
     assert.equal((await waitFor(message => message.requestId === "busy")).error.code, "busy");
+    idle = true;
+    const inputId = "test-input-123456789";
+    socket.send(JSON.stringify({ type: "control_command", requestId: "send", sessionGuid: "isolated-session", operation: "send", text: "literal task", mode: "prompt", inputId }));
+    await waitFor(message => message.event?.input?.state === "submitted");
+    assert.equal(injected.length, 1);
+    assert.equal(injected[0].options.expandPromptTemplates, false);
+    const userMessage = { role: "user", content: injected[0].text };
+    await handlers.get("message_start")({ message: userMessage });
+    await handlers.get("message_end")({ message: userMessage });
+    await handlers.get("message_end")({ message: { role: "assistant", content: [{ type: "text", text: "done" }], stopReason: "stop" } });
+    await handlers.get("agent_end")({ messages: [] });
+    await waitFor(message => message.event?.input?.state === "running");
+    assert(!messages.some(message => message.event?.input?.state === "settled"));
+    await handlers.get("agent_settled")({}, ctx);
+    await waitFor(message => message.event?.input?.state === "settled");
+    socket.send(JSON.stringify({ type: "control_command", requestId: "history", sessionGuid: "isolated-session", operation: "history", last: 10 }));
+    const history = await waitFor(message => message.requestId === "history");
+    assert.equal(history.data.history.source, "runtime-branch");
+    socket.send(JSON.stringify({ type: "control_command", requestId: "abort", sessionGuid: "isolated-session", operation: "abort" }));
+    assert.equal((await waitFor(message => message.requestId === "abort")).success, true);
+    assert.equal(aborts, 1);
   } finally {
     await handlers.get("session_shutdown")?.({}, ctx);
     for (const client of server.clients) client.terminate();

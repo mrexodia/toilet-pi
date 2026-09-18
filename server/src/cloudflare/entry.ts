@@ -10,6 +10,7 @@ import {
   verifyAdminSessionCookie,
 } from '../shared/auth.js'
 import { createServerCore } from '../shared/server-core.js'
+import { authenticateOrchestratorHeader, issueOrchestratorToken } from '../shared/orchestrator-auth.js'
 import type { ServerConfig, ServerCore, Timers } from '../shared/types.js'
 import { createCloudflareTransport } from './transport.js'
 
@@ -151,6 +152,29 @@ export default {
       return handleStatusRequest(request, env)
     }
 
+    if (url.pathname.endsWith('/auth/orchestrator-token')) {
+      if (request.method !== 'POST') return methodNotAllowedResponse('POST')
+      let body = ''
+      const reader = request.body?.getReader()
+      if (reader) {
+        const chunks: Uint8Array[] = []
+        let size = 0
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
+          size += value.length
+          if (size > 16384) { await reader.cancel(); return jsonResponse({ message: 'Request too large' }, 413) }
+          chunks.push(value)
+        }
+        const bytes = new Uint8Array(size)
+        let offset = 0
+        for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.length }
+        body = new TextDecoder().decode(bytes)
+      }
+      const result = await issueOrchestratorToken(env.TOILET_PI_SERVER_TOKEN, request.headers.get('cookie'), isAllowedWebSocketOrigin(request), body)
+      return jsonResponse(result.data, result.status)
+    }
+
     if (url.pathname.endsWith('/auth/machine-token')) {
       return handleMachineTokenRequest(request, env)
     }
@@ -258,8 +282,11 @@ async function handleMachineTokenRequest(request: Request, env: Env): Promise<Re
 }
 
 async function authorizeWebSocketRequest(request: Request, expectedAdminToken: string) {
+  const authorization = request.headers.get('authorization')
+  if (authorization) return authenticateOrchestratorHeader(expectedAdminToken, authorization)
   const url = new URL(request.url)
   const bearerAuth = await getConnectionAuthFromToken(expectedAdminToken, url.searchParams.get('token'))
+  if (bearerAuth?.kind === 'orchestrator') return null
   if (bearerAuth) return bearerAuth
 
   if (!isAllowedWebSocketOrigin(request)) return null

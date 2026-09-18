@@ -2,7 +2,7 @@
 
 <img width="3024" height="1562" alt="image" src="https://github.com/user-attachments/assets/f70a7b2d-83ce-4813-905d-58bc3fd37886" />
 
-Control your [pi](https://github.com/earendil-works/pi) sessions from a browser.
+Control your [pi](https://github.com/earendil-works/pi) sessions from a browser or CLI.
 
 Toilet-Pi gives you one mobile-friendly view of pi sessions across your computers. You can watch active work, send prompts, abort a run, resume an inactive session in the background, or start a new session in a project.
 
@@ -33,6 +33,8 @@ This design provides one UI across multiple computers without moving session fil
 - Background resume for inactive sessions
 - New background sessions from the browser
 - Seamless handoff back to the local pi TUI
+- Plain-text orchestration CLI with tracked dispatch, settlement waits, and branch-aware history
+- Scoped orchestrator tokens and browser model/thinking selection
 
 Interactive sessions remain usable if Toilet-Pi is offline. Background sessions keep running and reconnect after temporary server outages; they stop when their host supervisor shuts down, the session is closed, or an interactive agent takes ownership.
 
@@ -113,13 +115,33 @@ Normal local pi and OMP sessions connect automatically through `toilet-pi.ts`.
 
 ## CLI
 
-A compact plain-text CLI is available for session discovery and model/thinking control:
+A compact plain-text CLI supports discovery, model/thinking selection, dispatch, lifecycle control, observation, and history:
 
 ```bash
 node cli/toilet-pi.js --help
 ```
 
-It requires an explicit server URL and admin credential, does not reuse or modify machine configuration, and never implicitly starts a session. `models` returns models **and their supported thinking levels** in one request. Work dispatch and history commands are still planned.
+Log in once with a hidden admin-token prompt:
+
+```text
+npx toilet-pi login --server https://toilet.example.com
+npx toilet-pi hosts
+npx toilet-pi logout
+```
+
+Login saves the server URL and session cookie—not the admin secret—in `~/.pi/agent/toilet-pi-auth.json`. Treat this plaintext file as a secret; it uses owner-only permissions on Unix and inherits directory ACLs on Windows. Logout removes it locally, without revoking copied cookies. Environment credentials remain optional overrides, including scoped orchestrator tokens.
+
+The CLI never reads/modifies machine configuration or implicitly starts a session. `models` returns models **and their supported thinking levels** in one request.
+
+```text
+toilet-pi sessions
+toilet-pi history SESSION --last 6
+toilet-pi resume SESSION --timeout 90
+toilet-pi send SESSION --stdin --wait
+toilet-pi wait SESSION --input INPUT_ID
+```
+
+Tracked prompts include a visible correlation marker. `wait` uses `agent_settled`, not transient idle updates; settlement is not task success. Input IDs are printed before transmission for reconciliation, and mutations are never automatically replayed. OMP's new runtime capabilities remain unverified; unsupported operations fail conservatively.
 
 See [CLI usage and protocol](docs/cli.md) and the [orchestrator implementation plan](docs/orchestrator-cli-plan.md).
 
@@ -221,7 +243,7 @@ Machine configuration is normally stored in the active agent directory as `toile
 
 ## Security and persistence
 
-Treat the Admin login URL, server token, and machine URLs as secrets. Use HTTPS for remote deployments.
+Treat the Admin login URL, server token, machine URLs, and orchestrator tokens as secrets. Use HTTPS for remote deployments. Prefer short-lived, host/session-restricted orchestrator grants for automation; see [CLI permissions](docs/cli.md#scoped-orchestrator-tokens). These scopes are not an agent/tool sandbox.
 
 Server session state is held in memory and rebuilt as clients reconnect. Your actual pi and OMP session files remain on their original machines.
 

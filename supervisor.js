@@ -10,7 +10,7 @@ import {
   readToiletPiConfig,
   redactUrlTokens,
 } from "./toilet-pi-config.js";
-import { readSessionSnapshot } from "./session-scanner.js";
+import { readSessionSnapshot, readSessionHistory } from "./session-scanner.js";
 import {
   buildRunnerInvocation,
   getConfigAgentDirs,
@@ -50,6 +50,7 @@ let shutdownForceTimer = null;
 let shutdownExitTimer = null;
 let shutdownFinished = false;
 let currentConnectUrl = null;
+let historyReads = 0;
 
 function log(message) {
   console.log(`[supervisor ${HOST_ID}] ${redactUrlTokens(message)}`);
@@ -163,6 +164,7 @@ async function connect() {
     send({
       type: "hello",
       role: "host-supervisor",
+      capabilities: ["history_v1"],
       hostId: HOST_ID,
       hostname: os.hostname(),
       platform: `${os.platform()} ${os.release()}`,
@@ -180,13 +182,37 @@ async function connect() {
       return;
     }
 
+    if (message.type === "control_command" && message.operation === "history") {
+      const response = { type: "control_response", requestId: message.requestId };
+      if (historyReads >= 4) {
+        send({ ...response, success: false, error: { code: "overloaded", message: "Too many history reads" } });
+        return;
+      }
+      historyReads++;
+      try {
+        if (!catalogSessionsByGuid.has(message.sessionGuid)) await scanSessionCatalog();
+        const file = catalogSessionsByGuid.get(message.sessionGuid)?.sessionFile;
+        if (!file) throw new Error("Unknown session");
+        const history = await readSessionHistory(file, { sessionGuid: message.sessionGuid, since: message.since, last: message.last ?? 100 });
+        send({ ...response, success: true, data: { history } });
+      } catch (error) {
+        const code = ["cursor_not_found", "too_large"].includes(error?.code) ? error.code : "history_failed";
+        send({ ...response, success: false, error: { code, message: code === "cursor_not_found" ? "Cursor absent from this branch; refresh history" : "Could not read session history" } });
+      } finally { historyReads--; }
+      return;
+    }
     if (message.type === "list_sessions") {
       await sendSessionCatalog();
       return;
     }
 
     if (message.type === "start_background_session") {
-      await startBackgroundRunner(message);
+      try {
+        await startBackgroundRunner(message);
+      } catch {
+        send({ type: "runner_status", requestId: message.requestId || null,
+          sessionGuid: message.sessionGuid || null, status: "error", error: "Could not start background runner" });
+      }
       return;
     }
 

@@ -3,6 +3,7 @@ import { access, readdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 import readline from "node:readline";
+import { buildHistoryPage, selectPersistedBranch } from "./history-page.js";
 
 const DEFAULT_MESSAGE_LIMIT = Number.parseInt(
   process.env.TOILET_PI_MESSAGE_LIMIT || "4000",
@@ -85,82 +86,55 @@ export async function readSessionSnapshot(sessionFile, options = {}) {
     typeof sessionFile === "string" && sessionFile.trim() ? sessionFile : null;
   if (!resolvedFile) return null;
 
-  const maxHistoryBytes = Math.max(
-    1024,
-    Number(options.maxHistoryBytes) || DEFAULT_HISTORY_BYTES,
-  );
+  const parsed = await readSessionBranch(resolvedFile);
+  if (!parsed) return null;
+  const { header, entries, updatedAt } = parsed;
+  const history = entries.filter(e => e.type === "message").map(e => {
+    const message = sanitizeMessage(e.message, e.timestamp);
+    return message && { ...message, ...(e.id ? { entryId: e.id } : {}) };
+  }).filter(Boolean);
+  return {
+    sessionGuid: header.id, sessionFile: resolvedFile, cwd: header.cwd || null,
+    sessionName: [...parsed.allEntries].reverse().find(e => e.type === "session_info")?.name || null,
+    model: [...entries].reverse().find(e => e.type === "model_change")?.modelId || null,
+    history: limitHistoryByBytes(history, Math.max(1024, Number(options.maxHistoryBytes) || DEFAULT_HISTORY_BYTES)),
+    updatedAt,
+  };
+}
 
-  let header = null;
-  let sessionName = null;
-  let model = null;
-  let updatedAt = 0;
-  const history = [];
-
-  const stream = createReadStream(resolvedFile, { encoding: "utf8" });
+export async function readSessionBranch(file) {
+  const before = await stat(file);
+  if (before.size > 64 * 1024 * 1024) throw Object.assign(new Error("Session exceeds the 64 MiB history read limit"), { code: "too_large" });
+  if (!before.size) return null;
+  const stream = createReadStream(file, { encoding: "utf8", end: before.size - 1 });
   const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
-
+  let header;
+  let updatedAt = 0;
+  let complete = true;
+  const entries = [];
   try {
     for await (const line of rl) {
       if (!line.trim()) continue;
-
       let entry;
-      try {
-        entry = JSON.parse(line);
-      } catch {
-        continue;
-      }
-
-      updatedAt = Math.max(
-        updatedAt,
-        normalizeTimestamp(entry.timestamp),
-        normalizeTimestamp(entry.message?.timestamp),
-      );
-
-      if (!header && entry.type === "session") {
-        header = entry;
-        continue;
-      }
-
-      if (
-        entry.type === "session_info" &&
-        typeof entry.name === "string" &&
-        entry.name.trim()
-      ) {
-        sessionName = entry.name.trim();
-        continue;
-      }
-
-      if (
-        entry.type === "model_change" &&
-        typeof entry.modelId === "string" &&
-        entry.modelId.trim()
-      ) {
-        model = entry.modelId.trim();
-        continue;
-      }
-
-      if (entry.type === "message") {
-        const message = sanitizeMessage(entry.message, entry.timestamp);
-        if (message) history.push(message);
-      }
+      try { entry = JSON.parse(line); } catch { complete = false; continue; }
+      if (!entry || typeof entry !== "object" || Array.isArray(entry)) { complete = false; continue; }
+      updatedAt = Math.max(updatedAt, normalizeTimestamp(entry.timestamp), normalizeTimestamp(entry.message?.timestamp));
+      if (!header && entry.type === "session") header = entry;
+      else entries.push(entry);
+      if (entries.length > 200000) throw Object.assign(new Error("Session exceeds the history entry limit"), { code: "too_large" });
     }
-  } finally {
-    rl.close();
-    stream.destroy();
-  }
-
+  } finally { rl.close(); stream.destroy(); }
   if (!header?.id) return null;
+  const after = await stat(file);
+  const branch = selectPersistedBranch(entries, header.version >= 2 || entries.some(e => e.id));
+  return { ...branch, complete: complete && branch.complete && before.size === after.size && before.mtimeMs === after.mtimeMs,
+    allEntries: entries, header, updatedAt: updatedAt || after.mtimeMs };
+}
 
-  const info = await stat(resolvedFile);
-  return {
-    sessionGuid: header.id,
-    sessionFile: resolvedFile,
-    cwd: header.cwd || null,
-    sessionName,
-    model,
-    history: limitHistoryByBytes(history, maxHistoryBytes),
-    updatedAt: updatedAt || info.mtimeMs,
-  };
+export async function readSessionHistory(file, options = {}) {
+  const branch = await readSessionBranch(file);
+  if (!branch || (options.sessionGuid && options.sessionGuid !== branch.header.id)) throw new Error("Session file identity mismatch");
+  return buildHistoryPage(branch.entries, { ...options, source: "persisted-branch", complete: branch.complete, leafId: branch.leafId });
 }
 
 async function collectJsonlFiles(dir, files) {

@@ -1,5 +1,7 @@
 import os from "node:os";
 import { createModelController } from "./model-control.js";
+import { createInputTracker } from "./input-tracker.js";
+import { buildHistoryPage } from "./history-page.js";
 import { WebSocket } from "ws";
 import type {
   ExtensionAPI,
@@ -43,10 +45,13 @@ const MAX_SERVER_HISTORY_BYTES = Math.max(
 const SERVER_TEXT_TRUNCATION_SUFFIX = "\n... (truncated for toilet-pi at 50KB)";
 
 interface ServerMessage {
-  type: "input" | "abort" | "abort_and_release" | "terminate_session" | "session_request";
+  type: "input" | "abort" | "abort_and_release" | "terminate_session" | "session_request" | "control_command";
+  mode?: "prompt" | "steer" | "followUp";
+  since?: string;
+  last?: number;
   requestId?: string;
   sessionGuid?: string;
-  operation?: "get_models" | "get_config" | "configure";
+  operation?: "get_models" | "get_config" | "configure" | "send" | "abort" | "terminate" | "history";
   provider?: string;
   modelId?: string;
   thinkingLevel?: string;
@@ -116,11 +121,15 @@ export default function (pi: ExtensionAPI) {
   const modelController = createModelController({
     pi,
     getContext: () => ctx,
-    hasPendingInput: () => pendingRemoteInputIds.length > 0 || pendingLocalQueuedInputs.length > 0,
+    hasPendingInput: () => pendingRemoteInputIds.length > 0 || pendingLocalQueuedInputs.length > 0 || inputTracker.pending(),
     // Lazy import keeps older/OMP runtimes usable even when this optional API
     // is absent. Do not substitute a locally guessed capability table.
     loadThinkingLevels: async () => (await import("@earendil-works/pi-ai")).getSupportedThinkingLevels,
   });
+  const inputTracker = createInputTracker({ pi, getContext: () => ctx,
+    configuring: () => modelController.isConfiguring(), emit: emitSessionEvent });
+  let supportsSettlement = false;
+  let settlementHandlerRegistered = false;
   const pendingRemoteInputIds: string[] = [];
   const pendingLocalQueuedInputs: Array<{
     inputId: string;
@@ -437,7 +446,7 @@ export default function (pi: ExtensionAPI) {
     send({
       type: "hello",
       role: ROLE,
-      capabilities: ["model_control_v1"],
+      capabilities: ["model_control_v1", "input_tracking_v1", "history_v1", ...(supportsSettlement ? ["agent_settled_v1"] : [])],
       configuration: modelController.configuration(),
       hostId: HOST_ID,
       hostname: os.hostname(),
@@ -718,6 +727,31 @@ export default function (pi: ExtensionAPI) {
   async function handleServerMessage(message: ServerMessage) {
     if (!ctx) return;
 
+    if (message.type === "control_command") {
+      const reply = (data: Record<string, unknown>) => send({ type: "control_response", requestId: message.requestId, success: true, data });
+      const fail = (code: string, text: string) => send({ type: "control_response", requestId: message.requestId, success: false, error: { code, message: text } });
+      if (message.sessionGuid !== getSessionGuid()) { fail("session_changed", "Session changed before execution"); return; }
+      try {
+        if (message.operation === "send") { inputTracker.dispatch(message); return; }
+        if (message.operation === "history") {
+          const entries = ctx.sessionManager.getBranch();
+          reply({ history: buildHistoryPage(entries, { source: "runtime-branch", leafId: ctx.sessionManager.getLeafId?.() ?? entries.at(-1)?.id ?? null,
+            since: message.since, last: message.last ?? 100 }) });
+          return;
+        }
+        if (message.operation === "abort") { await Promise.resolve(ctx.abort()); reply({ status: "requested" }); return; }
+        if (message.operation === "terminate") {
+          // Acknowledges the shutdown request, NOT process exit. Shutdown may be deferred.
+          reply({ status: "requested" });
+          await terminateSession();
+          return;
+        }
+        fail("unsupported", "Unsupported control operation");
+      } catch (error) {
+        fail((error as any)?.code === "cursor_not_found" ? "cursor_not_found" : "runtime_error", "Operation failed; inspect session state before retrying");
+      }
+      return;
+    }
     if (message.type === "session_request") {
       const response = await modelController.run(message);
       send(response);
@@ -904,7 +938,7 @@ export default function (pi: ExtensionAPI) {
     }
 
     const hasExplicitLocalQueue = pendingLocalQueuedInputs.length > 0;
-    const hasKnownRemoteQueue = pendingRemoteInputIds.length > 0;
+    const hasKnownRemoteQueue = pendingRemoteInputIds.length > 0 || inputTracker.pending();
     if (hasExplicitLocalQueue) {
       // queued_input_add is idempotent on the server. Re-send explicit entries
       // after reconnect so queue state is not lost while the socket was down.
@@ -942,6 +976,12 @@ export default function (pi: ExtensionAPI) {
   pi.on("session_start", async (_event, context) => {
     ctx = context;
     currentSessionGuid = getSessionGuid(context);
+    inputTracker.reset();
+    try {
+      const { VERSION } = await import("@earendil-works/pi-coding-agent");
+      const [major, minor, patch] = VERSION.split(".").map(Number);
+      supportsSettlement = settlementHandlerRegistered && major === 0 && (minor > 85 || (minor === 85 && patch >= 1));
+    } catch { supportsSettlement = false; }
     lastStreamText = null;
     lastThinkingText = null;
     pendingAssistantAbortMessage = false;
@@ -1000,6 +1040,10 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("agent_end", async (event) => {
+    // Some runtimes omit message_end for an aborted assistant stream.
+    const finalAssistant = Array.isArray((event as any)?.messages)
+      ? [...(event as any).messages].reverse().find((m: any) => m?.role === "assistant") : null;
+    if (finalAssistant) inputTracker.messageEnd(finalAssistant);
     if (pendingAssistantAbortMessage) {
       const abortedAssistantMessage = Array.isArray((event as any)?.messages)
         ? [...(event as any).messages]
@@ -1026,7 +1070,28 @@ export default function (pi: ExtensionAPI) {
     lastThinkingText = null;
   });
 
+  // Never substitute agent_end or busy:false for this optional event.
+  try {
+    pi.on("agent_settled", async () => {
+      inputTracker.settled();
+      emitSessionEvent({ type: "busy", busy: !ctx?.isIdle() });
+    });
+    settlementHandlerRegistered = true;
+  } catch {
+    // Older runtimes can still dispatch; --wait is explicitly unsupported.
+  }
+
+  try {
+    pi.on("session_tree", async () => {
+      inputTracker.invalidate();
+      sendHello();
+    });
+  } catch {
+    // Optional on older runtimes.
+  }
+
   pi.on("message_start", async (event) => {
+    inputTracker.messageStart(event.message);
     if (event.message.role === "user") {
       const text = extractUserText(event.message.content);
       const localIndex = text
@@ -1069,6 +1134,7 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("message_end", async (event) => {
+    inputTracker.messageEnd(event.message);
     if (event.message.role === "assistant") {
       pendingAssistantAbortMessage = false;
       emitSessionEvent({ type: "assistant_stream_end" });
@@ -1094,8 +1160,10 @@ export default function (pi: ExtensionAPI) {
       completedToolCalls,
     );
     if (message) {
-      if (message.role === "user" && pendingRemoteInputIds.length > 0) {
-        message.remoteInputId = pendingRemoteInputIds.shift();
+      if (message.role === "user") {
+        const trackedId = inputTracker.inputIdFor(event.message);
+        if (trackedId) message.remoteInputId = trackedId;
+        else if (pendingRemoteInputIds.length > 0) message.remoteInputId = pendingRemoteInputIds.shift();
       }
       emitSessionEvent({ type: "message", message });
       if (message.role === "toolResult" && message.toolCallId) {

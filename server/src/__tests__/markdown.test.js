@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { renderMarkdown } from '../client/markdown.js';
 import { groupCollapsedHistory } from '../../public/history-grouping.js';
+import { createModelPicker } from '../../public/model-picker.js';
 
 const renderMarkdownSpy = vi.fn(renderMarkdown);
 let renderMessage, renderAssistantStream, renderToolMessage, renderHistoryFragments;
@@ -14,9 +15,9 @@ beforeAll(() => {
 	const source = readFileSync('public/app.js', 'utf8')
 		.replace(/^import .*;\n/gm, '');
 	({ renderMessage, renderAssistantStream, renderToolMessage, renderHistoryFragments } = new Function(
-		'renderMarkdown', 'groupCollapsedHistory',
+		'renderMarkdown', 'groupCollapsedHistory', 'createModelPicker',
 		`${source}\nreturn { renderMessage, renderAssistantStream, renderToolMessage, renderHistoryFragments };`,
-	)(renderMarkdownSpy, groupCollapsedHistory));
+	)(renderMarkdownSpy, groupCollapsedHistory, createModelPicker));
 });
 
 const markdown = '**Bold**\n\n| Name | Value |\n| --- | --- |\n| Test | 42 |\n\n## Heading\n\n- Item\n\n`code`\n\n```js\nconst x = "<tag>";\n```';

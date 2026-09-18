@@ -37,7 +37,53 @@ export interface SessionResponse {
   error?: { code: string; message: string }
 }
 
+export const INPUT_STATES = ['accepted', 'submitted', 'running', 'settled', 'failed', 'aborted', 'unknown'] as const
+export type InputState = typeof INPUT_STATES[number]
+export interface InputStatus {
+  inputId: string
+  sessionGuid: string
+  state: InputState
+  updatedAt: number
+}
+
+export interface ControlRequest {
+  type: 'control_request'
+  requestId: string
+  operation: 'send' | 'abort' | 'terminate' | 'resume' | 'new' | 'get_input' | 'history'
+  sessionGuid?: string
+  hostId?: string
+  cwd?: string
+  text?: string
+  mode?: 'prompt' | 'steer' | 'followUp'
+  requireSettled?: boolean
+  inputId?: string
+  since?: string
+  last?: number
+}
+export interface HistoryPage {
+  source: 'runtime-branch' | 'persisted-branch'
+  sanitized: true
+  complete: boolean
+  truncated: boolean
+  leafId: string | null
+  nextCursor: string | null
+  hasMore: boolean
+  messages: SanitizedMessage[]
+}
+export interface ControlResponse {
+  type: 'control_response'
+  requestId: string
+  success: boolean
+  data?: { sessionGuid?: string; status?: string; input?: InputStatus; history?: HistoryPage }
+  error?: { code: string; message: string }
+}
+export interface ControlCommand extends Omit<ControlRequest, 'type'> {
+  type: 'control_command'
+  sessionFile?: string | null
+}
+
 export interface UserHistoryMessage {
+  entryId?: string
   role: 'user'
   timestamp?: number
   text: string
@@ -45,6 +91,7 @@ export interface UserHistoryMessage {
 }
 
 export interface AssistantHistoryMessage {
+  entryId?: string
   role: 'assistant'
   timestamp?: number
   text: string
@@ -53,6 +100,7 @@ export interface AssistantHistoryMessage {
 }
 
 export interface ToolResultHistoryMessage {
+  entryId?: string
   role: 'toolResult'
   timestamp?: number
   toolCallId?: string
@@ -209,6 +257,7 @@ export interface QueuedInputRemoveEvent {
 }
 
 export type SessionEvent =
+  | { type: 'input_status'; input: InputStatus }
   | { type: 'configuration'; configuration: SessionConfiguration }
   | MessageEvent
   | AssistantStreamStartEvent
@@ -252,6 +301,7 @@ export interface HelloWebMessage {
 }
 
 export interface HelloHostSupervisorMessage {
+  capabilities?: string[]
   type: 'hello'
   role: 'host-supervisor'
   hostId: string
@@ -386,6 +436,8 @@ export interface InvalidClientMessage {
 }
 
 export type ClientMessage =
+  | ControlRequest
+  | ControlResponse
   | SessionRequest
   | SessionResponse
   | HelloMessage
@@ -417,6 +469,7 @@ export interface NoticeMessage {
 }
 
 export interface OverviewMessage {
+  capabilities?: string[]
   type: 'overview'
   hosts: OverviewHost[]
 }
@@ -504,6 +557,9 @@ export interface SessionEventMessage {
 }
 
 export type ServerMessage =
+  | { type: 'control_progress'; requestId: string; sessionGuid?: string; state: 'loading' | 'starting' }
+  | ControlCommand
+  | ControlResponse
   | SessionRequest
   | SessionResponse
   | ErrorMessage
@@ -553,7 +609,7 @@ function isQueuedInput(value: unknown): value is QueuedInput {
 }
 
 function isSanitizedMessage(value: unknown): value is SanitizedMessage {
-  if (!isRecord(value) || !isOptionalNumber(value.timestamp)) return false
+  if (!isRecord(value) || !isOptionalNumber(value.timestamp) || !isOptionalString(value.entryId)) return false
 
   switch (value.role) {
     case 'user':
@@ -598,6 +654,8 @@ function isSessionEvent(value: unknown): value is SessionEvent {
   if (!isRecord(value)) return false
 
   switch (value.type) {
+    case 'input_status':
+      return isInputStatus(value.input)
     case 'configuration':
       return isConfiguration(value.configuration)
     case 'message':
@@ -680,6 +738,19 @@ function parsedMessage(raw: Record<string, unknown>): ClientMessage {
   return raw as unknown as ClientMessage
 }
 
+function isInputStatus(value: unknown): value is InputStatus {
+  return isRecord(value) && isNonEmptyString(value.inputId) && isNonEmptyString(value.sessionGuid) &&
+    INPUT_STATES.includes(value.state as InputState) && typeof value.updatedAt === 'number' && Number.isFinite(value.updatedAt)
+}
+
+function isHistoryPage(value: unknown): value is HistoryPage {
+  return isRecord(value) && ['runtime-branch', 'persisted-branch'].includes(String(value.source)) &&
+    value.sanitized === true && typeof value.complete === 'boolean' && typeof value.truncated === 'boolean' &&
+    typeof value.hasMore === 'boolean' && isOptionalString(value.leafId) && isOptionalString(value.nextCursor) &&
+    Array.isArray(value.messages) && value.messages.length <= 1000 && value.messages.every(isSanitizedMessage) &&
+    new TextEncoder().encode(JSON.stringify(value)).length <= 1024 * 1024 + 4096
+}
+
 export function parseClientMessage(raw: unknown): ClientMessage {
   if (!isRecord(raw)) {
     return { type: '__invalid__', rawType: null, message: 'Message must be an object', raw: {} }
@@ -687,6 +758,32 @@ export function parseClientMessage(raw: unknown): ClientMessage {
 
   const messageType = typeof raw.type === 'string' ? raw.type : null
   switch (messageType) {
+    case 'control_request': {
+      const op = raw.operation
+      const fields: Record<string, string[]> = {
+        send: ['sessionGuid', 'text', 'mode', 'inputId', 'requireSettled'], abort: ['sessionGuid'], terminate: ['sessionGuid'],
+        resume: ['sessionGuid'], new: ['hostId', 'cwd'], get_input: ['sessionGuid', 'inputId'], history: ['sessionGuid', 'since', 'last'],
+      }
+      const allowed = typeof op === 'string' ? fields[op] : undefined
+      const valid = allowed && Object.keys(raw).every(k => ['type', 'requestId', 'operation', ...allowed].includes(k)) &&
+        isNonEmptyString(raw.requestId) && raw.requestId.length <= 128 &&
+        (op === 'new' ? isNonEmptyString(raw.hostId) && isNonEmptyString(raw.cwd) && raw.cwd.length <= 4096 && !raw.cwd.includes('\0') : isNonEmptyString(raw.sessionGuid)) &&
+        (op !== 'send' || (isNonEmptyString(raw.text) && new TextEncoder().encode(raw.text).length <= 50 * 1024 &&
+          ['prompt', 'steer', 'followUp'].includes(String(raw.mode)))) &&
+        (!['send', 'get_input'].includes(String(op)) || (isNonEmptyString(raw.inputId) && /^[a-zA-Z0-9_-]{16,128}$/.test(raw.inputId))) &&
+        isOptionalBoolean(raw.requireSettled) &&
+        (raw.since === undefined || (isNonEmptyString(raw.since) && raw.since.length <= 128)) &&
+        (raw.last === undefined || (Number.isInteger(raw.last) && Number(raw.last) > 0 && Number(raw.last) <= 1000))
+      return valid ? parsedMessage(raw) : invalidClientMessage(raw, messageType, 'Invalid control request')
+    }
+    case 'control_response': {
+      const valid = raw.success === true ? isRecord(raw.data) &&
+        isOptionalString(raw.data.sessionGuid) && isOptionalString(raw.data.status) &&
+        (raw.data.input === undefined || isInputStatus(raw.data.input)) &&
+        (raw.data.history === undefined || isHistoryPage(raw.data.history)) :
+        raw.success === false && isRecord(raw.error) && isNonEmptyString(raw.error.code) && typeof raw.error.message === 'string'
+      return isNonEmptyString(raw.requestId) && valid ? parsedMessage(raw) : invalidClientMessage(raw, messageType, 'Invalid control response')
+    }
     case 'session_request': {
       const validBase = isNonEmptyString(raw.requestId) && raw.requestId.length <= 128 &&
         isNonEmptyString(raw.sessionGuid) && ['get_models', 'get_config', 'configure'].includes(String(raw.operation))

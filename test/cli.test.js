@@ -20,7 +20,7 @@ function fixture() {
   };
   return { client, requests, get closed() { return closed; }, get connected() { return connected; },
     get stdout() { return stdout; }, get stderr() { return stderr; },
-    run: args => runCli(args, { env: {}, createClient: () => client, out: text => { stdout += text; }, err: text => { stderr += text; } }),
+    run: args => runCli(args, { env: {}, authStore: { read: async () => ({ serverUrl: "https://isolated.test/", cookie: "toilet-pi-admin=fake-session" }) }, createClient: () => client, out: text => { stdout += text; }, err: text => { stderr += text; } }),
   };
 }
 

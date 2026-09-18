@@ -1,5 +1,6 @@
 import { groupCollapsedHistory } from "./history-grouping.js";
 import { renderMarkdown } from "./markdown.js";
+import { createModelPicker } from "./model-picker.js";
 
 const MOBILE_MEDIA = window.matchMedia("(max-width: 900px)");
 
@@ -78,6 +79,9 @@ const workingPlaceholderMetaEl = document.getElementById("working-placeholder-me
 const messageInputEl = document.getElementById("message-input");
 const sendBtnEl = document.getElementById("send-btn");
 const abortBtnEl = document.getElementById("abort-btn");
+const modelPickerRoot = document.getElementById("model-picker");
+const modelPicker = modelPickerRoot ? createModelPicker({ root: modelPickerRoot, send,
+	getSession: () => currentSession, notify: showNotice }) : { receive() {}, sync() {} };
 
 registerPwa();
 updateLiveTurnDetailsToggleUi();
@@ -393,7 +397,12 @@ function scheduleSessionUiRefresh({ forceScroll = false, header = true, controls
 }
 
 function handleMessage(message) {
+	modelPicker.receive(message);
 	switch (message.type) {
+		case "session_response":
+			updateHeader();
+			updateControls();
+			break;
 		case "overview":
 			hosts = Array.isArray(message.hosts) ? message.hosts : [];
 			hydrateCurrentSessionFromOverview();
@@ -1904,6 +1913,7 @@ function updateHeader() {
 
 function updateControls() {
 	const connected = ws?.readyState === WebSocket.OPEN;
+	modelPicker.sync(connected);
 	const summary = currentSessionGuid ? findSessionSummary(currentSessionGuid) : null;
 	const hasOwner = !!(currentSession.owner || summary?.owner);
 	const canAutoStart = !!(summary && summary.hostConnected && (summary.sessionFile || summary.sessionGuid));
@@ -2105,6 +2115,11 @@ function applySessionEvent(session, event) {
 			}
 			break;
 
+		case "configuration":
+			session.configuration = event.configuration;
+			session.model = event.configuration?.modelId || null;
+			break;
+
 		case "model":
 			session.model = event.modelId || null;
 			if (Number.isFinite(event.contextWindowTokens)) {
@@ -2143,6 +2158,7 @@ function createEmptySession(sessionGuid) {
 		sessionName: null,
 		cwd: null,
 		model: null,
+		configuration: null,
 		contextWindowTokens: null,
 		contextTokens: null,
 		costUsd: null,
@@ -2170,6 +2186,7 @@ function normalizeSession(session) {
 		sessionName: session?.sessionName || null,
 		cwd: session?.cwd || null,
 		model: session?.model || null,
+		configuration: session?.configuration || null,
 		contextWindowTokens: Number.isFinite(session?.contextWindowTokens) ? session.contextWindowTokens : null,
 		contextTokens: Number.isFinite(session?.contextTokens) ? session.contextTokens : null,
 		costUsd: Number.isFinite(session?.costUsd) ? session.costUsd : null,

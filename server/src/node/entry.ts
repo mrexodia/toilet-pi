@@ -17,6 +17,7 @@ import {
   verifyAdminSessionCookie,
 } from '../shared/auth.js'
 import { createServerCore } from '../shared/server-core.js'
+import { authenticateOrchestratorHeader, issueOrchestratorToken } from '../shared/orchestrator-auth.js'
 import type { ServerConfig, Timers } from '../shared/types.js'
 import { createNodeTransport } from './transport.js'
 
@@ -66,6 +67,14 @@ const server = createServer(async (req, res) => {
       return
     }
 
+    if (requestUrl.pathname === '/auth/orchestrator-token') {
+      if (req.method !== 'POST') { sendMethodNotAllowed(res, 'POST'); return }
+      const result = await issueOrchestratorToken(SERVER_TOKEN, req.headers.cookie || null,
+        isAllowedWebSocketOrigin(req), await readRequestBody(req))
+      sendJson(res, result.status, result.data, { cacheControl: 'no-store' })
+      return
+    }
+
     if (requestUrl.pathname === '/auth/machine-token') {
       await handleMachineTokenRequest(req, res)
       return
@@ -87,7 +96,7 @@ const server = createServer(async (req, res) => {
   }
 })
 
-const wss = new WebSocketServer({ noServer: true })
+const wss = new WebSocketServer({ noServer: true, maxPayload: 8 * 1024 * 1024 })
 
 server.on('upgrade', (req, socket, head) => {
   void (async () => {
@@ -282,8 +291,10 @@ async function handleMachineTokenRequest(req: IncomingMessage, res: ServerRespon
 }
 
 async function authorizeWebSocketRequest(req: IncomingMessage) {
+  if (req.headers.authorization) return authenticateOrchestratorHeader(SERVER_TOKEN, req.headers.authorization)
   const requestUrl = getRequestUrl(req)
   const bearerAuth = await getConnectionAuthFromToken(SERVER_TOKEN, requestUrl.searchParams.get('token'))
+  if (bearerAuth?.kind === 'orchestrator') return null
   if (bearerAuth) return bearerAuth
 
   if (!isAllowedWebSocketOrigin(req)) return null

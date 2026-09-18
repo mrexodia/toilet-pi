@@ -1,4 +1,5 @@
-import type { ConnectionAuth } from './auth.js'
+import { permits, type ConnectionAuth, type OrchestratorScope } from './auth.js'
+import { createControlRouter } from './control-router.js'
 import {
   parseClientMessage,
   type ClientMessage,
@@ -70,7 +71,45 @@ export function createServerCore(
       console.log(`[${new Date().toISOString()}] ${message}`)
     })
 
+  const control = createControlRouter({
+    send, timers, session: getKnownSession, owner: getOwnerConnection,
+    host: id => { const conn = hosts.get(id)?.conn; return conn && transport.isOpen(conn) ? conn : null },
+    capable: (id, cap) => runnerCapabilities.get(id)?.has(cap) || false,
+    configuring: isConfiguring,
+    authorized: (client, request) => {
+      const session = getKnownSession(request.sessionGuid)
+      const scope = ({ send: 'input', abort: 'abort', terminate: 'abort', resume: 'start', new: 'start', history: 'read', get_input: 'read' } as const)[request.operation]
+      return transport.isOpen(client) && permits(authContexts.get(client), scope, request.hostId || session?.hostId, request.sessionGuid)
+    },
+    publish: (sessionGuid, event) => {
+      const session = sessions.get(sessionGuid)
+      const queuedBefore = session?.queuedInputs.length || 0
+      if (session) applySessionEvent(session, event)
+      sendToAttached(sessionGuid, { type: 'session_event', sessionGuid, event })
+      if ((session?.queuedInputs.length || 0) !== queuedBefore) broadcastOverview()
+    },
+  })
+
+  function canRead(connId: string, sessionGuid: string): boolean {
+    const session = getKnownSession(sessionGuid)
+    return permits(authContexts.get(connId), 'read', session?.hostId, sessionGuid)
+  }
+
   function send(connId: string, payload: ServerMessage): boolean {
+    const auth = authContexts.get(connId)
+    if (auth?.kind === 'orchestrator') {
+      if (auth.exp <= Math.floor(Date.now() / 1000)) { transport.close(connId, 1008, 'Expired'); return false }
+      if (payload.type === 'overview') {
+        payload = { ...payload, hosts: payload.hosts.filter(h => !auth.hostIds || auth.hostIds.includes(h.hostId)).map(h => ({ ...h,
+          sessions: h.sessions.filter(s => permits(auth, 'read', h.hostId, s.sessionGuid)),
+        })).filter(h => !auth.sessionIds || h.sessions.length > 0) }
+      } else if (payload.type === 'notice' || payload.type === 'launch_status' || payload.type === 'background_session_started') return true
+      else if (!((payload.type === 'session_response' || payload.type === 'control_response') && !payload.success)) {
+        const sessionGuid = 'sessionGuid' in payload ? payload.sessionGuid : payload.type === 'session_snapshot' ? payload.session.sessionGuid :
+          payload.type === 'control_response' ? payload.data?.sessionGuid || payload.data?.input?.sessionGuid : null
+        if (sessionGuid && !canRead(connId, sessionGuid)) return true
+      }
+    }
     if (!transport.isOpen(connId)) return false
     const sent = transport.send(connId, payload)
     if (!sent) {
@@ -90,6 +129,11 @@ export function createServerCore(
   }
 
   async function onMessage(connId: string, data: string): Promise<void> {
+    const auth = authContexts.get(connId)
+    if (auth?.kind === 'orchestrator' && auth.exp <= Math.floor(Date.now() / 1000)) {
+      transport.close(connId, 1008, 'Expired'); onClose(connId); return
+    }
+    if (data.length > 8 * 1024 * 1024) { transport.close(connId, 1009, 'Message too large'); onClose(connId); return }
     let raw: unknown
     try {
       raw = JSON.parse(data)
@@ -135,6 +179,7 @@ export function createServerCore(
   }
 
   function onClose(connId: string): void {
+    control.close(connId)
     runnerCapabilities.delete(connId)
     for (const [id, pending] of pendingRequests) {
       if (pending.requester === connId) {
@@ -190,7 +235,7 @@ export function createServerCore(
       return
     }
     if (isConfiguring(session.sessionGuid) || (request.operation === 'configure' &&
-        (session.busy || session.queuedInputs.length > 0 || session.pendingInputs.length > 0))) {
+        (session.busy || session.queuedInputs.length > 0 || session.pendingInputs.length > 0 || control.isDispatching(session.sessionGuid)))) {
       requestError(connId, request, 'busy', 'Session is busy, queued, or being configured; wait or abort first')
       return
     }
@@ -253,6 +298,19 @@ export function createServerCore(
     }
 
     const role = message.role
+    if (role === 'web' ? auth.kind !== 'admin' && auth.kind !== 'orchestrator' : auth.kind !== 'machine') {
+      send(connId, { type: 'error', message: 'Unauthorized role for this token' })
+      transport.close(connId, 1008, 'Unauthorized role')
+      return
+    }
+    const previousClient = clients.get(connId)
+    if (previousClient && (previousClient.role !== role ||
+        ((previousClient.role === 'interactive' || previousClient.role === 'background') && previousClient.sessionGuid !== ('sessionGuid' in message ? message.sessionGuid : null)))) {
+      send(connId, { type: 'error', message: 'Reconnect before changing connection identity' })
+      transport.close(connId, 1008, 'Identity changed')
+      onClose(connId)
+      return
+    }
     if (!['web', 'host-supervisor', 'interactive', 'background'].includes(role)) {
       send(connId, { type: 'error', message: `Unknown role: ${String(role)}` })
       transport.close(connId, 1008, 'Unknown role')
@@ -260,11 +318,6 @@ export function createServerCore(
     }
 
     if (role === 'web') {
-      if (auth.kind !== 'admin') {
-        send(connId, { type: 'error', message: 'Unauthorized role for this token' })
-        transport.close(connId, 1008, 'Unauthorized role')
-        return
-      }
       clients.set(connId, { role: 'web' })
       webClients.set(connId, { attachedSessionGuid: null })
       sendOverview(connId)
@@ -288,6 +341,12 @@ export function createServerCore(
       return
     }
 
+    const known = getKnownSession(message.sessionGuid)
+    if (known?.hostId && known.hostId !== auth.machineId) {
+      send(connId, { type: 'error', message: 'Session belongs to another host' })
+      transport.close(connId, 1008, 'Host mismatch')
+      return
+    }
     clients.set(connId, {
       role,
       hostId: auth.machineId,
@@ -309,6 +368,7 @@ export function createServerCore(
       role: 'host-supervisor',
       hostId,
     })
+    runnerCapabilities.set(connId, new Set(message.capabilities || []))
     const hostname = message.hostname || hostId
     hosts.set(hostId, {
       hostId,
@@ -330,6 +390,29 @@ export function createServerCore(
   }
 
   async function handleWebMessage(connId: string, message: ClientMessage): Promise<void> {
+    const auth = authContexts.get(connId)
+    if (auth?.kind === 'orchestrator') {
+      const sessionGuid = 'sessionGuid' in message ? message.sessionGuid : null
+      const session = sessionGuid ? getKnownSession(sessionGuid) : null
+      const hostId = message.type === 'control_request' && message.operation === 'new' ? message.hostId : session?.hostId
+      let scope: OrchestratorScope | null = null
+      if (message.type === 'attach') scope = 'read'
+      if (message.type === 'session_request') scope = message.operation === 'configure' ? 'configure' : 'read'
+      if (message.type === 'control_request') scope = ({ send: 'input', abort: 'abort', terminate: 'abort', resume: 'start', new: 'start', history: 'read', get_input: 'read' } as const)[message.operation]
+      const allowed = scope !== null && ((message.type === 'attach' && message.sessionGuid === null) || permits(auth, scope, hostId, sessionGuid))
+      log(JSON.stringify({ audit: 'orchestrator', subject: auth.sub, tokenId: auth.jti, operation: 'operation' in message ? message.operation : message.type,
+        sessionGuid, hostId, allowed }))
+      if (!allowed) {
+        if (message.type === 'session_request') requestError(connId, message, 'forbidden', 'Operation outside token scope')
+        else if (message.type === 'control_request') send(connId, { type: 'control_response', requestId: message.requestId, success: false, error: { code: 'forbidden', message: 'Operation outside token scope' } })
+        else send(connId, { type: 'error', message: 'Operation outside token scope; use correlated control requests' })
+        return
+      }
+    }
+    if (message.type === 'control_request') {
+      await control.request(connId, message)
+      return
+    }
     if (message.type === 'session_request') {
       handleSessionRequest(connId, message)
       return
@@ -501,6 +584,10 @@ export function createServerCore(
     if (!client || client.role !== 'host-supervisor') return
     if (hosts.get(client.hostId)?.conn !== connId) return
 
+    if (message.type === 'control_response') {
+      control.response(connId, message)
+      return
+    }
     if (message.type === 'host_sessions') {
       hostCatalogs.set(client.hostId, {
         hostId: client.hostId,
@@ -519,6 +606,7 @@ export function createServerCore(
     }
 
     if (message.type === 'session_snapshot_error') {
+      if (getKnownSession(message.sessionGuid)?.hostId !== client.hostId) return
       clearPendingSessionSnapshotLoad(message.sessionGuid || null)
       sendToAttached(message.sessionGuid || null, {
         type: 'notice',
@@ -529,8 +617,11 @@ export function createServerCore(
     }
 
     if (message.type === 'runner_status') {
+      if (message.requestId && ['error', 'exited'].includes(message.status || '')) control.launchError(connId, message.requestId)
       if (message.sessionGuid) {
-        const session = getOrCreateSession(message.sessionGuid)
+        const known = getKnownSession(message.sessionGuid)
+        if (known?.hostId && known.hostId !== client.hostId) return
+        const session = known || getOrCreateSession(message.sessionGuid)
         session.hostId = client.hostId
         session.runnerStatus = message.status || null
         session.updatedAt = Date.now()
@@ -563,6 +654,10 @@ export function createServerCore(
     const session = sessions.get(client.sessionGuid)
     if (!session) return
 
+    if (message.type === 'control_response') {
+      control.response(connId, message)
+      return
+    }
     if (message.type === 'session_response') {
       if (message.sessionGuid !== client.sessionGuid) return
       handleSessionResponse(connId, message)
@@ -594,6 +689,10 @@ export function createServerCore(
     if (getOwnerConnection(session) !== connId) return
     if (message.sessionGuid && message.sessionGuid !== client.sessionGuid) return
 
+    if (message.event?.type === 'input_status') {
+      if (message.event.input.sessionGuid === session.sessionGuid) control.event(connId, message.event.input)
+      return
+    }
     applySessionEvent(session, message.event)
     sendToAttached(session.sessionGuid, {
       type: 'session_event',
@@ -692,6 +791,7 @@ export function createServerCore(
       }
     }
 
+    control.hello(connId, hostId, message)
     if (message.launchRequestId) {
       broadcastWeb({
         type: 'background_session_started',
@@ -1113,7 +1213,7 @@ export function createServerCore(
   async function requestSessionSnapshotFromHost(sessionGuid: string): Promise<boolean> {
     if (!sessionGuid) return false
     const session = getKnownSession(sessionGuid)
-    if (!session || session.history.length > 0) return false
+    if (!session || getOwnerConnection(session) || session.history.length > 0) return false
     if (pendingSessionSnapshotLoads.has(sessionGuid)) return true
 
     const found = findCatalogSession(sessionGuid)
@@ -1146,10 +1246,11 @@ export function createServerCore(
     snapshot: SnapshotData | null,
   ): void {
     const sessionGuid = snapshot?.sessionGuid
-    if (!sessionGuid) return
+    if (!sessionGuid || !pendingSessionSnapshotLoads.has(sessionGuid)) return
+    const session = getKnownSession(sessionGuid)
+    if (!session || session.hostId !== hostId || getOwnerConnection(session)) return
     clearPendingSessionSnapshotLoad(sessionGuid)
 
-    const session = getOrCreateSession(sessionGuid)
     session.hostId = hostId || session.hostId
     session.sessionFile = snapshot.sessionFile || session.sessionFile
     session.sessionName = snapshot.sessionName || session.sessionName
@@ -1197,14 +1298,14 @@ export function createServerCore(
 
   function sendOverview(connId: string): void {
     send(connId, {
-      type: 'overview',
+      type: 'overview', capabilities: ['orchestration_v1', 'scoped_tokens_v1'],
       hosts: buildOverviewHosts(),
     })
   }
 
   function broadcastOverview(): void {
     const payload: ServerMessage = {
-      type: 'overview',
+      type: 'overview', capabilities: ['orchestration_v1', 'scoped_tokens_v1'],
       hosts: buildOverviewHosts(),
     }
     for (const connId of webClients.keys()) {

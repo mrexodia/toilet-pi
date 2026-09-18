@@ -4,6 +4,7 @@ node_modules/
 # Environment variables with secrets
 .env
 .env.local
+toilet-pi-auth.json
 
 # Logs
 *.log
