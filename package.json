@@ -3,6 +3,9 @@
   "version": "2.0.0",
   "description": "Remote control pi sessions from a central web UI",
   "type": "module",
+  "bin": {
+    "toilet-pi": "./cli/toilet-pi.js"
+  },
   "omp": {
     "extensions": [
       "./toilet-pi.ts"
@@ -20,7 +23,7 @@
     "deploy": "npm run deploy --prefix server",
     "server": "npm start --prefix server",
     "supervisor": "node supervisor.js",
-    "client": "node scripts/test-client.js",
+    "client": "node cli/toilet-pi.js",
     "test": "node --test test/*.test.js",
     "setup": "npm install && npm install --prefix server && npm run build:client --prefix server"
   },

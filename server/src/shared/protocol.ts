@@ -2,6 +2,41 @@ export type ClientRole = 'web' | 'host-supervisor' | 'interactive' | 'background
 export type RunnerRole = 'interactive' | 'background'
 export type NoticeLevel = 'info' | 'error'
 
+export const THINKING_LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const
+export type ThinkingLevel = typeof THINKING_LEVELS[number]
+
+export interface SessionConfiguration {
+  provider: string | null
+  modelId: string | null
+  thinkingLevel: ThinkingLevel | null
+}
+
+export interface ModelOption {
+  provider: string
+  id: string
+  name: string
+  thinkingLevels: ThinkingLevel[]
+}
+
+export interface SessionRequest {
+  type: 'session_request'
+  requestId: string
+  sessionGuid: string
+  operation: 'get_models' | 'get_config' | 'configure'
+  provider?: string
+  modelId?: string
+  thinkingLevel?: ThinkingLevel
+}
+
+export interface SessionResponse {
+  type: 'session_response'
+  requestId: string
+  sessionGuid: string
+  success: boolean
+  data?: { configuration: SessionConfiguration; models?: ModelOption[] }
+  error?: { code: string; message: string }
+}
+
 export interface UserHistoryMessage {
   role: 'user'
   timestamp?: number
@@ -49,6 +84,7 @@ export interface QueuedInput {
 }
 
 export interface SessionSnapshot {
+  configuration?: SessionConfiguration
   sessionGuid: string | null
   owner: RunnerRole | null
   hostId: string | null
@@ -173,6 +209,7 @@ export interface QueuedInputRemoveEvent {
 }
 
 export type SessionEvent =
+  | { type: 'configuration'; configuration: SessionConfiguration }
   | MessageEvent
   | AssistantStreamStartEvent
   | AssistantStreamUpdateEvent
@@ -224,6 +261,8 @@ export interface HelloHostSupervisorMessage {
 }
 
 export interface HelloRunnerMessage {
+  capabilities?: string[]
+  configuration?: SessionConfiguration
   type: 'hello'
   role: RunnerRole
   hostId?: string | null
@@ -347,6 +386,8 @@ export interface InvalidClientMessage {
 }
 
 export type ClientMessage =
+  | SessionRequest
+  | SessionResponse
   | HelloMessage
   | AttachMessage
   | InputMessage
@@ -463,6 +504,8 @@ export interface SessionEventMessage {
 }
 
 export type ServerMessage =
+  | SessionRequest
+  | SessionResponse
   | ErrorMessage
   | NoticeMessage
   | OverviewMessage
@@ -534,10 +577,29 @@ function isSanitizedMessage(value: unknown): value is SanitizedMessage {
   }
 }
 
+function isThinkingLevel(value: unknown): value is ThinkingLevel {
+  return THINKING_LEVELS.includes(value as ThinkingLevel)
+}
+
+function isConfiguration(value: unknown): value is SessionConfiguration {
+  return isRecord(value) &&
+    (value.provider === null || isNonEmptyString(value.provider)) &&
+    (value.modelId === null || isNonEmptyString(value.modelId)) &&
+    (value.thinkingLevel === null || isThinkingLevel(value.thinkingLevel))
+}
+
+function isModelOption(value: unknown): value is ModelOption {
+  return isRecord(value) && isNonEmptyString(value.provider) && isNonEmptyString(value.id) &&
+    typeof value.name === 'string' && Array.isArray(value.thinkingLevels) &&
+    value.thinkingLevels.length > 0 && value.thinkingLevels.every(isThinkingLevel)
+}
+
 function isSessionEvent(value: unknown): value is SessionEvent {
   if (!isRecord(value)) return false
 
   switch (value.type) {
+    case 'configuration':
+      return isConfiguration(value.configuration)
     case 'message':
       return isSanitizedMessage(value.message)
     case 'assistant_stream_start':
@@ -625,6 +687,28 @@ export function parseClientMessage(raw: unknown): ClientMessage {
 
   const messageType = typeof raw.type === 'string' ? raw.type : null
   switch (messageType) {
+    case 'session_request': {
+      const validBase = isNonEmptyString(raw.requestId) && raw.requestId.length <= 128 &&
+        isNonEmptyString(raw.sessionGuid) && ['get_models', 'get_config', 'configure'].includes(String(raw.operation))
+      const hasModel = raw.provider !== undefined || raw.modelId !== undefined
+      const validSelection = (!hasModel || (isNonEmptyString(raw.provider) && isNonEmptyString(raw.modelId))) &&
+        (raw.thinkingLevel === undefined || isThinkingLevel(raw.thinkingLevel))
+      const validOperation = raw.operation === 'configure'
+        ? hasModel || raw.thinkingLevel !== undefined
+        : !hasModel && raw.thinkingLevel === undefined
+      return validBase && validSelection && validOperation
+        ? parsedMessage(raw)
+        : invalidClientMessage(raw, messageType, 'Invalid session request or model/thinking selection')
+    }
+    case 'session_response': {
+      const validResult = raw.success === true
+        ? isRecord(raw.data) && isConfiguration(raw.data.configuration) &&
+          (raw.data.models === undefined || (Array.isArray(raw.data.models) && raw.data.models.every(isModelOption)))
+        : raw.success === false && isRecord(raw.error) && isNonEmptyString(raw.error.code) && typeof raw.error.message === 'string'
+      return isNonEmptyString(raw.requestId) && isNonEmptyString(raw.sessionGuid) && validResult
+        ? parsedMessage(raw)
+        : invalidClientMessage(raw, messageType, 'Invalid session response')
+    }
     case 'hello': {
       if (!['web', 'host-supervisor', 'interactive', 'background'].includes(String(raw.role || ''))) {
         return invalidClientMessage(raw, messageType, 'hello.role is invalid')
@@ -639,6 +723,8 @@ export function parseClientMessage(raw: unknown): ClientMessage {
         return invalidClientMessage(raw, messageType, 'hello.sessionGuid must be a non-empty string')
       }
       if (
+        (raw.capabilities !== undefined && (!Array.isArray(raw.capabilities) || !raw.capabilities.every(isNonEmptyString))) ||
+        (raw.configuration !== undefined && !isConfiguration(raw.configuration)) ||
         !isOptionalString(raw.hostId) ||
         !isOptionalString(raw.sessionGuid) ||
         !isOptionalString(raw.hostname) ||

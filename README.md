@@ -111,6 +111,18 @@ Open the web UI to:
 
 Normal local pi and OMP sessions connect automatically through `toilet-pi.ts`.
 
+## CLI
+
+A compact plain-text CLI is available for session discovery and model/thinking control:
+
+```bash
+node cli/toilet-pi.js --help
+```
+
+It requires an explicit server URL and admin credential, does not reuse or modify machine configuration, and never implicitly starts a session. `models` returns models **and their supported thinking levels** in one request. Work dispatch and history commands are still planned.
+
+See [CLI usage and protocol](docs/cli.md) and the [orchestrator implementation plan](docs/orchestrator-cli-plan.md).
+
 ## Useful extension commands
 
 ```text

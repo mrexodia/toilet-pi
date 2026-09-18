@@ -1,4 +1,5 @@
 import os from "node:os";
+import { createModelController } from "./model-control.js";
 import { WebSocket } from "ws";
 import type {
   ExtensionAPI,
@@ -42,7 +43,13 @@ const MAX_SERVER_HISTORY_BYTES = Math.max(
 const SERVER_TEXT_TRUNCATION_SUFFIX = "\n... (truncated for toilet-pi at 50KB)";
 
 interface ServerMessage {
-  type: "input" | "abort" | "abort_and_release" | "terminate_session";
+  type: "input" | "abort" | "abort_and_release" | "terminate_session" | "session_request";
+  requestId?: string;
+  sessionGuid?: string;
+  operation?: "get_models" | "get_config" | "configure";
+  provider?: string;
+  modelId?: string;
+  thinkingLevel?: string;
   text?: string;
   inputId?: string;
 }
@@ -106,6 +113,14 @@ export default function (pi: ExtensionAPI) {
   const recentLogs: string[] = [];
   let sessionContextTokens: number | null = null;
   let sessionCostUsd: number | null = null;
+  const modelController = createModelController({
+    pi,
+    getContext: () => ctx,
+    hasPendingInput: () => pendingRemoteInputIds.length > 0 || pendingLocalQueuedInputs.length > 0,
+    // Lazy import keeps older/OMP runtimes usable even when this optional API
+    // is absent. Do not substitute a locally guessed capability table.
+    loadThinkingLevels: async () => (await import("@earendil-works/pi-ai")).getSupportedThinkingLevels,
+  });
   const pendingRemoteInputIds: string[] = [];
   const pendingLocalQueuedInputs: Array<{
     inputId: string;
@@ -422,6 +437,8 @@ export default function (pi: ExtensionAPI) {
     send({
       type: "hello",
       role: ROLE,
+      capabilities: ["model_control_v1"],
+      configuration: modelController.configuration(),
       hostId: HOST_ID,
       hostname: os.hostname(),
       launchRequestId: LAUNCH_REQUEST_ID,
@@ -701,6 +718,15 @@ export default function (pi: ExtensionAPI) {
   async function handleServerMessage(message: ServerMessage) {
     if (!ctx) return;
 
+    if (message.type === "session_request") {
+      const response = await modelController.run(message);
+      send(response);
+      if (message.operation === "configure" && getSessionGuid() === message.sessionGuid) {
+        emitSessionEvent({ type: "configuration", configuration: modelController.configuration() });
+      }
+      return;
+    }
+
     if (message.type === "abort") {
       await Promise.resolve(ctx.abort());
       return;
@@ -736,6 +762,10 @@ export default function (pi: ExtensionAPI) {
 
   async function dispatchIncomingInput(text: string, inputId: string | null = null) {
     if (!ctx) return;
+    if (modelController.isConfiguring()) {
+      emitSessionEvent({ type: "remote_input_failed", inputId });
+      return;
+    }
     const isExtensionCommand = isExtensionCommandInput(text);
     if (inputId && isExtensionCommand) {
       // Extension commands execute without producing a user message, so there
@@ -936,6 +966,11 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("input", async (event, context) => {
+    if (modelController.isConfiguring()) {
+      if (event.source === "interactive") context.ui?.setEditorText?.(event.text);
+      context.ui?.notify("Model configuration in progress; please submit again when it completes", "warning");
+      return { action: "handled" as const };
+    }
     if (event.source !== "interactive") return;
     const isQueuedInput =
       event.streamingBehavior === "steer" ||
@@ -1154,7 +1189,22 @@ export default function (pi: ExtensionAPI) {
       modelId: event.model.id,
       contextWindowTokens: getContextWindowTokens(event.model),
     });
+    if (!modelController.isConfiguring()) {
+      emitSessionEvent({ type: "configuration", configuration: modelController.configuration() });
+    }
   });
+
+  // Runtimes that do not expose this optional event still publish configuration
+  // after remote changes and in their reconnect snapshot.
+  try {
+    pi.on("thinking_level_select", async () => {
+      if (!modelController.isConfiguring()) {
+        emitSessionEvent({ type: "configuration", configuration: modelController.configuration() });
+      }
+    });
+  } catch {
+    // Unsupported event on an older runtime.
+  }
 
   pi.on("session_shutdown", async () => {
     shuttingDown = true;
@@ -1251,11 +1301,14 @@ function sanitizeMessage(
   if (message.role === "assistant") {
     const text = extractAssistantText(message.content);
     const thinkingText = extractAssistantThinkingText(message.content);
+    const errorMessage = message.stopReason === "error" && typeof message.errorMessage === "string"
+      ? normalizeText(message.errorMessage)
+      : "";
     if (!text && !thinkingText && message.stopReason === "toolUse") return null;
     return {
       role: "assistant",
       timestamp: message.timestamp,
-      text: text || (message.stopReason === "toolUse" ? "" : `[${message.stopReason || "done"}]`),
+      text: formatAssistantText(text, errorMessage, message.stopReason),
       thinkingText: thinkingText || undefined,
       stopReason: message.stopReason,
     };
@@ -1330,6 +1383,16 @@ function extractAssistantThinkingText(content: any) {
       .map((part: any) => part.thinking || "")
       .join("\n\n"),
   );
+}
+
+function formatAssistantText(text: string, errorMessage: string, stopReason: any) {
+  if (errorMessage) {
+    const formattedError = /^error\s*:/i.test(errorMessage)
+      ? errorMessage
+      : `Error: ${errorMessage}`;
+    return normalizeText(text ? `${text}\n\n${formattedError}` : formattedError);
+  }
+  return text || (stopReason === "toolUse" ? "" : `[${stopReason || "done"}]`);
 }
 
 function extractToolCalls(content: any): ToolCallInfo[] {

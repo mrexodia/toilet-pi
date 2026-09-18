@@ -12,6 +12,8 @@ import {
   type ServerMessage,
   type SessionEvent,
   type SessionSnapshot,
+  type SessionRequest,
+  type SessionResponse,
 } from './protocol.js'
 import type {
   ActiveTool,
@@ -51,6 +53,10 @@ export function createServerCore(
   const clients = new Map<string, ClientState>()
   const authContexts = new Map<string, ConnectionAuth>()
   const pendingSessionSnapshotLoads = new Map<string, unknown>()
+  const runnerCapabilities = new Map<string, Set<string>>()
+  const pendingRequests = new Map<string, {
+    requester: string; runner: string; request: SessionRequest; timeout: unknown
+  }>()
   const maxSessionHistoryBytes =
     typeof config.maxSessionHistoryBytes === 'number' &&
     Number.isFinite(config.maxSessionHistoryBytes) &&
@@ -129,7 +135,113 @@ export function createServerCore(
   }
 
   function onClose(connId: string): void {
+    runnerCapabilities.delete(connId)
+    for (const [id, pending] of pendingRequests) {
+      if (pending.requester === connId) {
+        timers.clearTimeout(pending.timeout)
+        pendingRequests.delete(id)
+      } else if (pending.runner === connId) {
+        failRequest(id, 'disconnected', 'Runner disconnected; command outcome may be unknown. Inspect state before retrying.')
+      }
+    }
     handleClose(connId)
+  }
+
+  function requestError(connId: string, request: SessionRequest, code: string, message: string): void {
+    send(connId, { type: 'session_response', requestId: request.requestId,
+      sessionGuid: request.sessionGuid, success: false, error: { code, message } })
+  }
+
+  function failRequest(id: string, code: string, message: string): void {
+    const pending = pendingRequests.get(id)
+    if (!pending) return
+    timers.clearTimeout(pending.timeout)
+    pendingRequests.delete(id)
+    requestError(pending.requester, pending.request, code, message)
+  }
+
+  function isConfiguring(sessionGuid: string): boolean {
+    return Array.from(pendingRequests.values()).some(p =>
+      p.request.sessionGuid === sessionGuid && p.request.operation === 'configure')
+  }
+
+  function handleSessionRequest(connId: string, request: SessionRequest): void {
+    const ownRequests = Array.from(pendingRequests.values()).filter(p => p.requester === connId)
+    if (ownRequests.some(p => p.request.requestId === request.requestId)) {
+      requestError(connId, request, 'duplicate_request', 'Request ID is already pending')
+      return
+    }
+    if (ownRequests.length >= 32 || pendingRequests.size >= 256) {
+      requestError(connId, request, 'overloaded', 'Too many pending requests')
+      return
+    }
+    const session = getKnownSession(request.sessionGuid)
+    const runner = getOwnerConnection(session)
+    const runnerClient = runner ? clients.get(runner) : null
+    const ownsSession = runnerClient && (runnerClient.role === 'interactive' || runnerClient.role === 'background') &&
+      runnerClient.sessionGuid === request.sessionGuid
+    if (!session || !runner || !ownsSession) {
+      requestError(connId, request, session ? 'inactive' : 'unknown_session',
+        session ? 'Session is inactive; resume it explicitly before querying runtime capabilities or configuration' : 'Unknown session')
+      return
+    }
+    if (!runnerCapabilities.get(runner)?.has('model_control_v1')) {
+      requestError(connId, request, 'unsupported', 'Runner does not support model control; update its extension when convenient')
+      return
+    }
+    if (isConfiguring(session.sessionGuid) || (request.operation === 'configure' &&
+        (session.busy || session.queuedInputs.length > 0 || session.pendingInputs.length > 0))) {
+      requestError(connId, request, 'busy', 'Session is busy, queued, or being configured; wait or abort first')
+      return
+    }
+    // Broker-generated IDs prevent collisions between independent clients.
+    const id = createId()
+    const timeout = timers.setTimeout(() => failRequest(id, 'timeout',
+      'Runner response timed out; command outcome may be unknown. Inspect state before retrying.'), 15000)
+    pendingRequests.set(id, { requester: connId, runner, request, timeout })
+    if (!send(runner, {
+      type: 'session_request', requestId: id, sessionGuid: request.sessionGuid, operation: request.operation,
+      ...(request.provider !== undefined ? { provider: request.provider, modelId: request.modelId } : {}),
+      ...(request.thinkingLevel !== undefined ? { thinkingLevel: request.thinkingLevel } : {}),
+    })) {
+      failRequest(id, 'disconnected', 'Could not contact runner; inspect state before retrying')
+    }
+  }
+
+  function handleSessionResponse(connId: string, response: SessionResponse): void {
+    const pending = pendingRequests.get(response.requestId)
+    if (!pending || pending.runner !== connId || pending.request.sessionGuid !== response.sessionGuid) return
+    const session = sessions.get(response.sessionGuid)
+    if (!session || getOwnerConnection(session) !== connId) {
+      failRequest(response.requestId, 'owner_changed', 'Session owner changed; inspect state before retrying')
+      return
+    }
+    if (response.success && pending.request.operation === 'get_models' && !response.data?.models) {
+      failRequest(response.requestId, 'invalid_response', 'Runner omitted the model catalogue')
+      return
+    }
+    timers.clearTimeout(pending.timeout)
+    pendingRequests.delete(response.requestId)
+    // Project onto the public schema; never forward arbitrary model/auth fields.
+    const data = response.success ? response.data : undefined
+    const configuration = data ? {
+      provider: data.configuration.provider, modelId: data.configuration.modelId,
+      thinkingLevel: data.configuration.thinkingLevel,
+    } : undefined
+    if (response.success && configuration) {
+      session.configuration = configuration
+      session.model = configuration.modelId
+      sendToAttached(session.sessionGuid, { type: 'session_event', sessionGuid: session.sessionGuid,
+        event: { type: 'configuration', configuration } })
+    }
+    send(pending.requester, {
+      type: 'session_response', requestId: pending.request.requestId,
+      sessionGuid: response.sessionGuid, success: response.success,
+      ...(response.success && data && configuration ? { data: { configuration,
+        ...(data.models ? { models: data.models.map(m => ({ provider: m.provider, id: m.id,
+          name: m.name, thinkingLevels: m.thinkingLevels })) } : {}),
+      } } : { error: { code: response.error!.code, message: response.error!.message } }),
+    })
   }
 
   function handleHello(connId: string, message: HelloMessage): void {
@@ -218,6 +330,10 @@ export function createServerCore(
   }
 
   async function handleWebMessage(connId: string, message: ClientMessage): Promise<void> {
+    if (message.type === 'session_request') {
+      handleSessionRequest(connId, message)
+      return
+    }
     if (message.type === 'attach') {
       const sessionGuid = typeof message.sessionGuid === 'string' ? message.sessionGuid : null
       const state = webClients.get(connId)
@@ -245,6 +361,10 @@ export function createServerCore(
         return
       }
 
+      if (isConfiguring(session.sessionGuid)) {
+        send(connId, { type: 'error', message: 'Session is being configured; retry input after configuration completes' })
+        return
+      }
       const inputId = createId()
       const target = getOwnerConnection(session)
       const shouldQueueVisibly = !target || session.busy
@@ -443,6 +563,12 @@ export function createServerCore(
     const session = sessions.get(client.sessionGuid)
     if (!session) return
 
+    if (message.type === 'session_response') {
+      if (message.sessionGuid !== client.sessionGuid) return
+      handleSessionResponse(connId, message)
+      return
+    }
+
     if (message.type === 'released') {
       if (client.role === 'background' && session.backgroundConn === connId) {
         session.backgroundConn = null
@@ -465,6 +591,7 @@ export function createServerCore(
     }
 
     if (message.type !== 'session_event') return
+    if (getOwnerConnection(session) !== connId) return
     if (message.sessionGuid && message.sessionGuid !== client.sessionGuid) return
 
     applySessionEvent(session, message.event)
@@ -479,6 +606,7 @@ export function createServerCore(
         'message',
         'busy',
         'model',
+        'configuration',
         'usage',
         'tool_start',
         'tool_update',
@@ -496,6 +624,8 @@ export function createServerCore(
   function registerRunner(connId: string, message: HelloRunnerMessage, hostId: string): void {
     if (!message.sessionGuid) return
     const session = getOrCreateSession(message.sessionGuid)
+    runnerCapabilities.set(connId, new Set(message.capabilities || []))
+    session.configuration = message.configuration
     if (message.role === 'interactive') {
       replaceConnection(session, 'interactiveConn', connId)
       session.pendingInteractiveConn = connId
@@ -573,6 +703,11 @@ export function createServerCore(
       })
     }
 
+    for (const [id, pending] of pendingRequests) {
+      if (pending.request.sessionGuid === session.sessionGuid && getOwnerConnection(session) !== pending.runner) {
+        failRequest(id, 'owner_changed', 'Session owner changed; inspect state before retrying')
+      }
+    }
     deliverPendingInputs(session)
     broadcastOverview()
     notifySessionMeta(session.sessionGuid)
@@ -599,6 +734,10 @@ export function createServerCore(
     session.updatedAt = Date.now()
 
     switch (event.type) {
+      case 'configuration':
+        session.configuration = event.configuration
+        session.model = event.configuration.modelId
+        break
       case 'message':
         if (event.message) {
           session.history.push(event.message)
@@ -907,6 +1046,7 @@ export function createServerCore(
       costUsd: session.costUsd,
       busy: session.busy,
       history: session.history,
+      ...(session.configuration ? { configuration: session.configuration } : {}),
       streamingText: session.streamingText,
       streamingThinkingText: session.streamingThinkingText,
       activeTools: Array.from(session.activeTools.values()),

@@ -5,6 +5,7 @@ import type {
   RunnerRole,
   SanitizedMessage,
   ServerMessage,
+  SessionConfiguration,
 } from './protocol.js'
 
 export interface Transport {
@@ -86,6 +87,7 @@ export type ClientState =
     }
 
 export interface SessionState {
+  configuration?: SessionConfiguration
   sessionGuid: string
   interactiveConn: string | null
   backgroundConn: string | null
