@@ -2,6 +2,22 @@
   "name": "toilet-pi",
   "version": "2.0.0",
   "description": "Remote control pi sessions from a central web UI",
+  "author": "mrexodia",
+  "license": "MPL-2.0",
+  "homepage": "https://github.com/mrexodia/toilet-pi#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mrexodia/toilet-pi.git"
+  },
+  "bugs": {
+    "url": "https://github.com/mrexodia/toilet-pi/issues"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "type": "module",
   "bin": {
     "toilet-pi": "./cli/toilet-pi.js"
@@ -28,7 +44,7 @@
     "setup": "npm install && npm install --prefix server && npm run build:client --prefix server"
   },
   "dependencies": {
-    "ws": "^8.18.0"
+    "ws": "^8.21.3"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*"
@@ -45,7 +61,5 @@
     "websocket",
     "remote-control",
     "daemon"
-  ],
-  "author": "",
-  "license": "MPL-2.0"
+  ]
 }
