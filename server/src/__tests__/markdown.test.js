@@ -48,6 +48,19 @@ describe('assistant Markdown', () => {
 		expect(row.querySelector('a').hasAttribute('href')).toBe(false);
 		expect(row.querySelector('a[href]').getAttribute('href')).toBe('https://example.com');
 	});
+	it('only makes full HTTP URLs clickable', () => {
+		const row = renderAssistantStream('[relative](./docs/cli.md) [root](/docs/cli.md) [fragment](#usage) [protocol-relative](//example.com/docs) [http](http://example.com/docs) [https](https://example.com/docs)');
+		const links = Object.fromEntries([...row.querySelectorAll('a')]
+			.map((link) => [link.textContent, link.getAttribute('href')]));
+		expect(links).toEqual({
+			relative: null,
+			root: null,
+			fragment: null,
+			'protocol-relative': null,
+			http: 'http://example.com/docs',
+			https: 'https://example.com/docs',
+		});
+	});
 	it('reuses completed Markdown while streaming instead of reparsing history', () => {
 		const session = { history: Array.from({ length: 200 }, (_, i) => ({
 			role: 'assistant', text: `**Reply ${i}**`,

@@ -7,6 +7,7 @@ export function renderMarkdown(text) {
 			'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'ul', 'ol', 'li', 'blockquote',
 			'table', 'thead', 'tbody', 'tr', 'th', 'td'],
 		ALLOWED_ATTR: ['href', 'title', 'start', 'align'],
+		ALLOWED_URI_REGEXP: /^https?:\/\//i,
 		ALLOW_DATA_ATTR: false,
 		ALLOW_ARIA_ATTR: false,
 	});
