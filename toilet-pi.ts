@@ -327,6 +327,30 @@ export default function (pi: ExtensionAPI) {
     return context?.sessionManager.getSessionId() || null;
   }
 
+  function resetSessionTracking(context: ExtensionContext) {
+    inputTracker.reset();
+    lastStreamText = null;
+    lastThinkingText = null;
+    pendingAssistantAbortMessage = false;
+    pendingRemoteInputIds.length = 0;
+    pendingLocalQueuedInputs.length = 0;
+    pendingToolCalls.clear();
+    completedToolCalls.clear();
+    lastToolUpdateTimes.clear();
+    ({ contextTokens: sessionContextTokens, costUsd: sessionCostUsd } = getSessionUsageStats(context));
+    lastReportedSessionName = getSessionName(context);
+    lastReportedHasPendingMessages = !!context.hasPendingMessages();
+  }
+
+  async function reconnectForSessionChange() {
+    const sessionGuid = getSessionGuid();
+    if (!ctx || !sessionGuid || sessionGuid === currentSessionGuid) return false;
+    currentSessionGuid = sessionGuid;
+    resetSessionTracking(ctx);
+    await connect(true);
+    return true;
+  }
+
   function getSessionName(context: ExtensionContext | null = ctx) {
     try {
       const branch = context?.sessionManager.getBranch?.();
@@ -443,6 +467,12 @@ export default function (pi: ExtensionAPI) {
 
   function sendHello() {
     if (!ctx) return;
+    const sessionGuid = getSessionGuid(ctx);
+    if (!sessionGuid) return;
+    if (sessionGuid !== currentSessionGuid) {
+      void reconnectForSessionChange();
+      return;
+    }
     send({
       type: "hello",
       role: ROLE,
@@ -451,7 +481,7 @@ export default function (pi: ExtensionAPI) {
       hostId: HOST_ID,
       hostname: os.hostname(),
       launchRequestId: LAUNCH_REQUEST_ID,
-      sessionGuid: ctx.sessionManager.getSessionId(),
+      sessionGuid,
       sessionFile: ctx.sessionManager.getSessionFile() || null,
       sessionName: getSessionName(ctx),
       cwd: ctx.sessionManager.getCwd(),
@@ -524,6 +554,8 @@ export default function (pi: ExtensionAPI) {
   async function connect(force = false) {
     if (!ctx || shuttingDown) return;
 
+    if (force) closeSocket("session changed");
+
     connectionConfig = await loadConnectionConfig();
     const connectUrl = getConnectUrl();
     if (!connectUrl) {
@@ -532,7 +564,6 @@ export default function (pi: ExtensionAPI) {
       return;
     }
 
-    if (force) closeSocket("reconfigure");
     if (
       ws &&
       (ws.readyState === WebSocket.OPEN ||
@@ -888,6 +919,10 @@ export default function (pi: ExtensionAPI) {
   function emitSessionEvent(event: Record<string, unknown>) {
     const sessionGuid = getSessionGuid(ctx);
     if (!sessionGuid) return;
+    if (sessionGuid !== currentSessionGuid) {
+      void reconnectForSessionChange();
+      return;
+    }
     send({
       type: "session_event",
       sessionGuid,
@@ -973,36 +1008,61 @@ export default function (pi: ExtensionAPI) {
     }, 1000);
   }
 
+  function registerOptionalSessionEvent(
+    eventName: string,
+    handler: (event: unknown, context: ExtensionContext) => Promise<void> | void,
+  ) {
+    try {
+      const register = pi.on as unknown as (
+        event: string,
+        eventHandler: (event: unknown, context: ExtensionContext) => Promise<void> | void,
+      ) => void;
+      register.call(pi, eventName, handler);
+    } catch {
+      // The Pi and OMP extension APIs expose different session event sets.
+    }
+  }
+
+  async function handleOmpSessionReplacement(context: ExtensionContext) {
+    ctx = context;
+    if (await reconnectForSessionChange()) return;
+    inputTracker.invalidate();
+    resetSessionTracking(context);
+    sendHello();
+  }
+
   pi.on("session_start", async (_event, context) => {
+    const previousSessionGuid = currentSessionGuid;
     ctx = context;
     currentSessionGuid = getSessionGuid(context);
-    inputTracker.reset();
+    const sessionChanged = previousSessionGuid !== null && previousSessionGuid !== currentSessionGuid;
+    if (sessionChanged) closeSocket("session changed");
     try {
       const { VERSION } = await import("@earendil-works/pi-coding-agent");
       const [major, minor, patch] = VERSION.split(".").map(Number);
       supportsSettlement = settlementHandlerRegistered && major === 0 && (minor > 85 || (minor === 85 && patch >= 1));
     } catch { supportsSettlement = false; }
-    lastStreamText = null;
-    lastThinkingText = null;
-    pendingAssistantAbortMessage = false;
-    pendingRemoteInputIds.length = 0;
-    pendingLocalQueuedInputs.length = 0;
-    pendingToolCalls.clear();
-    completedToolCalls.clear();
-    lastToolUpdateTimes.clear();
     shuttingDown = false;
-    ({ contextTokens: sessionContextTokens, costUsd: sessionCostUsd } = getSessionUsageStats(context));
-    lastReportedSessionName = getSessionName(context);
-    lastReportedHasPendingMessages = !!context.hasPendingMessages();
+    resetSessionTracking(context);
     startSessionStatePolling();
     connectionConfig = await loadConnectionConfig();
     if (connectionConfig) {
       updateStatus("connecting", false);
-      await connect();
+      const reusedConnection = !sessionChanged && isOpen();
+      await connect(sessionChanged);
+      if (reusedConnection) sendHello();
       return;
     }
     updateStatus("unconfigured", false);
     if (REQUIRE_SERVER) context.shutdown();
+  });
+
+  registerOptionalSessionEvent("session_switch", async (_event, context) => {
+    await handleOmpSessionReplacement(context);
+  });
+
+  registerOptionalSessionEvent("session_branch", async (_event, context) => {
+    await handleOmpSessionReplacement(context);
   });
 
   pi.on("input", async (event, context) => {
@@ -1082,7 +1142,29 @@ export default function (pi: ExtensionAPI) {
   }
 
   try {
+    pi.on("session_info_changed", async () => {
+      if (await reconnectForSessionChange()) return;
+      syncSessionName(true);
+    });
+  } catch {
+    // Optional on older runtimes; polling remains as a compatibility fallback.
+  }
+
+  try {
+    pi.on("session_compact", async () => {
+      if (await reconnectForSessionChange()) return;
+      if (ctx) {
+        ({ contextTokens: sessionContextTokens, costUsd: sessionCostUsd } = getSessionUsageStats(ctx));
+      }
+      sendHello();
+    });
+  } catch {
+    // Optional on older runtimes.
+  }
+
+  try {
     pi.on("session_tree", async () => {
+      if (await reconnectForSessionChange()) return;
       inputTracker.invalidate();
       sendHello();
     });
@@ -1134,6 +1216,7 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("message_end", async (event) => {
+    if (await reconnectForSessionChange()) return;
     inputTracker.messageEnd(event.message);
     if (event.message.role === "assistant") {
       pendingAssistantAbortMessage = false;
@@ -1174,10 +1257,6 @@ export default function (pi: ExtensionAPI) {
     if (event.message.role === "assistant") {
       lastStreamText = null;
       lastThinkingText = null;
-    }
-    if (getSessionGuid() !== currentSessionGuid) {
-      currentSessionGuid = getSessionGuid();
-      sendHello();
     }
     syncSessionName();
   });

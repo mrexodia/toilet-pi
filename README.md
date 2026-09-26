@@ -112,6 +112,7 @@ Open the web UI to:
 - abort an active run
 
 Normal local pi and OMP sessions connect automatically through `toilet-pi.ts`.
+OMP preserves extension instances across `/new`, `/resume`, `/fork`, and branch operations, so Toilet-Pi handles OMP's `session_switch` and `session_branch` events and reconnects whenever the session GUID changes. Pi's separate shutdown/start replacement lifecycle is also supported. Same-identity reloads, tree navigation, and successful compaction refresh the existing connection instead.
 
 ## CLI
 
