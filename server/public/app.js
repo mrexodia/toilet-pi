@@ -81,7 +81,7 @@ const sendBtnEl = document.getElementById("send-btn");
 const abortBtnEl = document.getElementById("abort-btn");
 const modelPickerRoot = document.getElementById("model-picker");
 const modelPicker = modelPickerRoot ? createModelPicker({ root: modelPickerRoot, send,
-	getSession: () => currentSession, notify: showNotice }) : { receive() {}, sync() {} };
+	getSession: () => currentSession, notify: showNotice, label: document.getElementById("model-picker-label") }) : { receive() {}, sync() {} };
 
 registerPwa();
 updateLiveTurnDetailsToggleUi();
@@ -1836,9 +1836,37 @@ function buildMessageElement(className, text, timestamp, status = "", thinkingTe
 			textEl.textContent = displayText;
 		}
 		el.appendChild(textEl);
+		if (text && el.classList.contains("assistant") && !el.classList.contains("streaming")) {
+			el.appendChild(buildCopyActions(text));
+		}
 	}
 	row.appendChild(el);
 	return row;
+}
+
+const COPY_ICON = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" aria-hidden="true"><rect x="5.5" y="5.5" width="8" height="8" rx="1.5"/><path d="M10.5 5.5V3.5a1.5 1.5 0 0 0-1.5-1.5H4a1.5 1.5 0 0 0-1.5 1.5V9A1.5 1.5 0 0 0 4 10.5h1.5"/></svg>';
+const CHECK_ICON = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 8.5l3.2 3L13 4.5"/></svg>';
+
+function buildCopyActions(markdown) {
+	const actions = document.createElement("div");
+	actions.className = "message-actions";
+	const button = document.createElement("button");
+	button.type = "button";
+	button.className = "message-copy";
+	button.title = "Copy markdown";
+	button.setAttribute("aria-label", "Copy markdown");
+	button.innerHTML = COPY_ICON;
+	button.addEventListener("click", async () => {
+		await copyText(markdown);
+		button.classList.add("copied");
+		button.innerHTML = CHECK_ICON;
+		setTimeout(() => {
+			button.classList.remove("copied");
+			button.innerHTML = COPY_ICON;
+		}, 1200);
+	});
+	actions.appendChild(button);
+	return actions;
 }
 
 function collapseThinkingPreview(text) {

@@ -1510,10 +1510,176 @@
 				min-width: 48px;
 			}
 		}
-		.model-controls { margin-top: 8px; font-size: 0.85rem; }
-		.model-controls > div { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 0; }
-		.model-controls select { max-width: min(100%, 32rem); }
-		.model-controls span { flex-basis: 100%; overflow-wrap: anywhere; }
+		.model-controls {
+			background: var(--panel);
+			border-bottom: 1px solid var(--border);
+			font-size: 13px;
+		}
+
+		.model-controls > summary {
+			display: flex;
+			align-items: center;
+			gap: 8px;
+			padding: 8px 16px;
+			cursor: pointer;
+			list-style: none;
+			user-select: none;
+			color: var(--muted);
+			min-width: 0;
+		}
+
+		.model-controls > summary::-webkit-details-marker {
+			display: none;
+		}
+
+		.model-controls > summary::before {
+			content: "";
+			flex: 0 0 auto;
+			width: 6px;
+			height: 6px;
+			border-right: 1.5px solid currentColor;
+			border-bottom: 1.5px solid currentColor;
+			transform: rotate(-45deg);
+			transition: transform 0.15s ease;
+			margin-right: 2px;
+		}
+
+		.model-controls[open] > summary::before {
+			transform: rotate(45deg);
+		}
+
+		.model-controls > summary:hover {
+			color: var(--text);
+		}
+
+		.model-controls-title {
+			font-size: 11px;
+			font-weight: 600;
+			letter-spacing: 0.04em;
+			text-transform: uppercase;
+		}
+
+		.model-controls-current {
+			min-width: 0;
+			overflow: hidden;
+			text-overflow: ellipsis;
+			white-space: nowrap;
+			font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+			font-size: 12px;
+			color: var(--text);
+			background: var(--panel-3);
+			border: 1px solid var(--border);
+			border-radius: 999px;
+			padding: 2px 10px;
+		}
+
+		.model-controls-current:empty {
+			display: none;
+		}
+
+		#model-picker {
+			display: grid;
+			grid-template-columns: auto minmax(0, 1fr) minmax(90px, auto) auto;
+			gap: 8px;
+			align-items: center;
+			padding: 0 16px 10px;
+		}
+
+		#model-picker button {
+			padding: 7px 12px;
+			white-space: nowrap;
+		}
+
+		#model-picker button:disabled,
+		#model-picker select:disabled {
+			opacity: 0.5;
+			cursor: not-allowed;
+		}
+
+		#model-picker select {
+			appearance: none;
+			-webkit-appearance: none;
+			min-width: 0;
+			width: 100%;
+			font: inherit;
+			font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+			font-size: 12px;
+			color: var(--text);
+			background-color: var(--bg);
+			background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%238b949e' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+			background-repeat: no-repeat;
+			background-position: right 10px center;
+			border: 1px solid var(--border);
+			border-radius: 10px;
+			padding: 8px 28px 8px 10px;
+			cursor: pointer;
+		}
+
+		#model-picker select:focus-visible,
+		#model-picker button:focus-visible {
+			outline: 2px solid var(--blue);
+			outline-offset: 1px;
+		}
+
+		#model-picker [role="status"] {
+			grid-column: 1 / -1;
+			font-size: 12px;
+			color: var(--muted);
+			overflow-wrap: anywhere;
+		}
+
+		#model-picker [role="status"]:empty {
+			display: none;
+		}
+
+		@media (max-width: 560px) {
+			#model-picker {
+				grid-template-columns: minmax(0, 1fr) auto;
+			}
+
+			#model-picker select:first-of-type {
+				grid-column: 1 / -1;
+				order: -1;
+			}
+		}
+
+		.message-actions {
+			display: flex;
+			justify-content: flex-end;
+			margin: 4px -6px -6px 0;
+		}
+
+		.message-copy {
+			display: inline-flex;
+			align-items: center;
+			justify-content: center;
+			padding: 4px;
+			background: transparent;
+			border: 1px solid transparent;
+			border-radius: 6px;
+			color: var(--muted);
+			opacity: 0.6;
+			transition: opacity 0.15s ease, color 0.15s ease;
+		}
+
+		.message-copy:hover,
+		.message-copy:focus-visible {
+			opacity: 1;
+			color: var(--text);
+			background: var(--panel-2);
+			border-color: var(--border);
+		}
+
+		.message-copy.copied {
+			opacity: 1;
+			color: #7ee787;
+		}
+
+		.message-copy svg {
+			display: block;
+			width: 14px;
+			height: 14px;
+		}
 	</style>
 </head>
 <body>
@@ -1627,7 +1793,7 @@
 			</div>
 
 			<details class="model-controls">
-				<summary>Session model / thinking</summary>
+				<summary><span class="model-controls-title">Model</span><span id="model-picker-label" class="model-controls-current"></span></summary>
 				<div id="model-picker"></div>
 			</details>
 

@@ -1,5 +1,5 @@
 // Same correlated model-control API as the CLI. No implicit resume or retry.
-export function createModelPicker({ root, send, getSession, notify, document = root.ownerDocument }) {
+export function createModelPicker({ root, send, getSession, notify, label = null, document = root.ownerDocument }) {
   let sessionId = null;
   let models = [];
   let configuration = null;
@@ -56,6 +56,10 @@ export function createModelPicker({ root, send, getSession, notify, document = r
     model.disabled = unavailable || !models.length || session.busy || !!session.queuedInputs?.length;
     thinking.disabled = model.disabled;
     apply.disabled = model.disabled;
+    if (label) {
+      const current = configuration || session.configuration;
+      label.textContent = current ? `${current.modelId} · ${current.thinkingLevel}` : (session.model || "");
+    }
   }
   function request(operation, selection = {}) {
     if (pending || !sessionId || !connected) return;
