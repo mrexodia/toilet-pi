@@ -1,4 +1,3 @@
-import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import os from "node:os";
@@ -18,6 +17,7 @@ import {
   scanSupervisorSessions,
   selectSupervisorTarget,
 } from "./supervisor-runtime.js";
+import { spawnRuntimeCommand } from "./runtime-process.js";
 
 const HOST_ID = process.env.TOILET_PI_HOST_ID || os.hostname();
 const RUNTIME_CONFIG = resolveSupervisorRuntimeConfig();
@@ -358,7 +358,7 @@ async function startBackgroundRunner(message) {
   } else if (invocation.agentDirOverride) {
     childEnv.PI_CODING_AGENT_DIR = invocation.agentDirOverride;
   }
-  const child = spawn(invocation.command, invocation.args, {
+  const child = spawnRuntimeCommand(invocation.command, invocation.args, {
     cwd: message.cwd || PROJECT_DIR,
     stdio: ["pipe", "pipe", "pipe"],
     detached: USE_PROCESS_GROUPS,

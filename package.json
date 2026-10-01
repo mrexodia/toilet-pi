@@ -44,6 +44,7 @@
     "setup": "npm install && npm install --prefix server && npm run build:client --prefix server"
   },
   "dependencies": {
+    "cross-spawn": "^7.0.6",
     "ws": "^8.21.3"
   },
   "peerDependencies": {
