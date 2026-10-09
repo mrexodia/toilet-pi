@@ -577,8 +577,12 @@ export class Runner {
 			}
 			case "message_start":
 				if (event.message.role === "assistant") {
-					this.#partial.reset();
+					this.#partial.start(event.message);
 					this.#emit({ type: "assistant_stream_start" });
+					if (this.#partial.text !== "" || this.#partial.thinking !== "") {
+						this.#lastStreamAt = Date.now();
+						this.#emit({ type: "assistant_stream_update", text: this.#partial.text, thinkingText: this.#partial.thinking });
+					}
 				}
 				return;
 			case "message_update": {

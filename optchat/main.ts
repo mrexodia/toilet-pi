@@ -179,7 +179,11 @@ async function follow(agent: Agent, out: Printer, onRunEnd: () => void): Promise
 		for (const event of events) {
 			switch (event.type) {
 				case "message_start":
-					if (event.message.role === "assistant") partial.reset();
+					if (event.message.role === "assistant") {
+						const added = partial.start(event.message);
+						if (added.thinking !== "") out.delta("mind", added.thinking);
+						if (added.text !== "") out.delta("text", added.text);
+					}
 					break;
 				case "message_update": {
 					const added = partial.apply(event.changes);

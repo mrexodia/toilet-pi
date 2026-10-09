@@ -19,6 +19,12 @@ export class StreamedMessage {
 		this.#shownThinking = "";
 	}
 
+	/** Start from a message's content: the first partial arrives whole, in `message_start`, with no update for it. */
+	start(message: { content: readonly { type: string; text?: string; thinking?: string }[] }): { text: string; thinking: string } {
+		this.reset();
+		return this.apply([{ type: "message", message: message as never }]);
+	}
+
 	get text(): string {
 		return this.#join("text");
 	}
