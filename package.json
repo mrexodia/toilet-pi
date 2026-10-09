@@ -40,6 +40,9 @@
     "server": "npm start --prefix server",
     "supervisor": "node supervisor.js",
     "client": "node cli/toilet-pi.js",
+    "optchat": "node optchat/main.ts",
+    "optchat:setup": "npm install --prefix optchat",
+    "optchat:test": "npm test --prefix optchat",
     "test": "node --test test/*.test.js",
     "setup": "npm install && npm install --prefix server && npm run build:client --prefix server"
   },

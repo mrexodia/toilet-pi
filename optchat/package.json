@@ -1,0 +1,26 @@
+{
+  "name": "toilet-pi-optchat",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A long-running agent with a tree-of-summaries memory (optchat) on pi-durable, driven through Toilet-Pi",
+  "type": "module",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "scripts": {
+    "start": "node main.ts",
+    "test": "node --test test/*.test.ts"
+  },
+  "dependencies": {
+    "@earendil-works/chord": "1.1.0",
+    "@earendil-works/pi-ai": "1.1.0",
+    "@earendil-works/pi-coding-agent": "1.1.0",
+    "@earendil-works/pi-durable": "1.1.0",
+    "ws": "^8.21.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "@types/ws": "^8.18.2",
+    "typescript": "^5.9.3"
+  }
+}
