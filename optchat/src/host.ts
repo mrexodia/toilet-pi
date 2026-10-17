@@ -130,6 +130,23 @@ export function parseModel(spec: string | undefined): ModelRef | undefined {
 	return { provider: spec.slice(0, slash), modelId: spec.slice(slash + 1) };
 }
 
+/** Check catalog presence separately from credentials: getModel() also returns unconfigured providers' models. */
+export function validateModel(
+	runtime: Pick<ModelRuntime, "getModel" | "getProviderAuthStatus">,
+	choice: ModelRef,
+	role: "model" | "compactor",
+	home: string,
+): void {
+	const setting = `${role} ${choice.provider}/${choice.modelId}`;
+	const fix = `update ${role} in ${join(home, "optchat.json")} or pass --${role} provider/modelId`;
+	if (runtime.getModel(choice.provider, choice.modelId) === undefined) {
+		throw new Error(`${setting} is not available; ${fix}`);
+	}
+	if (!runtime.getProviderAuthStatus(choice.provider).configured) {
+		throw new Error(`${setting}: provider ${choice.provider} is not configured; log in with pi, or ${fix}`);
+	}
+}
+
 function harnessSettings(settings: SettingsManager): HarnessSettings {
 	return {
 		compaction: { enabled: false, backgroundTokens: 0 },
@@ -234,6 +251,10 @@ export async function openAgent(options: AgentOptions): Promise<Agent> {
 					: { ...chosen, thinkingLevel: config.compactorThinking }
 				: { ...compactor, ...(config.compactorThinking === undefined ? {} : { thinkingLevel: config.compactorThinking }) };
 		if (!options.readonly) {
+			// Validate the persisted turn model too: it can differ from pi's default on a resumed conversation.
+			const current = await root.agent(context);
+			validateModel(modelRuntime, current.model ?? chosen, "model", home);
+			validateModel(modelRuntime, compactorChoice ?? current.model ?? chosen, "compactor", home);
 			await optchat.configure(compactorChoice);
 			harness.resume();
 			await optchat.start();

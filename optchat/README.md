@@ -35,7 +35,10 @@ write and edit tools run there.
 
 The model and thinking level can also be changed from Toilet-Pi while the agent runs (the web UI's picker, or
 `toilet-pi model optchat provider/id --thinking high`), and the change is saved to `optchat.json`. The compactions'
-model is only set in `optchat.json`, by the wizard or by hand.
+model is only set in `optchat.json`, by the wizard or by hand. Changing pi's default provider does not replace
+these saved choices: update both `model` and `compactor` when switching providers, or remove `compactor` to use
+the turns' model for summaries. Startup checks both models' providers before resuming background work.
+Failed summaries stay queued, but retry only after new transcript entries, a model/thinking change, or restart/reconfiguration—not on their own failure notifications.
 
 The home can carry more, loaded once at start and never from pi's global directories:
 

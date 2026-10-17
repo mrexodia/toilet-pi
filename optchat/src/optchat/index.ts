@@ -145,6 +145,8 @@ export class Optchat {
 			const chat = await tx.doc(ChatDoc, this.root.id);
 			if (compactor === undefined) delete chat.compactor;
 			else chat.compactor = { ...compactor };
+			// An explicit reconfiguration (including startup) allows previously failed calls to try again.
+			delete chat.failed;
 		}, this.#context);
 	}
 

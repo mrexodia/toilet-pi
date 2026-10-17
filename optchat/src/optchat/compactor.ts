@@ -101,6 +101,13 @@ async function sourceOf(tx: Tx, conversationId: ConversationId, p: Part): Promis
 	return mergeSource(texts[0]!, texts[1]!);
 }
 
+/** A failed call is retried only after new transcript entries or a change to the effective model/thinking level. */
+function retryKey(chat: ChatState, agent: Agent): string {
+	const model = chat.compactor ?? agent.model;
+	// Task bookkeeping also advances `indexed`; only actual messages should enable another attempt.
+	return JSON.stringify([chat.count, model?.provider, model?.modelId, chat.compactor?.thinkingLevel ?? agent.thinkingLevel]);
+}
+
 /**
  * Start the ready nodes' compactions, up to JOBS at once, and store the ones that need no call (a source within
  * NODE bytes is its own node). Repeats while free nodes complete new pairs.
@@ -109,7 +116,9 @@ export async function pump(harness: Harness, root: Conversation, context: Contex
 	for (;;) {
 		const chat = await harness.snapshot(ChatDoc, root.id, context);
 		if (chat === undefined) return;
-		const picked = candidates(chat).slice(0, 64);
+		const agent = await root.agent(context);
+		const retry = retryKey(chat, agent);
+		const picked = candidates(chat).filter((p) => chat.failed?.[key(p)] !== retry).slice(0, 64);
 		if (picked.length === 0) return;
 		const stored = await root.commit(async (tx) => {
 			const sources = new Map<string, string>();
@@ -122,7 +131,7 @@ export async function pump(harness: Harness, root: Conversation, context: Contex
 			for (const p of picked) {
 				const k = key(p);
 				const source = sources.get(k);
-				if (source === undefined || built(live, p) || k in live.busy) continue;
+				if (source === undefined || built(live, p) || k in live.busy || live.failed?.[k] === retryKey(live, agent)) continue;
 				if (nbytes(source) <= NODE) {
 					const node = await tx.doc(NodeDoc, root.id, k, { text: source, size: nbytes(source) });
 					node.text = source;
@@ -274,17 +283,22 @@ export const Build = defineTask<BuildInput, BuildState, null>({
 	phases: {
 		call: async (task, runtime, context) => {
 			const p: Part = [task.input.l, task.input.i];
+			const chat = await runtime.snapshot(ChatDoc, runtime.conversationId, context);
+			const agent = await runtime.agent(context);
+			const retry = chat === undefined ? undefined : retryKey(chat, agent);
 			let made: Awaited<ReturnType<typeof compact>>;
 			try {
 				made = await compact(runtime, p, task.input.source, context);
 			} catch (error) {
 				if (runtime.signal.aborted) throw error;
 				runtime.report(error);
-				// The slot is freed and the node stays ready: it is tried again at the next message (optchat.md, section 4).
+				// Free the slot, but don't let this failure's document update schedule the same call again.
+				// The node stays ready for the next message or model change (optchat.md, section 4).
 				const message = error instanceof Error ? error.message : String(error);
 				await runtime.commit(async (tx) => {
 					const chat = await tx.doc(ChatDoc, runtime.conversationId);
 					delete chat.busy[key(p)];
+					if (retry !== undefined) chat.failed = { ...chat.failed, [key(p)]: retry };
 					return { status: "terminal", outcome: { status: "failed", error: { message } } };
 				}, context);
 				return;

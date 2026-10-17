@@ -42,6 +42,8 @@ export type ChatState = {
 	ready: number[][];
 	/** Nodes being built, "l/i" to the task building them. */
 	busy: Record<string, number>;
+	/** Failed nodes and the transcript/model fingerprint of their last attempt; unchanged work is not retried. */
+	failed?: Record<string, string>;
 	turn?: TurnState;
 	usage: Usage;
 	/** The compactions' model; the turns' model when absent. */

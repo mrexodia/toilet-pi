@@ -172,6 +172,58 @@ test("notes and turns are indexed, built, merged and zoomable", async () => {
 	await harness.close(context);
 });
 
+async function until(check: () => Promise<boolean>): Promise<void> {
+	const end = Date.now() + 5000;
+	while (!(await check())) {
+		assert.ok(Date.now() < end, "timed out waiting for background compaction");
+		await new Promise((resolve) => setTimeout(resolve, 10));
+	}
+}
+
+test("failed summaries do not retry themselves, but retry after a new entry or model change", async () => {
+	const faux = fauxProvider({ models: [{ id: "faux-1" }, { id: "faux-2" }] });
+	const fail = () => fauxAssistantMessage("", { stopReason: "error", errorMessage: "Provider is not configured: faux" });
+	faux.setResponses(Array.from({ length: 100 }, () => fail));
+	const models = createModels();
+	models.setProvider(faux.provider);
+	const { harness, root, optchat, reports } = await open(new MemoryStorage(), models, home);
+	try {
+		await (await optchat.note("long note ".repeat(100))).wait(context);
+		await until(async () => reports.length >= 1 && Object.keys((await optchat.state()).busy).length === 0);
+		// Failure commits, document watchers, repeated flushes and waiter kicks must not re-submit the call.
+		for (let i = 0; i < 10; i++) {
+			await optchat.flush();
+			await new Promise((resolve) => setTimeout(resolve, 10));
+		}
+		assert.equal(reports.length, 1);
+		assert.equal(faux.state.callCount, 1);
+		assert.deepEqual((await optchat.state()).ready[0], [0]);
+
+		await (await optchat.note("a new short message")).wait(context);
+		await until(async () => reports.length >= 2 && Object.keys((await optchat.state()).busy).length === 0);
+		await optchat.flush();
+		assert.equal(faux.state.callCount, 2);
+
+		// No new transcript entry is needed when the effective model changes.
+		await root.configure({ model: { provider: "faux", modelId: "faux-2" } }, context);
+		await optchat.flush();
+		await until(async () => reports.length >= 3 && Object.keys((await optchat.state()).busy).length === 0);
+		await optchat.flush();
+		assert.equal(faux.state.callCount, 3);
+
+		// Reconfiguration permits a retry after credentials are fixed, and success clears the failed marker.
+		faux.setResponses(Array.from({ length: 10 }, () => fauxAssistantMessage("summary")));
+		await optchat.configure(undefined);
+		await optchat.idle({ signal: AbortSignal.timeout(5000) });
+		assert.deepEqual((await optchat.state()).failed ?? {}, {});
+		assert.deepEqual((await optchat.state()).busy, {});
+		assert.equal(reports.length, 3);
+	} finally {
+		await optchat.stop();
+		await harness.close(context);
+	}
+});
+
 test("a restart keeps the view and finishes the builds it interrupted", async () => {
 	const seen: string[] = [];
 	const { models } = fauxModel(seen);

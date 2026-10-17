@@ -162,6 +162,7 @@ export function appendMessages(chat: ChatState, n: number): number[] {
 /** Record a built node: its size, its queue slot, and the parent it completes. True when it was new. */
 export function storeNode(chat: ChatState, p: Part, text: string): boolean {
 	delete chat.busy[key(p)];
+	if (chat.failed !== undefined) delete chat.failed[key(p)];
 	if (built(chat, p)) return false;
 	chat.sizes[key(p)] = nbytes(text);
 	readySet(chat, p, false);
