@@ -25,6 +25,7 @@ import { buildHistoryPage } from "../../history-page.js";
 import { createModelController } from "../../model-control.js";
 import { buildConnectUrl, parseToiletPiInput, readToiletPiConfig, redactUrlTokens } from "../../toilet-pi-config.js";
 import type { Agent } from "./host.ts";
+import { timestampLog } from "./log.ts";
 import { contentText, NOTE_KIND } from "./optchat/memory.ts";
 import { StreamedMessage } from "./stream.ts";
 
@@ -51,6 +52,7 @@ export type RunnerOptions = {
 	readonly name?: string;
 	/** A machine connect URL; default: the one `/toilet-pi setup` saved, or TOILET_PI_SERVER_URL. */
 	readonly connectUrl?: string;
+	/** Receives diagnostic lines prefixed with local time: [yyyy-mm-dd hh:mm:ss.SSS]. */
 	readonly log?: (text: string) => void;
 };
 
@@ -157,7 +159,8 @@ export class Runner {
 	constructor(options: RunnerOptions) {
 		this.#agent = options.agent;
 		this.#name = options.name ?? options.agent.name;
-		this.#log = options.log ?? ((text) => console.error(text));
+		const log = options.log ?? ((text: string) => console.error(text));
+		this.#log = (text) => log(timestampLog(text));
 		this.#connectUrlOption = options.connectUrl;
 	}
 

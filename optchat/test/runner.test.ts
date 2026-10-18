@@ -59,7 +59,8 @@ for (const busy of [true, false]) {
 		server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
 		await once(server, "listening");
 		const connected = once(server, "connection");
-		runner = new Runner({ agent, connectUrl: `ws://127.0.0.1:${(server.address() as AddressInfo).port}/connect?token=test`, log: () => {} });
+		const logs: string[] = [];
+		runner = new Runner({ agent, connectUrl: `ws://127.0.0.1:${(server.address() as AddressInfo).port}/connect?token=test`, log: (text) => logs.push(text) });
 		await runner.start();
 		const [socket] = await connected;
 		const messages: any[] = [];
@@ -100,5 +101,14 @@ for (const busy of [true, false]) {
 		socket.send(JSON.stringify({ type: "input", inputId: "web", text: "web follow-up" }));
 		await until(() => states("web").includes("settled"));
 		assert.deepEqual(calls.at(-1), { method: busy ? "steer" : "turn", text: "web follow-up", requestId: "web" });
+
+		socket.terminate();
+		await until(() => logs.some((line) => line.includes("disconnected (1006)")));
+		assert.ok(logs.some((line) => line.includes("connecting to")));
+		assert.ok(logs.some((line) => line.includes("connected as")));
+		for (const line of logs) {
+			assert.match(line, /^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3}\] /);
+			assert.ok(!line.includes("token=test"), "connect tokens must remain redacted");
+		}
 	});
 }
