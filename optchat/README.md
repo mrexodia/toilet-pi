@@ -39,6 +39,8 @@ model is only set in `optchat.json`, by the wizard or by hand. Changing pi's def
 these saved choices: update both `model` and `compactor` when switching providers, or remove `compactor` to use
 the turns' model for summaries. Startup checks both models' providers before resuming background work.
 Failed summaries stay queued, but retry only after new transcript entries, a model/thinking change, or restart/reconfiguration—not on their own failure notifications.
+If those failures block the tree and no calls can make progress, waiting for a turn or `compact` fails with a recovery
+message instead of hanging. Fix the provider/credentials and restart or reconfigure; the transcript is kept intact.
 
 The home can carry more, loaded once at start and never from pi's global directories:
 
@@ -107,6 +109,9 @@ Options and environment variables, each overriding `optchat.json` for one run:
   ready, and the `Build` task that makes one node with a model call, with retries and the "Too long" cut.
 - `src/optchat/extension.ts`: the system prompt, the `zoom` and `date` tools, the hook that gives each request
   `[tools] [system] [view] [message]` with the view frozen for the run, and the hook that clips tool output.
+- `src/optchat/cache.ts`: Anthropic Messages wire-format caching: four-line view blocks, the last whole one marked,
+  and no mark on a compaction's unique task. Each view merges on its own ceiling; a turn-view merge never forces a
+  compactor-view merge.
 - `src/runner.ts`: the Toilet-Pi runner protocol, with the hub's input ids as durable request ids.
 - `src/orchestrate.ts`: the hub tools and the reporter task.
 - `src/host.ts`: pi's model runtime and settings, the Harness over SQLite, the coding tools.
@@ -115,11 +120,14 @@ What differs from the document, knowingly:
 
 - Thoughts are never summarized and never shown, but they stay in the durable transcript, because providers need
   them back during a run's tool calls. The document never logs them at all.
-- Anthropic's explicit cache marks on four-line view blocks are not placed: pi-ai marks only the last block of the
-  last message. With OpenAI-style automatic prefix caching, which Codex uses, the frozen view is cached as a prefix
-  without marks.
+- OpenAI-style automatic prefix caching, including Codex, is left to pi-ai. The explicit view-block adapter targets
+  Anthropic Messages, including API-key and OAuth calls; it does not add breakpoints to other wire protocols.
 - The compactions' model does not have to be the turns' model, so a compaction may not share the turns' cache entry.
 - Images and `zoom("Name")` into a subagent's log are absent; other agents are hub sessions reached through tools.
 
 Every message is a transcript entry committed before it is shown. Every node, queue change and view change is a
 commit on the same line. A compaction is a durable task: a crash resumes it. Tests: `npm run optchat:test`.
+
+The [UniiChat comparison and regression-test report](../docs/optchat-unii-audit.md) records the upstream revision,
+issues fixed, verified invariants, and remaining differences. Cache tests run offline; live billing/cache-hit rates
+still depend on the provider, model, retention and workload.

@@ -23,6 +23,7 @@ import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite
 import { CodingTools, createBashTool } from "@earendil-works/pi-durable/tools";
 import { type AgentConfig, readConfig, updateConfig } from "./config.ts";
 import { Home, type Reload, selfExtension } from "./home.ts";
+import { withMemoryCache } from "./optchat/cache.ts";
 import { type ModelChoice, Optchat } from "./optchat/index.ts";
 import { agentsExtension } from "./orchestrate.ts";
 
@@ -211,7 +212,7 @@ export async function openAgent(options: AgentOptions): Promise<Agent> {
 	});
 	const harness = await Harness.open(
 		storage,
-		{ models: modelRuntime, registry, settings: harnessSettings(settings), env: () => env, onReport: report },
+		{ models: withMemoryCache(modelRuntime), registry, settings: harnessSettings(settings), env: () => env, onReport: report },
 		context,
 	);
 	try {

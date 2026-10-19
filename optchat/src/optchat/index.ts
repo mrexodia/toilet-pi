@@ -15,7 +15,7 @@ import {
 	type Submission,
 	watchEvents,
 } from "@earendil-works/pi-durable";
-import { index, pump, settled } from "./compactor.ts";
+import { blocked, index, pump, settled } from "./compactor.ts";
 import { ChatDoc, type ChatState, initialChat, MessageDoc, type ModelChoice, NodeDoc } from "./docs.ts";
 import { optchatExtension, renderParts, stateLine } from "./extension.ts";
 import { headOf, idle, NOTE_KIND, pageText } from "./memory.ts";
@@ -158,6 +158,7 @@ export class Optchat {
 			await this.drained();
 			const chat = await this.state();
 			if (settled(chat, chat.count) && !this.#kicked) return;
+			await this.#checkBlocked(chat);
 			if (!said && options.onWait !== undefined) {
 				said = true;
 				options.onWait(chat);
@@ -175,12 +176,19 @@ export class Optchat {
 			await this.drained();
 			const chat = await this.state();
 			if (idle(chat) && !this.#kicked) return;
+			await this.#checkBlocked(chat);
 			if (!said && options.onWait !== undefined) {
 				said = true;
 				options.onWait(chat);
 			}
 			if (options.signal?.aborted) throw new Error("the wait was stopped");
 			await new Promise((resolve) => setTimeout(resolve, 200));
+		}
+	}
+
+	async #checkBlocked(chat: ChatState): Promise<void> {
+		if (blocked(chat, await this.root.agent(this.#context))) {
+			throw new Error("Memory summaries are blocked by a failed model call. Fix the compactor's provider/credentials, then restart or reconfigure to retry; the transcript is intact.");
 		}
 	}
 

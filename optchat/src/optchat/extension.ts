@@ -123,18 +123,12 @@ export function optchatExtension(options: { home: string }): Extension {
 					const chat = await api.snapshot(ChatDoc, api.conversationId, context);
 					if (chat === undefined) return undefined;
 					const { system, rest } = splitRun(messages);
-					// The run's first message: the newest user message the frozen turn names, else the first one in context.
-					let input = -1;
+					// The run's input named by its frozen turn, else the first user message in context.
 					let turn = chat.turn;
-					if (turn !== undefined) {
-						for (let k = rest.length - 1; k >= 0; k--) {
-							const m = rest[k]!;
-							if (m.role === "user" && headOf(contentText(m.content)) === turn.head) {
-								input = k;
-								break;
-							}
-						}
-					}
+					// Take the first match, never a later steer with the same 200-character head:
+					// repeated/prefixed steers must not discard the original input and tool history.
+					const head = turn?.head;
+					let input = head === undefined ? -1 : rest.findIndex((m) => m.role === "user" && headOf(contentText(m.content)) === head);
 					if (input < 0) {
 						turn = undefined;
 						input = rest.findIndex((m) => m.role === "user");

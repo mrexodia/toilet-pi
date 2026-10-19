@@ -108,6 +108,13 @@ function retryKey(chat: ChatState, agent: Agent): string {
 	return JSON.stringify([chat.count, model?.provider, model?.modelId, chat.compactor?.thinkingLevel ?? agent.thinkingLevel]);
 }
 
+/** A failed frontier with no work left running must not leave a turn waiting forever. */
+export function blocked(chat: ChatState, agent: Agent): boolean {
+	const retry = retryKey(chat, agent);
+	const next = candidates(chat);
+	return running(chat) === 0 && next.length > 0 && next.every((p) => chat.failed?.[key(p)] === retry);
+}
+
 /**
  * Start the ready nodes' compactions, up to JOBS at once, and store the ones that need no call (a source within
  * NODE bytes is its own node). Repeats while free nodes complete new pairs.
@@ -180,8 +187,9 @@ export async function systemMessage(
 	context: Context,
 ): Promise<SystemMessage> {
 	const sections: Record<string, string> = {};
+	const env = "env" in read ? await read.env(context) : undefined;
 	for (const section of agent.sections) {
-		const text = await section.render({ conversationId, agent, env: undefined, shown: {}, read }, context);
+		const text = await section.render({ conversationId, agent, env, shown: {}, read }, context);
 		if (text === undefined) continue;
 		sections[section.key] = section.tag === false ? text : `<${section.key}>\n${text}\n</${section.key}>`;
 	}
@@ -238,7 +246,8 @@ async function compact(
 	const reasoning = chat.compactor?.thinkingLevel ?? agent.thinkingLevel;
 	const sessionId = (await runtime.snapshot(ProviderDoc, conversationId, context))?.sessionId;
 	const system = await systemMessage(agent, conversationId, runtime, runtime.now(), context);
-	const messages: Message[] = [system, user(`${view}${taskOf(p)}${source}\n</input>`, runtime.now())];
+	const base: Message[] = [system, user(`${view}${taskOf(p)}${source}\n</input>`, runtime.now())];
+	let messages = base;
 	const found: string[] = [];
 	let usage: AiUsage | undefined;
 	let calls = 0;
@@ -257,17 +266,19 @@ async function compact(
 		calls += 1;
 		usage = addUsage(usage, reply.usage);
 		if (reply.stopReason === "error" || reply.stopReason === "aborted") {
-			throw new Error(reply.errorMessage ?? `the model stopped: ${reply.stopReason}`);
+			if (runtime.signal.aborted || found.length === 0) throw new Error(reply.errorMessage ?? `the model stopped: ${reply.stopReason}`);
+			break; // A later failure must not discard a line we already paid for.
 		}
 		const text = textOf(reply);
 		if (text === "" && reply.content.some((block) => block.type === "toolCall")) {
-			messages.push(user("You called a tool. Call no tools: output only the line, for the same <input>.", runtime.now()));
+			messages = [...base, user("You called a tool. Call no tools: output only the line, for the same <input>.", runtime.now())];
 			continue;
 		}
 		if (text === "") break;
 		found.push(text);
 		if (nbytes(text) <= NODE) break;
-		messages.push(reply, user(tooLong(text), runtime.now()));
+		// Retry the original input with one bounded note, never prior answers, thoughts or tool calls.
+		messages = [...base, user(tooLong(text), runtime.now())];
 	}
 	if (found.length === 0) {
 		runtime.report(new Error(`compactor: node ${ref(p)}: an empty line; clipped`));

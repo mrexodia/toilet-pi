@@ -9,11 +9,17 @@ import {
 	createModels,
 	fauxAssistantMessage,
 	fauxProvider,
+	fauxText,
+	fauxThinking,
+	fauxToolCall,
+	getCurrentSystemPrompt,
+	getCurrentTools,
 	type FauxProviderHandle,
 	type FauxResponseFactory,
 	type Message,
 } from "@earendil-works/pi-ai";
-import { type Conversation, createRegistry, Harness, MemoryStorage, type Storage } from "@earendil-works/pi-durable";
+import { type Conversation, createRegistry, defineExtension, Harness, MemoryStorage, section, type Storage } from "@earendil-works/pi-durable";
+import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { NodeDoc, Optchat, tree } from "../src/optchat/index.ts";
 import { contentText } from "../src/optchat/memory.ts";
@@ -198,6 +204,11 @@ test("failed summaries do not retry themselves, but retry after a new entry or m
 		assert.equal(reports.length, 1);
 		assert.equal(faux.state.callCount, 1);
 		assert.deepEqual((await optchat.state()).ready[0], [0]);
+		// A failed frontier must reject rather than wait forever (turn() cannot add the message that enables retry).
+		await assert.rejects(optchat.settle({ signal: AbortSignal.timeout(1000) }), /summaries are blocked/);
+		await assert.rejects(optchat.turn("hello"), /summaries are blocked/);
+		await assert.rejects(optchat.idle(), /summaries are blocked/);
+		assert.equal(faux.state.callCount, 1);
 
 		await (await optchat.note("a new short message")).wait(context);
 		await until(async () => reports.length >= 2 && Object.keys((await optchat.state()).busy).length === 0);
@@ -221,6 +232,135 @@ test("failed summaries do not retry themselves, but retry after a new entry or m
 	} finally {
 		await optchat.stop();
 		await harness.close(context);
+	}
+});
+
+test("summaries share the turn's system, instructions, tools and environment-dependent sections", async () => {
+	const prompts: string[] = [];
+	const tools: unknown[] = [];
+	const faux = fauxProvider();
+	const factory: FauxResponseFactory = (transcript) => {
+		prompts.push(getCurrentSystemPrompt(transcript.messages));
+		tools.push(getCurrentTools(transcript.messages));
+		return fauxAssistantMessage("short answer");
+	};
+	faux.setResponses(Array.from({ length: 10 }, () => factory));
+	const models = createModels();
+	models.setProvider(faux.provider);
+	const registry = createRegistry();
+	Optchat.install(registry, { home });
+	registry.install(defineExtension({ name: "workspace", sections: [section("cwd", ({ env }) => env?.cwd)] }));
+	const env = new NodeExecutionEnv({ cwd: home });
+	const reports: unknown[] = [];
+	const harness = await Harness.open(new MemoryStorage(), { models, registry, env: () => env, onReport: (e) => reports.push(e) }, context);
+	const root = await harness.root(context, { agent: { model: { provider: "faux", modelId: "faux-1" }, instructions: "Remember my instructions", cwd: home } });
+	const optchat = new Optchat(harness, root, { home });
+	try {
+		await optchat.start();
+		await (await optchat.note("source ".repeat(200))).wait(context);
+		await optchat.idle({ signal: AbortSignal.timeout(5000) });
+		assert.equal(prompts.length, 1);
+		await (await optchat.turn("hi")).wait(context);
+		assert.ok(prompts.length >= 2);
+		assert.equal(prompts[0], prompts[1]);
+		assert.deepEqual(tools[0], tools[1]);
+		assert.ok(prompts[0]!.includes(`<cwd>\n${home}\n</cwd>`));
+		assert.ok(prompts[0]!.includes("Remember my instructions"));
+		assert.deepEqual(reports, []);
+	} finally {
+		await optchat.stop();
+		await harness.close(context);
+		await env.cleanup(context);
+	}
+});
+
+test("summary retries are bounded and never replay prior thoughts, tool calls or answers", async () => {
+	const faux = fauxProvider();
+	const requests: Message[][] = [];
+	const factory: FauxResponseFactory = (transcript) => {
+		requests.push(structuredClone(transcript.messages));
+		const attempt = requests.length;
+		if (attempt === 1) return fauxAssistantMessage([fauxThinking("private thought ".repeat(2000)), fauxToolCall("zoom", { id: 0 })]);
+		if (attempt < 5) return fauxAssistantMessage([fauxThinking("more thoughts ".repeat(2000)), fauxText(String(attempt).repeat(20_000))]);
+		return fauxAssistantMessage("the summary");
+	};
+	faux.setResponses(Array.from({ length: 5 }, () => factory));
+	const models = createModels();
+	models.setProvider(faux.provider);
+	const { harness, root, optchat, reports } = await open(new MemoryStorage(), models, home);
+	try {
+		await (await optchat.note("original source ".repeat(200))).wait(context);
+		await optchat.idle({ signal: AbortSignal.timeout(5000) });
+		assert.deepEqual(reports, []);
+		assert.equal(requests.length, 5);
+		for (const request of requests) {
+			assert.ok(request.every((m) => m.role === "system" || m.role === "user"));
+			assert.ok(request.length <= 3);
+			assert.deepEqual(request.slice(0, 2), requests[0]);
+			assert.ok(JSON.stringify(request).length <= JSON.stringify(requests[0]).length + 1000);
+		}
+		assert.equal((await harness.snapshot(NodeDoc, root.id, "0/0", context))?.text, "the summary");
+	} finally {
+		await optchat.stop();
+		await harness.close(context);
+	}
+});
+
+test("a later summary retry failure keeps the shortest line already received", async () => {
+	const faux = fauxProvider();
+	faux.setResponses([
+		fauxAssistantMessage("a".repeat(800)),
+		fauxAssistantMessage("b".repeat(700)),
+		fauxAssistantMessage("", { stopReason: "error", errorMessage: "outage" }),
+	]);
+	const models = createModels();
+	models.setProvider(faux.provider);
+	const { harness, root, optchat, reports } = await open(new MemoryStorage(), models, home);
+	try {
+		await (await optchat.note("original source ".repeat(200))).wait(context);
+		await optchat.idle({ signal: AbortSignal.timeout(5000) });
+		assert.deepEqual(reports, []);
+		assert.equal((await harness.snapshot(NodeDoc, root.id, "0/0", context))?.text, "b".repeat(700));
+	} finally {
+		await optchat.stop();
+		await harness.close(context);
+	}
+});
+
+test("a repeated steering-message head cannot replace the original input or tool history", async () => {
+	const faux = fauxProvider();
+	let optchat: Optchat;
+	const input = "same head ".repeat(25) + "original task";
+	let originalPrefix = "";
+	let checked = false;
+	const factory: FauxResponseFactory = async (transcript) => {
+		const user = text(transcript.messages.find((m) => m.role === "user"));
+		if (user.includes("\nCompaction:")) return fauxAssistantMessage("summary");
+		if (!originalPrefix) {
+			originalPrefix = user;
+			await optchat.steer("same head ".repeat(25) + "steering task");
+			return fauxAssistantMessage(fauxToolCall("date", { id: 0 }), { stopReason: "toolUse" });
+		}
+		assert.equal(user, originalPrefix);
+		assert.ok(user.endsWith(input));
+		assert.ok(transcript.messages.some((m) => m.role === "assistant" && m.content.some((b) => b.type === "toolCall")));
+		assert.ok(transcript.messages.some((m) => m.role === "toolResult"));
+		assert.ok(transcript.messages.some((m) => m.role === "user" && text(m).endsWith("steering task")));
+		checked = true;
+		return fauxAssistantMessage("done");
+	};
+	faux.setResponses(Array.from({ length: 100 }, () => factory));
+	const models = createModels();
+	models.setProvider(faux.provider);
+	const opened = await open(new MemoryStorage(), models, home);
+	optchat = opened.optchat;
+	try {
+		assert.equal((await (await optchat.turn(input)).wait(context)).status, "done");
+		assert.ok(checked);
+		assert.deepEqual(opened.reports, []);
+	} finally {
+		await optchat.stop();
+		await opened.harness.close(context);
 	}
 });
 

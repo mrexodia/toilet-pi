@@ -194,17 +194,15 @@ export function fit(chat: ChatState, next = false): void {
 	reach(chat.view, chat.count);
 	reach(chat.seen, Math.min(chat.count, first(chat)));
 	const gone: Part[] = [];
-	let chatMerged = false;
 	for (const [view, high] of [
 		[chat.view, limits.high],
 		[chat.seen, limits.seen],
 	] as const) {
 		let size = vsize(chat.sizes, view.parts);
-		// The compactions' view merges on its own ceiling, and again whenever the chat's view merges.
-		if (size > high || (next && view.batch) || (view === chat.seen && chatMerged)) {
+		// Each view has its own sawtooth. A turn-view merge must not rewrite the compactor's cached prefix.
+		if (size > high || (next && view.batch)) {
 			const merged = merge(view.parts, chat.sizes, high / 2);
-			if (next || merged.size <= Math.max(high / 2, size - high) || (view === chat.seen && chatMerged)) {
-				if (view === chat.view && merged.parts.length !== view.parts.length) chatMerged = true;
+			if (next || merged.size <= Math.max(high / 2, size - high)) {
 				view.parts = merged.parts;
 				gone.push(...merged.gone);
 				size = merged.size;
