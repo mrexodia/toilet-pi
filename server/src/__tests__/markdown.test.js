@@ -48,6 +48,24 @@ describe('assistant Markdown', () => {
 		expect(row.querySelector('a').hasAttribute('href')).toBe(false);
 		expect(row.querySelector('a[href]').getAttribute('href')).toBe('https://example.com');
 	});
+	for (const mode of ['history', 'stream']) {
+		it(`opens safe Markdown and HTML links separately in ${mode}`, () => {
+			const text = '[Markdown](https://example.com) <https://example.com/auto> <a href="http://example.com/raw" target="_self" rel="opener" onclick="alert(1)">HTML</a> [bad](javascript:alert%281%29)';
+			const row = mode === 'history'
+				? renderMessage({ role: 'assistant', text })
+				: renderAssistantStream(text);
+			const safeLinks = row.querySelectorAll('a[href]');
+			expect(safeLinks).toHaveLength(3);
+			for (const link of safeLinks) {
+				expect(link.getAttribute('target')).toBe('_blank');
+				expect(link.getAttribute('rel')).toBe('noopener noreferrer');
+				expect(link.hasAttribute('onclick')).toBe(false);
+			}
+			const unsafeLink = row.querySelector('a:not([href])');
+			expect(unsafeLink.hasAttribute('target')).toBe(false);
+			expect(unsafeLink.hasAttribute('rel')).toBe(false);
+		});
+	}
 	it('only makes full HTTP URLs clickable', () => {
 		const row = renderAssistantStream('[relative](./docs/cli.md) [root](/docs/cli.md) [fragment](#usage) [protocol-relative](//example.com/docs) [http](http://example.com/docs) [https](https://example.com/docs)');
 		const links = Object.fromEntries([...row.querySelectorAll('a')]

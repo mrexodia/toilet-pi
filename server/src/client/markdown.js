@@ -1,6 +1,14 @@
 import { marked } from 'marked';
 import DOMPurify from 'dompurify';
 
+// Add trusted navigation attributes only after the link's URL has been sanitized.
+DOMPurify.addHook('afterSanitizeAttributes', (node) => {
+	if (node.nodeName === 'A' && node.hasAttribute('href')) {
+		node.setAttribute('target', '_blank');
+		node.setAttribute('rel', 'noopener noreferrer');
+	}
+});
+
 export function renderMarkdown(text) {
 	return DOMPurify.sanitize(marked.parse(text, { gfm: true, async: false }), {
 		ALLOWED_TAGS: ['p', 'br', 'hr', 'strong', 'em', 'del', 'a', 'code', 'pre',
