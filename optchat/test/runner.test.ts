@@ -66,6 +66,10 @@ for (const busy of [true, false]) {
 		const messages: any[] = [];
 		socket.on("message", (data: unknown) => messages.push(JSON.parse(String(data))));
 		await until(() => messages.some((m) => m.type === "hello"));
+		assert.ok(messages.find((m) => m.type === "hello").capabilities.includes("launch_new_v1"));
+		socket.send(JSON.stringify({ type: "start_background_session", requestId: "invalid-launch", cwd: "relative", createNew: true }));
+		await until(() => messages.some((m) => m.type === "runner_status" && m.requestId === "invalid-launch"));
+		assert.equal(messages.find((m) => m.requestId === "invalid-launch").status, "error");
 		const send = (inputId: string, text: string, mode = "followUp") => socket.send(JSON.stringify({
 			type: "control_command", operation: "send", sessionGuid: runner!.sessionGuid, inputId, text, mode,
 		}));

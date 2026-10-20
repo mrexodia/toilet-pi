@@ -55,7 +55,13 @@ test("extension routes configuration queries and broadcasts local selections on 
     const hello = await waitFor(message => message.type === "hello");
     assert.deepEqual(hello.configuration, { provider: "fake", modelId: "small", thinkingLevel: "off" });
     assert(hello.capabilities.includes("model_control_v1"));
+    assert(hello.capabilities.includes("launch_new_v1"));
     assert(hello.capabilities.includes("agent_settled_v1"));
+    socket.send(JSON.stringify({ type: "start_background_session", requestId: "bad-launch", cwd: "relative/path", createNew: true }));
+    const launch = await waitFor(message => message.requestId === "bad-launch");
+    assert.equal(launch.type, "runner_status");
+    assert.equal(launch.status, "error");
+    assert.match(launch.error, /absolute path/);
     socket.send(JSON.stringify({ type: "session_request", requestId: "read", sessionGuid: "isolated-session", operation: "get_config" }));
     const read = await waitFor(message => message.requestId === "read");
     assert.equal(read.success, true);

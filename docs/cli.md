@@ -95,6 +95,16 @@ Only `agent_settled` ends a wait. `agent_end` and `busy:false` can precede retri
 
 `abort` requests interruption; it **does not clear pending queues**. Clear-queue control is not exposed because the extension API does not provide the needed guarantee. `terminate` acknowledges a graceful shutdown request, **not process exit**; native shutdown may be deferred. `resume`/`new` return only after an authenticated owning runner hello, not a supervisor's “starting” notice. These commands request no inference themselves, but independently installed startup extensions may do work. `new` does not create/synchronize a worktree; its directory must exist on that host.
 
+### New sessions without a supervisor
+
+`new --host HOST --cwd ABSOLUTE_PATH` works when that machine has either a supervisor or an active owner runner advertising `launch_new_v1`. The broker prefers a supervisor when available; otherwise it selects a same-machine launch-capable Pi/Optchat runner. `hosts` prints `runner-launch` for this live-only mode (the overview's `connected` field still means supervisor connectivity; `canLaunch` is separate).
+
+Bootstrap the first Pi over SSH inside herdr/tmux/screen, connect its Toilet-Pi extension, then use `new`, the browser's New Session folder prompt, or Optchat's `agent_new`. No project discovery/scan is started. Each child runs Pi in RPC mode with an independent detached stdin-keeping worker, reconnects directly to the hub, survives the launcher exiting, and can launch further children. Launch success requires that child's authenticated owning hello, not merely a spawned OS process. An SSH service/session manager that kills all descendants can still override OS-level detachment.
+
+The absolute directory must already exist, and Pi, model credentials, and configuration must be present on that machine. The launcher passes the machine connection via environment, never command arguments; it does not transfer model selections, synchronize worktrees, or create directories. `TOILET_PI_PI_COMMAND` selects the Pi executable. `TOILET_PI_DISABLE_LAUNCH=1` suppresses the runner capability. Runner-launched sessions use Pi.
+
+Inactive discovery, inactive transcript reads, and inactive resume still require a supervisor. Without one, only live sessions are discoverable; sessions that exit are not automatically restarted. Startup is limited to eight concurrent requests per launcher, with 256 retained request IDs per extension instance. Duplicate delivery of the same wire ID is deduplicated, including failures; the ledger fails closed when full (reload/restart that launcher to reset it). This is not durable/cross-connection idempotency: a timeout or launcher disconnect is an **unknown outcome**, and may leave a child running. Inspect connected sessions before retrying rather than creating duplicates.
+
 `watch` observes session events for the chosen window, without replaying missed events, and caps printed output at 1 MiB. Disconnect exits with an error. It is not a durable event log or a replacement for `wait --input`.
 
 ### Disconnects, idempotency, and limits
@@ -161,6 +171,7 @@ The broker advertises `orchestration_v1` and `scoped_tokens_v1` in `overview.cap
 - Runner `input_tracking_v1`: `control_command` for tracked send/abort/terminate and `session_event.input_status`.
 - Runner `agent_settled_v1`: settlement waits enabled. Gated on optional event registration and known Pi 0.85.1+ (0.x) or 1.1+ (1.x) API generations. Missing/unknown runtime versions are conservative; no busy/idle completion emulation.
 - Runner/supervisor `history_v1`: fresh correlated branch reads.
+- Runner `launch_new_v1`: receives `start_background_session` with `createNew:true`; launches new Pi sessions, not inactive resume. A correlated `runner_status:error` fails the pending request; a child's authenticated hello completes it.
 
 Example client request:
 
@@ -174,6 +185,7 @@ Example client request:
 | --- | --- |
 | Pi 0.85.1 | Installed docs/source inspected; actual extension exercised with injected fake APIs and isolated socket |
 | Pi 1.3.0 | Installed CLI/RPC/extension docs inspected; version gate and extension routing tested with fake APIs; no real provider/remote-host launch |
+| Runner launch | Detached real Node worker + fake RPC process survives parent exit; browser and broker routing/correlation/auth tests; no project scan |
 | Older/missing APIs | Mocked unsupported/event-rejection behavior; no guessed model level table or completion |
 | OMP | Shared entrypoint/scanning/launch-argument tests; native new capability behavior **not certified** (runtime not installed locally) |
 | Node | Real CLI + HTTP/auth + WebSocket + broker + fake runner E2E |
@@ -193,4 +205,4 @@ npm test --prefix server
 git diff --check
 ```
 
-Tests use fake Pi APIs, in-memory transports, temporary files, and ephemeral loopback servers. Executable E2E supplies generated credentials, not inherited provider/Pi configuration. No production entrypoint, real agent process, inference request, or deployment is started.
+Tests use fake Pi APIs, in-memory transports, temporary files, ephemeral loopback servers, and a detached Node worker holding a fake RPC child's stdin. Executable E2E supplies generated credentials, not inherited provider/Pi configuration. No production entrypoint, real agent process, inference request, or deployment is started.

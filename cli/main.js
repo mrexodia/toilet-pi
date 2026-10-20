@@ -175,7 +175,7 @@ export async function runCli(argv, {
     const hosts = client.overview.hosts;
     if (command === "hosts") {
       if (!hosts.length) line("No hosts");
-      for (const host of hosts) line(`${compact(host.hostId)}  ${compact(host.hostname)}  ${host.connected ? "connected" : "offline"}  sessions=${host.sessions.length}`);
+      for (const host of hosts) line(`${compact(host.hostId)}  ${compact(host.hostname)}  ${host.connected ? "connected" : host.canLaunch ? "runner-launch" : "offline"}  sessions=${host.sessions.length}`);
       return 0;
     }
     if (command === "sessions") {

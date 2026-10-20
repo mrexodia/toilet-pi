@@ -9,6 +9,8 @@ import { randomUUID } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
 import { hostname } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { createBackgroundLauncher } from "../../background-launcher.js";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import {
@@ -122,6 +124,10 @@ export class Runner {
 	readonly #name: string | undefined;
 	readonly #log: (text: string) => void;
 	readonly #connectUrlOption: string | undefined;
+	#launchUrl: string | undefined;
+	readonly #launchEnabled = process.env.TOILET_PI_DISABLE_LAUNCH !== "1";
+	readonly #launcher = createBackgroundLauncher({ getConnectUrl: () => this.#launchUrl,
+		hostId: process.env.TOILET_PI_HOST_ID || hostname(), extensionPath: fileURLToPath(new URL("../../toilet-pi.ts", import.meta.url)) });
 	#identity: Identity | undefined;
 	#ws: WebSocket | undefined;
 	#stopped = false;
@@ -255,6 +261,7 @@ export class Runner {
 			return;
 		}
 		this.#log(`toilet-pi: connecting to ${redactUrlTokens(url)}${this.#reconnectAttempt > 0 ? ` (attempt ${this.#reconnectAttempt + 1})` : ""}`);
+		this.#launchUrl = url;
 		const ws = new WebSocket(url);
 		this.#ws = ws;
 		ws.on("open", () => {
@@ -420,7 +427,7 @@ export class Runner {
 		this.#send({
 			type: "hello",
 			role: "interactive",
-			capabilities: ["model_control_v1", "input_tracking_v1", "history_v1", "agent_settled_v1"],
+			capabilities: ["model_control_v1", "input_tracking_v1", "history_v1", "agent_settled_v1", ...(this.#launchEnabled ? ["launch_new_v1"] : [])],
 			configuration: this.#controller?.configuration(),
 			hostId: process.env.TOILET_PI_HOST_ID || hostname(),
 			hostname: hostname(),
@@ -444,6 +451,16 @@ export class Runner {
 	// --- from the hub
 
 	async #onServerMessage(message: Record<string, unknown>): Promise<void> {
+		if (message.type === "start_background_session") {
+			try {
+				if (!this.#launchEnabled || this.#stopped) throw new Error("Launching is disabled on this runner");
+				const result = await this.#launcher.start(message);
+				this.#send({ type: "runner_status", requestId: message.requestId, status: "starting", pid: result.pid });
+			} catch (error) {
+				this.#send({ type: "runner_status", requestId: message.requestId, status: "error", error: redactUrlTokens(String(error)) });
+			}
+			return;
+		}
 		const type = message.type;
 		if (type === "control_command") {
 			const reply = (data: Record<string, unknown>) => this.#send({ type: "control_response", requestId: message.requestId, success: true, data });

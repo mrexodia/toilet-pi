@@ -173,7 +173,10 @@ export interface OverviewHost {
   hostId: string
   hostname: string
   platform: string | null
+  /** A supervisor is connected (catalogue, inactive history and resume). */
   connected: boolean
+  /** A supervisor or active launch-capable runner can start a new session. */
+  canLaunch?: boolean
   sessions: OverviewSession[]
 }
 

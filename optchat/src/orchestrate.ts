@@ -156,7 +156,7 @@ export function agentsExtension(options: { readonly home: string }): Extension {
 					try {
 						const rows = sessions(client.overview?.hosts ?? [])
 							.filter(({ session }) => session.sessionGuid !== self)
-							.map(({ session, host }) => `${session.sessionGuid}  ${host.hostname}${host.connected ? "" : " (no supervisor)"}  ${state(session)}  ${session.sessionName || session.cwd || ""}`);
+							.map(({ session, host }) => `${session.sessionGuid}  ${host.hostname}${host.connected ? "" : host.canLaunch ? " (runner launch)" : " (no launcher)"}  ${state(session)}  ${session.sessionName || session.cwd || ""}`);
 						return reply(rows.length === 0 ? "No other sessions." : rows.join("\n"));
 					} finally {
 						client.close();
@@ -264,7 +264,7 @@ export function agentsExtension(options: { readonly home: string }): Extension {
 			}),
 			defineTool({
 				name: "agent_new",
-				description: "Start a new pi session in a directory on a host of the hub (the directory must exist there). Returns its id.",
+				description: "Start a new background Pi session in an existing absolute directory on a host of the hub. A connected launch-capable Pi or supervisor must be running there. Returns its id.",
 				parameters: Type.Object({ host: Type.String(), cwd: Type.String() }),
 				replay: "unsafe",
 				execute: async (args) => {

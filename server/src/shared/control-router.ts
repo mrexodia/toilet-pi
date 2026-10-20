@@ -12,6 +12,8 @@ export function createControlRouter(deps: {
   session: (id?: string) => SessionState | null
   owner: (session: SessionState | null) => string | null
   host: (id: string) => string | null
+  launcher: (hostId: string, createNew: boolean) => string | null
+  isLauncher: (connectionId: string, hostId: string, createNew: boolean) => boolean
   capable: (id: string, capability: string) => boolean
   configuring: (id: string) => boolean
   authorized: (client: string, request: ControlRequest) => boolean
@@ -101,8 +103,10 @@ export function createControlRouter(deps: {
     const hostId = request.operation === 'new' ? request.hostId! : session!.hostId
     const host = hostId ? deps.host(hostId) : null
     const launching = request.operation === 'resume' || request.operation === 'new'
-    const target = launching ? host : request.operation === 'history' ? runner || host : runner
-    if (!target) return error(client, request, 'inactive', 'Required runner or host is not connected')
+    const target = launching ? (hostId ? deps.launcher(hostId, request.operation === 'new') : null) : request.operation === 'history' ? runner || host : runner
+    if (!target) return error(client, request, 'inactive', launching
+      ? request.operation === 'new' ? 'No connected supervisor or launch-capable runner on this host' : 'Inactive resume requires a connected host supervisor'
+      : 'Required runner or host is not connected')
     if (!launching && !deps.capable(target, request.operation === 'history' ? 'history_v1' : 'input_tracking_v1')) {
       return error(client, request, 'unsupported', 'Target does not support this operation')
     }
@@ -157,14 +161,17 @@ export function createControlRouter(deps: {
   function hello(runner: string, hostId: string, message: HelloRunnerMessage) {
     const p = message.launchRequestId ? pending.get(message.launchRequestId) : null
     if (p && ['new', 'resume'].includes(p.request.operation) && p.hostId === hostId &&
-        deps.host(hostId) === p.target && deps.owner(deps.session(message.sessionGuid)) === runner &&
+        deps.isLauncher(p.target, hostId, p.request.operation === 'new') && deps.owner(deps.session(message.sessionGuid)) === runner &&
         (p.request.operation === 'new' || p.request.sessionGuid === message.sessionGuid)) {
       finish(message.launchRequestId!, { sessionGuid: message.sessionGuid, status: 'running' })
     }
     if (message.sessionGuid) ownerChanged(message.sessionGuid)
   }
-  function launchError(host: string, id: string) {
-    if (pending.get(id)?.target === host) finish(id, undefined, 'launch_failed', 'Runner failed to start')
+  function launchError(launcher: string, id: string) {
+    const p = pending.get(id)
+    if (p?.target === launcher && ['new', 'resume'].includes(p.request.operation)) {
+      finish(id, undefined, 'launch_failed', 'Runner failed to start; check the directory, selected runtime installation and configuration on the target machine')
+    }
   }
   function close(id: string) {
     for (const [key, p] of pending) {

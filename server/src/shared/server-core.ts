@@ -74,6 +74,8 @@ export function createServerCore(
   const control = createControlRouter({
     send, timers, session: getKnownSession, owner: getOwnerConnection,
     host: id => { const conn = hosts.get(id)?.conn; return conn && transport.isOpen(conn) ? conn : null },
+    launcher: selectLauncher,
+    isLauncher,
     capable: (id, cap) => runnerCapabilities.get(id)?.has(cap) || false,
     configuring: isConfiguring,
     authorized: (client, request) => {
@@ -89,6 +91,24 @@ export function createServerCore(
       if ((session?.queuedInputs.length || 0) !== queuedBefore) broadcastOverview()
     },
   })
+
+  // Keep catalogue/history/resume on the supervisor. New sessions can also be launched by an active runner,
+  // authenticated to the same machine, without discovering or publishing any inactive projects.
+  function isLauncher(connId: string, hostId: string, createNew: boolean): boolean {
+    if (!transport.isOpen(connId)) return false
+    const client = clients.get(connId)
+    if (!client || client.role === 'web' || client.hostId !== hostId) return false
+    if (client.role === 'host-supervisor') return hosts.get(hostId)?.conn === connId
+    return createNew && runnerCapabilities.get(connId)?.has('launch_new_v1') === true &&
+      getOwnerConnection(sessions.get(client.sessionGuid) || null) === connId
+  }
+
+  function selectLauncher(hostId: string, createNew: boolean): string | null {
+    const supervisor = hosts.get(hostId)?.conn
+    if (supervisor && isLauncher(supervisor, hostId, createNew)) return supervisor
+    for (const [connId] of clients) if (isLauncher(connId, hostId, createNew)) return connId
+    return null
+  }
 
   function canRead(connId: string, sessionGuid: string): boolean {
     const session = getKnownSession(sessionGuid)
@@ -654,6 +674,14 @@ export function createServerCore(
     const session = sessions.get(client.sessionGuid)
     if (!session) return
 
+    if (message.type === 'runner_status') {
+      // A launcher cannot mutate another session or publish arbitrary launch status. Only its correlated
+      // errors affect pending launches; success still requires the authenticated child runner's hello.
+      if (runnerCapabilities.get(connId)?.has('launch_new_v1') && message.requestId && ['error', 'exited'].includes(message.status || '')) {
+        control.launchError(connId, message.requestId)
+      }
+      return
+    }
     if (message.type === 'control_response') {
       control.response(connId, message)
       return
@@ -1380,6 +1408,7 @@ export function createServerCore(
         hostname: host?.hostname || sessionHostname || hostId,
         platform: host?.platform || null,
         connected: !!host,
+        canLaunch: selectLauncher(hostId, true) !== null,
         sessions: sessionsForHost,
       })
     }

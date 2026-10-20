@@ -1,4 +1,6 @@
 import os from "node:os";
+import { fileURLToPath } from "node:url";
+import { createBackgroundLauncher } from "./background-launcher.js";
 import { supportsSettlementVersion } from "./settlement-version.js";
 import { createModelController } from "./model-control.js";
 import { createInputTracker } from "./input-tracker.js";
@@ -46,7 +48,10 @@ const MAX_SERVER_HISTORY_BYTES = Math.max(
 const SERVER_TEXT_TRUNCATION_SUFFIX = "\n... (truncated for toilet-pi at 50KB)";
 
 interface ServerMessage {
-  type: "input" | "abort" | "abort_and_release" | "terminate_session" | "session_request" | "control_command";
+  type: "input" | "abort" | "abort_and_release" | "terminate_session" | "session_request" | "control_command" | "start_background_session";
+  hostId?: string;
+  cwd?: string;
+  createNew?: boolean;
   mode?: "prompt" | "steer" | "followUp";
   since?: string;
   last?: number;
@@ -131,6 +136,9 @@ export default function (pi: ExtensionAPI) {
     configuring: () => modelController.isConfiguring(), emit: emitSessionEvent });
   let supportsSettlement = false;
   let settlementHandlerRegistered = false;
+  const launchEnabled = process.env.TOILET_PI_DISABLE_LAUNCH !== "1";
+  const launcher = createBackgroundLauncher({ getConnectUrl, hostId: HOST_ID,
+    extensionPath: fileURLToPath(import.meta.url) });
   const pendingRemoteInputIds: string[] = [];
   const pendingLocalQueuedInputs: Array<{
     inputId: string;
@@ -477,7 +485,7 @@ export default function (pi: ExtensionAPI) {
     send({
       type: "hello",
       role: ROLE,
-      capabilities: ["model_control_v1", "input_tracking_v1", "history_v1", ...(supportsSettlement ? ["agent_settled_v1"] : [])],
+      capabilities: ["model_control_v1", "input_tracking_v1", "history_v1", ...(supportsSettlement ? ["agent_settled_v1"] : []), ...(launchEnabled ? ["launch_new_v1"] : [])],
       configuration: modelController.configuration(),
       hostId: HOST_ID,
       hostname: os.hostname(),
@@ -758,6 +766,18 @@ export default function (pi: ExtensionAPI) {
 
   async function handleServerMessage(message: ServerMessage) {
     if (!ctx) return;
+
+    if (message.type === "start_background_session") {
+      try {
+        if (!launchEnabled || shuttingDown) throw new Error("Launching is disabled on this runner");
+        const result = await launcher.start(message);
+        send({ type: "runner_status", requestId: message.requestId, status: "starting", pid: result.pid });
+      } catch (error) {
+        send({ type: "runner_status", requestId: message.requestId, status: "error",
+          error: redactUrlTokens(error instanceof Error ? error.message : String(error)) });
+      }
+      return;
+    }
 
     if (message.type === "control_command") {
       const reply = (data: Record<string, unknown>) => send({ type: "control_response", requestId: message.requestId, success: true, data });

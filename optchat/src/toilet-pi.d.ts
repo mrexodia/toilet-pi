@@ -1,5 +1,13 @@
 // The plain JavaScript modules of toilet-pi that the agent reuses.
 
+declare module "*/background-launcher.js" {
+	export function createBackgroundLauncher(options: {
+		getConnectUrl: () => string | undefined | null;
+		hostId: string;
+		extensionPath: string;
+	}): { start(message: Record<string, unknown>): Promise<{ pid: number }> };
+}
+
 declare module "*/toilet-pi-config.js" {
 	export function readToiletPiConfig(agentDir?: string): Promise<{ serverUrl: string; token: string } | null>;
 	export function parseToiletPiInput(input: string): { serverUrl: string; token: string };
@@ -69,7 +77,7 @@ declare module "*/cli/client.js" {
 		queuedInputCount: number;
 		updatedAt: number;
 	};
-	export type HubHost = { hostId: string; hostname: string; connected: boolean; sessions: HubSession[] };
+	export type HubHost = { hostId: string; hostname: string; connected: boolean; canLaunch?: boolean; sessions: HubSession[] };
 }
 
 declare module "*/cli/auth.js" {

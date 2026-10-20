@@ -459,6 +459,19 @@ function handleMessage(message) {
 			updateControls();
 			break;
 
+		case "control_response": {
+			const pending = pendingLaunchRequests.get(message.requestId);
+			if (!pending) return;
+			pendingLaunchRequests.delete(message.requestId);
+			if (!message.success || !message.data?.sessionGuid) {
+				showNotice(message.error?.message || "Launch outcome is unknown; inspect sessions before retrying", "error");
+				break;
+			}
+			showNotice(`Background session started on ${pending.hostname || "target computer"}`, "info");
+			attachSession(message.data.sessionGuid, { ...pending, closeSidebar: true });
+			break;
+		}
+
 		case "background_session_started": {
 			const pending = pendingLaunchRequests.get(message.requestId);
 			if (!pending) return;
@@ -870,7 +883,7 @@ function renderProjectBrowser() {
 			if (MOBILE_MEDIA.matches) showNotice(`Selected ${basenamePath(project.cwd)}`, "info");
 		};
 		selectBtn.appendChild(makeTitleLine("project-title", basenamePath(project.cwd), formatProjectUsage(project)));
-		selectBtn.appendChild(makeLine("project-meta", `${project.sessions.length} session${project.sessions.length === 1 ? "" : "s"} • ${project.hostConnected ? "online" : "offline"}${project.hostname ? ` • ${project.hostname}` : ""}`));
+		selectBtn.appendChild(makeLine("project-meta", `${project.sessions.length} session${project.sessions.length === 1 ? "" : "s"} • ${canLaunchOnHost(project.hostId) ? "online" : "offline"}${project.hostname ? ` • ${project.hostname}` : ""}`));
 		const projectPathEl = makeLine("project-path", project.cwd);
 		projectPathEl.title = project.cwd;
 		selectBtn.appendChild(projectPathEl);
@@ -1905,7 +1918,7 @@ function updateHeader() {
 	if (!currentSessionGuid) {
 		if (selectedProjectContext?.cwd) {
 			sessionTitleEl.textContent = basenamePath(selectedProjectContext.cwd);
-			sessionSubtitleEl.textContent = `${selectedProjectContext.hostConnected ? "ready" : "offline"} • ${selectedProjectContext.hostname || "unknown computer"} • ${selectedProjectContext.cwd}`;
+			sessionSubtitleEl.textContent = `${canLaunchOnHost(selectedProjectContext.hostId) ? "ready" : "offline"} • ${selectedProjectContext.hostname || "unknown computer"} • ${selectedProjectContext.cwd}`;
 			sessionPathEl.textContent = selectedProjectContext.cwd || "";
 		} else {
 			sessionTitleEl.textContent = "No session selected";
@@ -1939,6 +1952,11 @@ function updateHeader() {
 	sessionWorkingIndicatorEl?.classList.remove("visible");
 }
 
+function canLaunchOnHost(hostId) {
+	const host = hosts.find((entry) => entry.hostId === hostId);
+	return !!(host && (host.canLaunch ?? host.connected));
+}
+
 function updateControls() {
 	const connected = ws?.readyState === WebSocket.OPEN;
 	modelPicker.sync(connected);
@@ -1946,7 +1964,7 @@ function updateControls() {
 	const hasOwner = !!(currentSession.owner || summary?.owner);
 	const canAutoStart = !!(summary && summary.hostConnected && (summary.sessionFile || summary.sessionGuid));
 	const launchContext = getCurrentLaunchContext();
-	const canCreateNewSession = !!(connected && launchContext && launchContext.hostConnected && launchContext.cwd && launchContext.cwd !== "(unknown project)");
+	const canCreateNewSession = !!(connected && launchContext && canLaunchOnHost(launchContext.hostId) && launchContext.cwd && launchContext.cwd !== "(unknown project)");
 	const canKillSession = !!(connected && currentSessionGuid && hasOwner);
 	const showAbort = !!(connected && currentSessionGuid && hasOwner && isSessionWorking(summary));
 	const showFab = MOBILE_MEDIA.matches && bodyEl.classList.contains("sidebar-open") && canCreateNewSession;
@@ -2300,7 +2318,8 @@ function createNewBackgroundSession(context) {
 		cwd: context.cwd,
 	});
 	send({
-		type: "create_background_session",
+		type: "control_request",
+		operation: "new",
 		requestId,
 		hostId: context.hostId,
 		cwd: context.cwd,
@@ -2426,7 +2445,9 @@ function triggerNewSession() {
 		return;
 	}
 	closeHeaderMenu();
-	createNewBackgroundSession(context);
+	const cwd = window.prompt(`New agent session on ${context.hostname || context.hostId}: existing absolute folder path`, context.cwd);
+	if (!cwd?.trim()) return;
+	createNewBackgroundSession({ ...context, cwd: cwd.trim() });
 }
 
 newSessionBtnEl.onclick = () => triggerNewSession();
