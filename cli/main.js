@@ -21,7 +21,8 @@ export const HELP = `Usage: toilet-pi [--server URL] [--timeout SECONDS] COMMAND
   abort SESSION                      Request abort (does NOT clear queued input)
   terminate SESSION                  Request graceful shutdown (not confirmed exit)
   resume SESSION                     Start an inactive runner, no inference
-  new --host HOST --cwd PATH          Start a new runner, no inference
+  new --host HOST --cwd PATH [--runtime pi|omp]
+                                     Start a new runner, no inference
   history SESSION [--since ID] [--last N]
                                      Read sanitized branch transcript without resume
   watch SESSION                      Observe events for --timeout seconds
@@ -102,7 +103,7 @@ export async function runCli(argv, {
         server: { type: "string" }, timeout: { type: "string" }, host: { type: "string" }, "auth-file": { type: "string" },
         thinking: { type: "string" }, help: { type: "boolean", short: "h" },
         stdin: { type: "boolean" }, steer: { type: "boolean" }, "follow-up": { type: "boolean" }, wait: { type: "boolean" },
-        input: { type: "string" }, cwd: { type: "string" }, since: { type: "string" }, last: { type: "string" },
+        input: { type: "string" }, cwd: { type: "string" }, runtime: { type: "string" }, since: { type: "string" }, last: { type: "string" },
       } });
     } catch {
       throw usage("Invalid arguments; run toilet-pi --help");
@@ -119,9 +120,10 @@ export async function runCli(argv, {
     }
     if (values.server !== undefined && !values.server.trim()) throw usage("--server requires a URL");
     if (values.host !== undefined && !["sessions", "new"].includes(command)) throw usage("--host is only valid for sessions/new");
-    const flags = { stdin: ["send"], steer: ["send"], "follow-up": ["send"], wait: ["send"], input: ["status", "wait"], cwd: ["new"], since: ["history"], last: ["history"] };
+    const flags = { stdin: ["send"], steer: ["send"], "follow-up": ["send"], wait: ["send"], input: ["status", "wait"], cwd: ["new"], runtime: ["new"], since: ["history"], last: ["history"] };
     for (const [flag, commands] of Object.entries(flags)) if (values[flag] !== undefined && !commands.includes(command)) throw usage(`--${flag} is invalid for ${command}`);
     if (command === "new" && (!values.host?.trim() || !values.cwd?.trim())) throw usage("new requires --host and --cwd");
+    if (values.runtime !== undefined && !["pi", "omp"].includes(values.runtime)) throw usage("--runtime must be pi or omp");
     if (command === "wait" && !values.input) throw usage("wait requires --input ID");
     if (values.input !== undefined && !/^[a-zA-Z0-9_-]{16,128}$/.test(values.input)) throw usage("Invalid input ID");
     if (values.steer && values["follow-up"]) throw usage("Choose --steer OR --follow-up");
@@ -190,7 +192,7 @@ export async function runCli(argv, {
     }
     if (command === "new") {
       const host = resolveHost(hosts, values.host);
-      const data = await client.control("new", { hostId: host.hostId, cwd: values.cwd });
+      const data = await client.control("new", { hostId: host.hostId, cwd: values.cwd, ...(values.runtime ? { runtime: values.runtime } : {}) });
       line(`${compact(data.sessionGuid)}  running (no inference requested)`);
       return 0;
     }

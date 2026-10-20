@@ -103,7 +103,11 @@ export function createServerCore(
       getOwnerConnection(sessions.get(client.sessionGuid) || null) === connId
   }
 
-  function selectLauncher(hostId: string, createNew: boolean): string | null {
+  function selectLauncher(hostId: string, createNew: boolean, preferredSession?: string): string | null {
+    if (createNew && preferredSession) {
+      const owner = getOwnerConnection(sessions.get(preferredSession) || null)
+      if (owner && isLauncher(owner, hostId, true)) return owner
+    }
     const supervisor = hosts.get(hostId)?.conn
     if (supervisor && isLauncher(supervisor, hostId, createNew)) return supervisor
     for (const [connId] of clients) if (isLauncher(connId, hostId, createNew)) return connId

@@ -39,7 +39,7 @@ describe('runner-based browser launch', () => {
       w.prompt = () => '/different-folder'
       w.__test.triggerNewSession()
       const request = w.__sent.find(m => m.type === 'control_request')
-      expect(request).toMatchObject({ operation: 'new', hostId: 'host', cwd: '/different-folder' })
+      expect(request).toMatchObject({ operation: 'new', hostId: 'host', cwd: '/different-folder', launcherSessionGuid: 'entry' })
       expect(w.__test.current()).toBe('entry')
       w.__test.handleMessage({ type: 'control_response', requestId: 'wrong', success: true, data: { sessionGuid: 'forged' } })
       expect(w.__test.current()).toBe('entry')

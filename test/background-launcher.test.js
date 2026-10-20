@@ -6,12 +6,14 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { createBackgroundLauncher } from "../background-launcher.js";
+import { backgroundWorkerCommand, detectRunnerRuntime } from "../runner-runtime.js";
 
-function fixture(cwd, behavior = "started", timeoutMs = 100) {
+function fixture(cwd, behavior = "started", timeoutMs = 100, options = {}) {
   const spawned = [];
   const launcher = createBackgroundLauncher({ hostId: "machine", getConnectUrl: () => "ws://isolated/ws?token=secret",
     extensionPath: "/installed/toilet-pi.ts", env: { TOILET_PI_DEFAULT_RUNTIME: "omp", TOILET_PI_PI_COMMAND: "custom-pi",
-      PI_CODING_AGENT_DIR: path.join(cwd, "agent") }, timeoutMs,
+      PI_CODING_AGENT_DIR: path.join(cwd, "agent"), ...options.env }, timeoutMs,
+    runtime: options.runtime ?? "pi", getDefaultRuntime: options.getDefaultRuntime,
     spawnWorker(command, args, options) {
       const worker = new EventEmitter();
       Object.assign(worker, { connected: true, disconnect() { this.connected = false; }, unref() {}, kill() { this.killed = true; },
@@ -49,6 +51,61 @@ test("launches Pi, not the supervisor default runtime, without putting credentia
     assert(!JSON.stringify([args, worker.config]).includes("secret"));
     assert.equal(worker.connected, false);
     await assert.rejects(f.launcher.start({ ...message, cwd: path.dirname(cwd) }), /different work/);
+  } finally { await rm(cwd, { recursive: true, force: true }); }
+});
+
+test("OMP parents launch OMP children with OMP's own agent and session directories", async () => {
+  const cwd = await mkdtemp(path.join(tmpdir(), "toilet-omp-"));
+  try {
+    const agentDir = path.join(cwd, "omp-agent"), sessions = path.join(cwd, "omp-sessions");
+    const f = fixture(cwd, "started", 100, { runtime: "omp", env: { PI_CODING_AGENT_DIR: agentDir,
+      TOILET_PI_OMP_COMMAND: "custom-omp", TOILET_PI_OMP_SESSION_DIR: sessions } });
+    await f.launcher.start({ requestId: "omp-child", createNew: true, cwd });
+    const { worker, options } = f.spawned[0];
+    assert.equal(worker.config.command, "custom-omp");
+    assert.equal(worker.config.args.at(-1), sessions);
+    assert.equal(options.env.PI_CODING_AGENT_DIR, agentDir);
+    assert.equal(options.env.OMP_CODING_AGENT_DIR, agentDir);
+    assert.equal(options.env.TOILET_PI_RUNNER_RUNTIME, "omp");
+    assert.equal(options.env.TOILET_PI_SESSION_DIR, undefined, "OMP storage must not poison Pi's session-dir override");
+    assert.notEqual(options.env.TOILET_PI_PI_AGENT_DIR, agentDir);
+  } finally { await rm(cwd, { recursive: true, force: true }); }
+});
+
+test("a configured default and an explicit runtime override preserve separate runtime config", async () => {
+  const cwd = await mkdtemp(path.join(tmpdir(), "toilet-runtime-"));
+  try {
+    const f = fixture(cwd, "started", 100, { getDefaultRuntime: () => "omp", env: { TOILET_PI_OMP_COMMAND: "my-omp" } });
+    await f.launcher.start({ requestId: "default", createNew: true, cwd });
+    assert.equal(f.spawned[0].worker.config.command, "my-omp");
+    assert.equal(f.spawned[0].options.env.PI_CODING_AGENT_DIR, undefined, "Pi agent-dir override must not be passed to OMP");
+    assert.equal(f.spawned[0].options.env.TOILET_PI_PI_AGENT_DIR, path.join(cwd, "agent"));
+    await f.launcher.start({ requestId: "explicit", createNew: true, cwd, runtime: "pi" });
+    assert.equal(f.spawned[1].worker.config.command, "custom-pi");
+    await assert.rejects(f.launcher.start({ requestId: "explicit", createNew: true, cwd, runtime: "omp" }), /different work/);
+    await assert.rejects(f.launcher.start({ requestId: "invalid", createNew: true, cwd, runtime: "python" }), /runtime must be/);
+    // An OMP child can subsequently launch Pi without using OMP's PI_CODING_AGENT_DIR as Pi's config.
+    const g = fixture(cwd, "started", 100, { runtime: "omp", env: { ...f.spawned[0].options.env,
+      PI_CODING_AGENT_DIR: path.join(cwd, "omp-agent") } });
+    await g.launcher.start({ requestId: "pi-grandchild", createNew: true, cwd, runtime: "pi" });
+    assert.equal(g.spawned[0].options.env.PI_CODING_AGENT_DIR, path.join(cwd, "agent"));
+  } finally { await rm(cwd, { recursive: true, force: true }); }
+});
+
+test("detects the actual runner package or bundled executable, not DEFAULT_RUNTIME or an installed sibling SDK", async () => {
+  const cwd = await mkdtemp(path.join(tmpdir(), "toilet-identify-"));
+  try {
+    const entry = path.join(cwd, "cli.js");
+    for (const [name, expected] of [["@oh-my-pi/pi-coding-agent", "omp"], ["@earendil-works/pi-coding-agent", "pi"], ["@mariozechner/pi-coding-agent", "pi"]]) {
+      await writeFile(path.join(cwd, "package.json"), JSON.stringify({ name }));
+      assert.equal(detectRunnerRuntime({ argv: ["node", entry], execPath: "node", env: { TOILET_PI_DEFAULT_RUNTIME: "omp", TOILET_PI_RUNNER_RUNTIME: "pi" } }), expected);
+    }
+    assert.equal(detectRunnerRuntime({ argv: ["omp"], execPath: "omp.exe", env: {} }), "omp");
+    assert.equal(detectRunnerRuntime({ argv: ["omp", entry], execPath: "omp.exe", env: {} }), "omp", "bundled executable identity wins over an argument in a sibling package");
+    assert.equal(backgroundWorkerCommand({ execPath: "omp.exe", versions: { bun: "1.3.0" } }), "node");
+    assert.equal(backgroundWorkerCommand({ execPath: "C:/node/node.exe", versions: { node: "24.0.0" } }), "C:/node/node.exe");
+    assert.equal(detectRunnerRuntime({ argv: ["pi"], execPath: "pi", env: { TOILET_PI_RUNNER_RUNTIME: "omp" } }), "pi");
+    assert.equal(detectRunnerRuntime({ argv: ["custom"], execPath: "custom", env: { TOILET_PI_RUNNER_RUNTIME: "omp" } }), "omp");
   } finally { await rm(cwd, { recursive: true, force: true }); }
 });
 

@@ -350,7 +350,9 @@ async function startBackgroundRunner(message) {
     TOILET_PI_SERVER_URL: currentConnectUrl || "",
     TOILET_PI_HOST_ID: HOST_ID,
     TOILET_PI_ROLE: "background",
-    TOILET_PI_SESSION_DIR: target.sessionDir,
+    TOILET_PI_RUNNER_RUNTIME: target.runtime,
+    TOILET_PI_PI_AGENT_DIR: RUNTIME_CONFIG.targets.find(target => target.runtime === "pi").agentDir,
+    [target.runtime === "omp" ? "TOILET_PI_OMP_SESSION_DIR" : "TOILET_PI_SESSION_DIR"]: target.sessionDir,
     TOILET_PI_LAUNCH_REQUEST_ID: requestId || "",
   };
   if (invocation.clearInheritedAgentDir) {

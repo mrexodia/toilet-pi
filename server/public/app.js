@@ -1992,6 +1992,7 @@ function getCurrentLaunchContext() {
 			hostname: summary.hostname,
 			cwd: summary.cwd,
 			hostConnected: summary.hostConnected,
+			launcherSessionGuid: summary.owner ? summary.sessionGuid : undefined,
 		};
 	}
 	if (selectedProjectContext?.cwd) return selectedProjectContext;
@@ -2321,6 +2322,7 @@ function createNewBackgroundSession(context) {
 		type: "control_request",
 		operation: "new",
 		requestId,
+		...(context.launcherSessionGuid ? { launcherSessionGuid: context.launcherSessionGuid } : {}),
 		hostId: context.hostId,
 		cwd: context.cwd,
 	});

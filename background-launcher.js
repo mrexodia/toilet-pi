@@ -3,11 +3,13 @@ import { stat } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { resolveSupervisorRuntimeConfig, buildRunnerInvocation } from "./supervisor-runtime.js";
+import { backgroundWorkerCommand, detectRunnerRuntime, launcherEnvironment } from "./runner-runtime.js";
 
 const workerPath = fileURLToPath(new URL("./background-worker.js", import.meta.url));
 
 /** No scanning or supervisor connection: each launched RPC process gets a small independent stdin keeper. */
 export function createBackgroundLauncher({ getConnectUrl, hostId, extensionPath, env = process.env,
+  runtime = detectRunnerRuntime({ env }), getDefaultRuntime = () => runtime,
   spawnWorker = spawn, timeoutMs = 10_000 } = {}) {
   const requests = new Map();
   let launching = 0;
@@ -17,10 +19,12 @@ export function createBackgroundLauncher({ getConnectUrl, hostId, extensionPath,
       if (typeof id !== "string" || !id || id.length > 256) throw new Error("A bounded launch request ID is required");
       if (requests.has(id)) {
         const known = requests.get(id);
-        if (known.cwd !== message.cwd || message.createNew !== true) throw new Error("Launch request ID was used for different work");
+        if (known.cwd !== message.cwd || known.runtime !== message.runtime || message.createNew !== true) throw new Error("Launch request ID was used for different work");
         return known.result;
       }
       if (message.createNew !== true) throw new Error("This runner can create sessions; inactive resume requires a supervisor");
+      const childRuntime = message.runtime ?? getDefaultRuntime();
+      if (!["pi", "omp"].includes(childRuntime)) throw new Error("Launch runtime must be pi or omp");
       if (launching >= 8) throw new Error("Too many launches in progress");
       const cwd = message.cwd;
       if (typeof cwd !== "string" || !path.isAbsolute(cwd) || cwd.length > 4096 || cwd.includes("\0")) {
@@ -34,14 +38,19 @@ export function createBackgroundLauncher({ getConnectUrl, hostId, extensionPath,
       const result = (async () => {
         const directory = await stat(cwd).catch(() => null);
         if (!directory?.isDirectory()) throw new Error("Launch directory does not exist or is not accessible");
-        const target = resolveSupervisorRuntimeConfig({ env }).targets.find(t => t.runtime === "pi");
+        const configEnv = launcherEnvironment(runtime, env);
+        const config = resolveSupervisorRuntimeConfig({ env: configEnv });
+        const target = config.targets.find(t => t.runtime === childRuntime);
         const invocation = buildRunnerInvocation({ target, extensionPath, createNew: true });
         // Preserve the selected Pi config and session storage, not the launcher's active session identity.
-        const childEnv = { ...env, TOILET_PI_SERVER_URL: connectUrl, TOILET_PI_HOST_ID: hostId,
-          TOILET_PI_ROLE: "background", TOILET_PI_LAUNCH_REQUEST_ID: id, TOILET_PI_SESSION_DIR: target.sessionDir };
-        if (invocation.agentDirOverride) childEnv.PI_CODING_AGENT_DIR = invocation.agentDirOverride;
+        const childEnv = { ...configEnv, TOILET_PI_SERVER_URL: connectUrl, TOILET_PI_HOST_ID: hostId,
+          TOILET_PI_ROLE: "background", TOILET_PI_LAUNCH_REQUEST_ID: id, TOILET_PI_RUNNER_RUNTIME: childRuntime,
+          TOILET_PI_PI_AGENT_DIR: config.targets.find(t => t.runtime === "pi").agentDir,
+          [childRuntime === "omp" ? "TOILET_PI_OMP_SESSION_DIR" : "TOILET_PI_SESSION_DIR"]: target.sessionDir };
+        if (invocation.clearInheritedAgentDir) delete childEnv.PI_CODING_AGENT_DIR;
+        else if (invocation.agentDirOverride) childEnv.PI_CODING_AGENT_DIR = invocation.agentDirOverride;
         return new Promise((resolve, reject) => {
-          const worker = spawnWorker(process.execPath, [workerPath], {
+          const worker = spawnWorker(backgroundWorkerCommand(), [workerPath], {
             cwd, env: childEnv, detached: true, windowsHide: true, stdio: ["ignore", "ignore", "ignore", "ipc"],
           });
           let finished = false;
@@ -69,7 +78,7 @@ export function createBackgroundLauncher({ getConnectUrl, hostId, extensionPath,
           });
         });
       })().finally(() => { launching--; });
-      requests.set(id, { cwd, result });
+      requests.set(id, { cwd, runtime: message.runtime, result });
       return result;
     },
   };

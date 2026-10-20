@@ -86,10 +86,10 @@ For the agent's own tools that drive other sessions (`agents`, `agent_send`, `ag
 reporter task waits for the other session to settle and posts its answer into the chat as a message starting
 `[name] report`, which starts a turn.
 
-`agent_new` can start a normal headless Pi in an existing absolute folder on any host with a connected launch-capable
-Pi/Optchat runner; no supervisor or inactive-project scan is required. Bootstrap the first remote Pi over SSH inside
+`agent_new` can start a normal headless session using the selected host launcher's default runtime in an existing absolute folder on any host with a connected launch-capable
+Pi/OMP/Optchat runner; no supervisor or inactive-project scan is required. Bootstrap the first remote Pi over SSH inside
 herdr/tmux/screen, then delegate through the hub. Children survive their launching session exiting and can launch more
-children. Pi and its provider credentials must exist on that host. A connected Optchat runner also advertises this
+children. The selected runtime and its provider credentials must exist on that host. A connected Optchat runner also advertises this
 capability unless `TOILET_PI_DISABLE_LAUNCH=1`; children use their runtime's normal configuration, not Optchat's selected model.
 
 Inactive discovery/history/resume still require the optional supervisor. Scoped delegation needs `read`, `start`, and

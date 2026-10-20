@@ -25,11 +25,20 @@ function fixture() {
 }
 
 test("help and invalid arguments never create a connection", async () => {
-  for (const args of [["--help"], ["nonsense"], ["thinking", "s", "invalid"], ["model", "s", "bad"], ["hosts", "--thinking", "high"], ["status", ""], ["hosts", "--timeout", "0"]]) {
+  for (const args of [["--help"], ["nonsense"], ["thinking", "s", "invalid"], ["model", "s", "bad"], ["hosts", "--thinking", "high"], ["status", ""], ["hosts", "--timeout", "0"], ["new", "--host", "desktop", "--cwd", "/work", "--runtime", "python"], ["hosts", "--runtime", "omp"]]) {
     const f = fixture();
     assert.equal(await f.run(args), args[0] === "--help" ? 0 : 2);
     assert.equal(f.connected, 0);
   }
+});
+
+test("new forwards an explicit runtime but leaves omitted runtime to the selected launcher's default", async () => {
+  const f = fixture();
+  f.client.control = async (operation, fields) => { f.requests.push([operation, fields]); return { sessionGuid: "child" }; };
+  assert.equal(await f.run(["new", "--host", "desktop", "--cwd", "/work", "--runtime", "omp"]), 0);
+  assert.deepEqual(f.requests[0], ["new", { hostId: "host-123", cwd: "/work", runtime: "omp" }]);
+  assert.equal(await f.run(["new", "--host", "desktop", "--cwd", "/work"]), 0);
+  assert.deepEqual(f.requests[1], ["new", { hostId: "host-123", cwd: "/work" }]);
 });
 
 test("models includes levels and current selection in one session request", async () => {

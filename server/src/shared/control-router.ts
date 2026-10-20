@@ -12,7 +12,7 @@ export function createControlRouter(deps: {
   session: (id?: string) => SessionState | null
   owner: (session: SessionState | null) => string | null
   host: (id: string) => string | null
-  launcher: (hostId: string, createNew: boolean) => string | null
+  launcher: (hostId: string, createNew: boolean, preferredSession?: string) => string | null
   isLauncher: (connectionId: string, hostId: string, createNew: boolean) => boolean
   capable: (id: string, capability: string) => boolean
   configuring: (id: string) => boolean
@@ -103,7 +103,10 @@ export function createControlRouter(deps: {
     const hostId = request.operation === 'new' ? request.hostId! : session!.hostId
     const host = hostId ? deps.host(hostId) : null
     const launching = request.operation === 'resume' || request.operation === 'new'
-    const target = launching ? (hostId ? deps.launcher(hostId, request.operation === 'new') : null) : request.operation === 'history' ? runner || host : runner
+    if (request.launcherSessionGuid && deps.session(request.launcherSessionGuid)?.hostId !== hostId) {
+      return error(client, request, 'invalid_launcher', 'The preferred launcher must be a known session on the requested host')
+    }
+    const target = launching ? (hostId ? deps.launcher(hostId, request.operation === 'new', request.launcherSessionGuid) : null) : request.operation === 'history' ? runner || host : runner
     if (!target) return error(client, request, 'inactive', launching
       ? request.operation === 'new' ? 'No connected supervisor or launch-capable runner on this host' : 'Inactive resume requires a connected host supervisor'
       : 'Required runner or host is not connected')
@@ -120,7 +123,7 @@ export function createControlRouter(deps: {
       ...(request.sessionGuid ? { sessionGuid: request.sessionGuid } : {}), state: launching ? 'starting' : 'loading' })
     if (launching) {
       if (!deps.send(target, { type: 'start_background_session', hostId: hostId!, requestId: id,
-        createNew: request.operation === 'new', ...(request.operation === 'new' ? { cwd: request.cwd } : {
+        createNew: request.operation === 'new', ...(request.operation === 'new' ? { cwd: request.cwd, ...(request.runtime ? { runtime: request.runtime } : {}) } : {
           sessionGuid: session!.sessionGuid, sessionFile: session!.sessionFile, cwd: session!.cwd,
         }) })) finish(id)
     } else if (!deps.send(target, { ...request, type: 'control_command', requestId: id,

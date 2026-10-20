@@ -52,6 +52,7 @@ interface ServerMessage {
   hostId?: string;
   cwd?: string;
   createNew?: boolean;
+  runtime?: "pi" | "omp";
   mode?: "prompt" | "steer" | "followUp";
   since?: string;
   last?: number;

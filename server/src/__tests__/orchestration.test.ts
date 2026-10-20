@@ -147,6 +147,28 @@ describe('orchestration', () => {
     expect(f.drain('new-supervisor').some(m => m.type === 'start_background_session')).toBe(true)
     expect(f.drain('launcher')).toEqual([])
   })
+  it('prefers the selected parent over a supervisor or another runner and forwards runtime overrides', async () => {
+    const f = await fixture()
+    await f.connect('parent', 'interactive', 'omp-parent', 'host', { capabilities: ['launch_new_v1'] }); f.drain('web'); f.drain('parent')
+    await f.send('web', f.request('new', { sessionGuid: undefined, hostId: 'host', cwd: '/child', launcherSessionGuid: 'omp-parent' }))
+    const inherited = f.drain('parent').find(m => m.type === 'start_background_session')
+    expect(inherited).toMatchObject({ cwd: '/child', createNew: true })
+    expect(inherited.runtime).toBeUndefined() // Parent, not the broker/supervisor, chooses its own runtime.
+    expect(f.drain('host')).toEqual([])
+    await f.send('web', f.request('new', { sessionGuid: undefined, hostId: 'host', cwd: '/override', runtime: 'pi', launcherSessionGuid: 'omp-parent' }))
+    expect(f.drain('parent').find(m => m.type === 'start_background_session')).toMatchObject({ runtime: 'pi', cwd: '/override' })
+    await f.send('web', f.request('new', { sessionGuid: undefined, hostId: 'host', cwd: '/supervised', runtime: 'omp' }))
+    expect(f.drain('host').find(m => m.type === 'start_background_session')).toMatchObject({ runtime: 'omp', cwd: '/supervised' })
+  })
+  it('rejects cross-host parent hints and invalid runtimes without spawning work', async () => {
+    const f = await fixture()
+    await f.connect('elsewhere', 'interactive', 'remote-parent', 'other-host', { capabilities: ['launch_new_v1'] }); f.drain('web')
+    await f.send('web', f.request('new', { sessionGuid: undefined, hostId: 'host', cwd: '/child', launcherSessionGuid: 'remote-parent' }))
+    expect(f.drain('web').find(m => m.type === 'control_response').error.code).toBe('invalid_launcher')
+    await f.send('web', f.request('new', { sessionGuid: undefined, hostId: 'host', cwd: '/child', runtime: 'python' }))
+    expect(f.drain('host')).toEqual([]); expect(f.drain('elsewhere')).toEqual([])
+    expect(f.callbacks.size).toBe(0)
+  })
   it('requires a capable live launcher on the requested host, not just any connected Pi', async () => {
     const f = await fixture()
     f.open.delete('host'); f.core.onClose('host')

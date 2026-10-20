@@ -53,6 +53,9 @@ export interface ControlRequest {
   sessionGuid?: string
   hostId?: string
   cwd?: string
+  runtime?: 'pi' | 'omp'
+  /** Prefer this same-host active owner as launcher, so browser children inherit the selected parent's runtime. */
+  launcherSessionGuid?: string
   text?: string
   mode?: 'prompt' | 'steer' | 'followUp'
   requireSettled?: boolean
@@ -546,6 +549,7 @@ export interface ReadSessionSnapshotMessage {
 export interface StartBackgroundSessionCommandMessage {
   type: 'start_background_session'
   hostId: string
+  runtime?: 'pi' | 'omp'
   sessionGuid?: string
   sessionFile?: string | null
   cwd?: string | null
@@ -765,7 +769,7 @@ export function parseClientMessage(raw: unknown): ClientMessage {
       const op = raw.operation
       const fields: Record<string, string[]> = {
         send: ['sessionGuid', 'text', 'mode', 'inputId', 'requireSettled'], abort: ['sessionGuid'], terminate: ['sessionGuid'],
-        resume: ['sessionGuid'], new: ['hostId', 'cwd'], get_input: ['sessionGuid', 'inputId'], history: ['sessionGuid', 'since', 'last'],
+        resume: ['sessionGuid'], new: ['hostId', 'cwd', 'runtime', 'launcherSessionGuid'], get_input: ['sessionGuid', 'inputId'], history: ['sessionGuid', 'since', 'last'],
       }
       const allowed = typeof op === 'string' ? fields[op] : undefined
       const valid = allowed && Object.keys(raw).every(k => ['type', 'requestId', 'operation', ...allowed].includes(k)) &&
@@ -774,6 +778,8 @@ export function parseClientMessage(raw: unknown): ClientMessage {
         (op !== 'send' || (isNonEmptyString(raw.text) && new TextEncoder().encode(raw.text).length <= 50 * 1024 &&
           ['prompt', 'steer', 'followUp'].includes(String(raw.mode)))) &&
         (!['send', 'get_input'].includes(String(op)) || (isNonEmptyString(raw.inputId) && /^[a-zA-Z0-9_-]{16,128}$/.test(raw.inputId))) &&
+        (raw.runtime === undefined || raw.runtime === 'pi' || raw.runtime === 'omp') &&
+        (raw.launcherSessionGuid === undefined || (isNonEmptyString(raw.launcherSessionGuid) && raw.launcherSessionGuid.length <= 128)) &&
         isOptionalBoolean(raw.requireSettled) &&
         (raw.since === undefined || (isNonEmptyString(raw.since) && raw.since.length <= 128)) &&
         (raw.last === undefined || (Number.isInteger(raw.last) && Number(raw.last) > 0 && Number(raw.last) <= 1000))

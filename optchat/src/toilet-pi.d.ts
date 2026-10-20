@@ -5,6 +5,7 @@ declare module "*/background-launcher.js" {
 		getConnectUrl: () => string | undefined | null;
 		hostId: string;
 		extensionPath: string;
+		runtime?: "pi" | "omp";
 	}): { start(message: Record<string, unknown>): Promise<{ pid: number }> };
 }
 
