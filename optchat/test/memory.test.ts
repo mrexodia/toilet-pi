@@ -150,7 +150,9 @@ test("notes and turns are indexed, built, merged and zoomable", async () => {
 	checkView(chat.view.parts, chat.sizes, chat.count, tree.limits.high);
 	checkView(chat.seen.parts, chat.sizes, chat.count, tree.limits.seen);
 	assert.ok(chat.view.parts.some((p) => p[0] > 0), "nothing merged");
-	assert.ok(chat.view.parts.length > chat.seen.parts.length);
+	// Independent high/low-water cycles can leave either view with fewer parts after async builds.
+	// Their byte ceilings are checked above; exact independent policy is covered in memory-policy.test.ts.
+	assert.ok(chat.seen.parts.some((p) => p[0] > 0), "compactor view never merged");
 	const nodes = await checkTree(harness, root, chat.count);
 	assert.ok(nodes > chat.count);
 	// the turn's request: [system] [view + state + header + message]
