@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { once } from "node:events";
 import test from "node:test";
+import { registerHooks } from "node:module";
 import { WebSocketServer } from "ws";
 
 test("extension routes configuration queries and broadcasts local selections on an isolated socket", async () => {
@@ -8,6 +9,11 @@ test("extension routes configuration queries and broadcasts local selections on 
   await once(server, "listening");
   const previousUrl = process.env.TOILET_PI_SERVER_URL;
   process.env.TOILET_PI_SERVER_URL = `ws://127.0.0.1:${server.address().port}/ws?token=isolated-test`;
+  // Certify the 1.x compatibility gate without importing a real provider/runtime.
+  const hooks = registerHooks({ resolve(specifier, context, next) {
+    if (specifier === "@earendil-works/pi-coding-agent") return { url: "data:text/javascript,export const VERSION = '1.3.0'", shortCircuit: true };
+    return next(specifier, context);
+  } });
   const handlers = new Map();
   let level = "off", idle = true;
   const injected = [];
@@ -49,6 +55,7 @@ test("extension routes configuration queries and broadcasts local selections on 
     const hello = await waitFor(message => message.type === "hello");
     assert.deepEqual(hello.configuration, { provider: "fake", modelId: "small", thinkingLevel: "off" });
     assert(hello.capabilities.includes("model_control_v1"));
+    assert(hello.capabilities.includes("agent_settled_v1"));
     socket.send(JSON.stringify({ type: "session_request", requestId: "read", sessionGuid: "isolated-session", operation: "get_config" }));
     const read = await waitFor(message => message.requestId === "read");
     assert.equal(read.success, true);
@@ -61,7 +68,7 @@ test("extension routes configuration queries and broadcasts local selections on 
     assert.equal((await waitFor(message => message.requestId === "busy")).error.code, "busy");
     idle = true;
     const inputId = "test-input-123456789";
-    socket.send(JSON.stringify({ type: "control_command", requestId: "send", sessionGuid: "isolated-session", operation: "send", text: "literal task", mode: "prompt", inputId }));
+    socket.send(JSON.stringify({ type: "control_command", requestId: "send", sessionGuid: "isolated-session", operation: "send", text: "literal task", mode: "prompt", inputId, requireSettled: true }));
     await waitFor(message => message.event?.input?.state === "submitted");
     assert.equal(injected.length, 1);
     assert.equal(injected[0].options.expandPromptTemplates, false);
@@ -81,6 +88,7 @@ test("extension routes configuration queries and broadcasts local selections on 
     assert.equal((await waitFor(message => message.requestId === "abort")).success, true);
     assert.equal(aborts, 1);
   } finally {
+    hooks.deregister();
     await handlers.get("session_shutdown")?.({}, ctx);
     for (const client of server.clients) client.terminate();
     await new Promise(resolve => server.close(resolve));

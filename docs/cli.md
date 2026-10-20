@@ -159,7 +159,7 @@ The broker advertises `orchestration_v1` and `scoped_tokens_v1` in `overview.cap
 
 - Runner `model_control_v1`: existing `session_request`/`session_response`, operations `get_models`, `get_config`, `configure`.
 - Runner `input_tracking_v1`: `control_command` for tracked send/abort/terminate and `session_event.input_status`.
-- Runner `agent_settled_v1`: settlement waits enabled. Currently gated on optional event registration and the known Pi 0.85.1+ (0.x) API generation. Missing/unknown runtime versions are conservative; no busy/idle completion emulation.
+- Runner `agent_settled_v1`: settlement waits enabled. Gated on optional event registration and known Pi 0.85.1+ (0.x) or 1.1+ (1.x) API generations. Missing/unknown runtime versions are conservative; no busy/idle completion emulation.
 - Runner/supervisor `history_v1`: fresh correlated branch reads.
 
 Example client request:
@@ -173,6 +173,7 @@ Example client request:
 | Runtime/transport | Verification |
 | --- | --- |
 | Pi 0.85.1 | Installed docs/source inspected; actual extension exercised with injected fake APIs and isolated socket |
+| Pi 1.3.0 | Installed CLI/RPC/extension docs inspected; version gate and extension routing tested with fake APIs; no real provider/remote-host launch |
 | Older/missing APIs | Mocked unsupported/event-rejection behavior; no guessed model level table or completion |
 | OMP | Shared entrypoint/scanning/launch-argument tests; native new capability behavior **not certified** (runtime not installed locally) |
 | Node | Real CLI + HTTP/auth + WebSocket + broker + fake runner E2E |

@@ -1,4 +1,5 @@
 import os from "node:os";
+import { supportsSettlementVersion } from "./settlement-version.js";
 import { createModelController } from "./model-control.js";
 import { createInputTracker } from "./input-tracker.js";
 import { buildHistoryPage } from "./history-page.js";
@@ -1039,8 +1040,7 @@ export default function (pi: ExtensionAPI) {
     if (sessionChanged) closeSocket("session changed");
     try {
       const { VERSION } = await import("@earendil-works/pi-coding-agent");
-      const [major, minor, patch] = VERSION.split(".").map(Number);
-      supportsSettlement = settlementHandlerRegistered && major === 0 && (minor > 85 || (minor === 85 && patch >= 1));
+      supportsSettlement = settlementHandlerRegistered && supportsSettlementVersion(VERSION);
     } catch { supportsSettlement = false; }
     shuttingDown = false;
     resetSessionTracking(context);
