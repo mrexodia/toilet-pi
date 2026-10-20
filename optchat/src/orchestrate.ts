@@ -11,6 +11,7 @@ import { Type } from "@earendil-works/pi-ai";
 import { defineExtension, defineTask, defineTool, type Extension, LiveDoc } from "@earendil-works/pi-durable";
 import { createAuthStore, resolveCredentials } from "../../cli/auth.js";
 import { type HubHost, type HubSession, ToiletPiClient } from "../../cli/client.js";
+import { parseChildRuntime, type ChildRuntime } from "./config.ts";
 import { ChatDoc } from "./optchat/docs.ts";
 import { stateLine } from "./optchat/extension.ts";
 import { first, headOf } from "./optchat/memory.ts";
@@ -138,7 +139,7 @@ export const Reporter = defineTask<ReporterInput, ReporterState, null>({
 	abort: (_task, runtime, context) => runtime.commit(() => ({ status: "terminal", outcome: { status: "aborted" } }), context),
 });
 
-export function agentsExtension(options: { readonly home: string }): Extension {
+export function agentsExtension(options: { readonly home: string; readonly childRuntime?: ChildRuntime }): Extension {
 	return defineExtension({
 		name: "agents",
 		tasks: [Reporter],
@@ -264,8 +265,8 @@ export function agentsExtension(options: { readonly home: string }): Extension {
 			}),
 			defineTool({
 				name: "agent_new",
-				description: "Start a new background Pi session in an existing absolute directory on a host of the hub. A connected launch-capable Pi or supervisor must be running there. Returns its id.",
-				parameters: Type.Object({ host: Type.String(), cwd: Type.String() }),
+				description: `Start a new background agent in an existing absolute directory on a host of the hub. Default runtime: ${options.childRuntime ?? "pi"}; optionally override with pi or omp. A launch-capable runner or supervisor must be connected there. Returns its id.`,
+				parameters: Type.Object({ host: Type.String(), cwd: Type.String(), runtime: Type.Optional(Type.Union([Type.Literal("pi"), Type.Literal("omp")])) }),
 				replay: "unsafe",
 				execute: async (args) => {
 					const client = await hubClient(90_000);
@@ -273,7 +274,7 @@ export function agentsExtension(options: { readonly home: string }): Extension {
 						const hosts = client.overview?.hosts ?? [];
 						const host = hosts.find((h) => h.hostId === args.host || h.hostname === args.host || h.hostId.startsWith(args.host));
 						if (host === undefined) return reply(`no host ${args.host}; hosts: ${hosts.map((h) => `${h.hostId} (${h.hostname})`).join(", ") || "none"}`);
-						const data = await client.control("new", { hostId: host.hostId, cwd: args.cwd }, 90_000);
+						const data = await client.control("new", { hostId: host.hostId, cwd: args.cwd, runtime: parseChildRuntime(args.runtime ?? options.childRuntime) }, 90_000);
 						return reply(`Started session ${String(data.sessionGuid)} on ${host.hostname} in ${args.cwd}. Send it work with agent_send.`);
 					} catch (error) {
 						return reply(error instanceof Error ? error.message : String(error));

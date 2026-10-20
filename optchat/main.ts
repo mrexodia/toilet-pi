@@ -20,6 +20,7 @@
  *   --thinking LEVEL   OPTCHAT_THINKING     the turns' thinking level (default: pi's default)
  *   --compactor-thinking LEVEL              the compactions' thinking level
  *   --name NAME        OPTCHAT_NAME         the session's name on the hub (default: none; the hub shows the first message)
+ *   --child-runtime R  OPTCHAT_CHILD_RUNTIME new child sessions: pi (default) or omp
  *
  * Models and logins are pi's: run `pi` and `/login` for a subscription, or add a provider to pi's models.json.
  */
@@ -37,7 +38,7 @@ import { resolve } from "node:path";
 import { createAuthStore, promptLogin } from "../cli/auth.js";
 import { authenticateAdmin } from "../cli/client.js";
 import { parseToiletPiInput, readToiletPiConfig, redactUrlTokens, toBrowserBaseUrl, writeToiletPiConfig } from "../toilet-pi-config.js";
-import { readConfig, writeConfig } from "./src/config.ts";
+import { parseChildRuntime, readConfig, writeConfig } from "./src/config.ts";
 import { type Agent, openAgent, parseModel } from "./src/host.ts";
 import { renderPage } from "./src/page.ts";
 import { StreamedMessage } from "./src/stream.ts";
@@ -70,13 +71,14 @@ Options (environment variable); each overrides the home's optchat.json for one r
   --thinking LEVEL         (OPTCHAT_THINKING)   the turns' thinking level
   --compactor-thinking LEVEL                    the compactions' thinking level
   --name NAME              (OPTCHAT_NAME)       the session's name on the hub; default none: the hub shows the first message
+  --child-runtime pi|omp   (OPTCHAT_CHILD_RUNTIME) default runtime for new child sessions; default pi
 
 The hub is the one \`/toilet-pi setup\` saved in pi (or TOILET_PI_SERVER_URL); the agent's own tools for other
 sessions use the CLI's saved login (\`toilet-pi login\`) or TOILET_PI_ORCHESTRATOR_TOKEN with TOILET_PI_CLI_SERVER.
 Models and logins are pi's: run \`pi\`, then \`/login\`, or add a provider to ~/.pi/agent/models.json.`;
 }
 
-type Options = { home: string; model?: string; compactor?: string; thinking?: string; compactorThinking?: string; name?: string };
+type Options = { home: string; model?: string; compactor?: string; thinking?: string; compactorThinking?: string; name?: string; childRuntime?: string };
 
 function parseArgs(argv: string[]): { options: Options; rest: string[] } {
 	const options: Options = {
@@ -94,6 +96,7 @@ function parseArgs(argv: string[]): { options: Options; rest: string[] } {
 		"--thinking": "thinking",
 		"--compactor-thinking": "compactorThinking",
 		"--name": "name",
+		"--child-runtime": "childRuntime",
 	};
 	for (let k = 0; k < argv.length; k++) {
 		const arg = argv[k]!;
@@ -346,7 +349,8 @@ async function setup(options: Options): Promise<number> {
 		const thinking = await ask(`Turns' thinking level (${levelsOf(model).join(", ")})`, current.thinking ?? options.thinking ?? settings.getDefaultThinkingLevel() ?? "medium");
 		const compactor = await pick("Compactions' model: a fast, cheap one (a number, or provider/id)", current.compactor ?? options.compactor ?? model);
 		const compactorThinking = await ask(`Compactions' thinking level (${levelsOf(compactor).join(", ")})`, current.compactorThinking ?? options.compactorThinking ?? "medium");
-		await writeConfig(home, { name, model, thinking, compactor, compactorThinking });
+		const childRuntime = parseChildRuntime(await ask("Default runtime for new child sessions (pi or omp)", options.childRuntime ?? process.env.OPTCHAT_CHILD_RUNTIME ?? current.childRuntime ?? "pi"));
+		await writeConfig(home, { name, model, thinking, compactor, compactorThinking, childRuntime });
 		console.log(`\nSaved ${join(home, "optchat.json")}`);
 
 		const hub = await readToiletPiConfig();
@@ -400,6 +404,7 @@ async function setup(options: Options): Promise<number> {
 async function main(): Promise<number> {
 	const { options, rest } = parseArgs(process.argv.slice(2));
 	const command = rest[0] ?? "chat";
+	if (options.childRuntime !== undefined || process.env.OPTCHAT_CHILD_RUNTIME !== undefined) parseChildRuntime(options.childRuntime ?? process.env.OPTCHAT_CHILD_RUNTIME);
 	if (command === "setup") return setup(options);
 	const readonly = command === "status" || command === "view" || command === "zoom" || command === "page";
 	const agent = await openAgent({ ...options, readonly, onReport: (error) => console.error(`${DIM}(${error instanceof Error ? error.message : String(error)})${OFF}`) });

@@ -21,7 +21,7 @@ import {
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { CodingTools, createBashTool } from "@earendil-works/pi-durable/tools";
-import { type AgentConfig, readConfig, updateConfig } from "./config.ts";
+import { type AgentConfig, parseChildRuntime, readConfig, updateConfig } from "./config.ts";
 import { Home, type Reload, selfExtension } from "./home.ts";
 import { withMemoryCache } from "./optchat/cache.ts";
 import { type ModelChoice, Optchat } from "./optchat/index.ts";
@@ -38,6 +38,8 @@ export type AgentOptions = {
 	readonly compactor?: string;
 	readonly thinking?: string;
 	readonly compactorThinking?: string;
+	/** Default runtime for new child sessions: pi (default) or omp. */
+	readonly childRuntime?: string;
 	readonly context?: Context;
 	readonly onReport?: (error: unknown) => void;
 	/** Only read: no indexing, no compactions, no task scheduling. For status and view beside a running agent. */
@@ -194,13 +196,14 @@ export async function openAgent(options: AgentOptions): Promise<Agent> {
 		...(options.thinking === undefined ? {} : { thinking: options.thinking }),
 		...(options.compactor === undefined ? {} : { compactor: options.compactor }),
 		...(options.compactorThinking === undefined ? {} : { compactorThinking: options.compactorThinking }),
+		childRuntime: parseChildRuntime(options.childRuntime ?? process.env.OPTCHAT_CHILD_RUNTIME ?? saved.childRuntime),
 	};
 	const modelRuntime = await ModelRuntime.create();
 	const settings = SettingsManager.create(home);
 	registry.install(CodingTools);
 	registry.install(OutputLimits);
 	Optchat.install(registry, { home });
-	registry.install(agentsExtension({ home }));
+	registry.install(agentsExtension({ home, childRuntime: config.childRuntime }));
 	// The home's own additions come last: the skills section, then the extensions. They reload in place.
 	registry.install(selfExtension(additions));
 	await additions.reload();

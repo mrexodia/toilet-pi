@@ -127,6 +127,7 @@ export class Runner {
 	#launchUrl: string | undefined;
 	readonly #launchEnabled = process.env.TOILET_PI_DISABLE_LAUNCH !== "1";
 	readonly #launcher = createBackgroundLauncher({ getConnectUrl: () => this.#launchUrl, runtime: "pi",
+		getDefaultRuntime: () => this.#agent.config?.childRuntime ?? "pi",
 		hostId: process.env.TOILET_PI_HOST_ID || hostname(), extensionPath: fileURLToPath(new URL("../../toilet-pi.ts", import.meta.url)) });
 	#identity: Identity | undefined;
 	#ws: WebSocket | undefined;
