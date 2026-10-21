@@ -20,3 +20,7 @@ new_sqlite_classes = ["ToiletPiHub"]
 
 [vars]
 # TOILET_PI_SERVER_TOKEN: set via `wrangler secret put`
+
+[observability.logs]
+enabled = false
+invocation_logs = true
