@@ -106,8 +106,19 @@ for (const busy of [true, false]) {
 		await until(() => states("web").includes("settled"));
 		assert.deepEqual(calls.at(-1), { method: busy ? "steer" : "turn", text: "web follow-up", requestId: "web" });
 
+		const identity = runner.sessionGuid;
+		const callCount = calls.length;
+		const reconnected = once(server, "connection");
 		socket.terminate();
 		await until(() => logs.some((line) => line.includes("disconnected (1006)")));
+		const [replacement] = await reconnected;
+		const restored: any[] = [];
+		replacement.on("message", (data: unknown) => restored.push(JSON.parse(String(data))));
+		await until(() => restored.some((m) => m.type === "hello"));
+		assert.equal(restored.find((m) => m.type === "hello").sessionGuid, identity);
+		assert.equal(calls.length, callCount, "reconnect must not replay submissions");
+		assert.ok(logs.some((line) => line.includes("reconnecting in")));
+		assert.ok(logs.some((line) => line.includes("last pong")));
 		assert.ok(logs.some((line) => line.includes("connecting to")));
 		assert.ok(logs.some((line) => line.includes("connected as")));
 		for (const line of logs) {

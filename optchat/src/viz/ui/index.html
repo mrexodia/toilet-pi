@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>optchat · memory</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header id="top">
+	<div class="brand"><span class="logo">◆</span> optchat <span class="dim">memory</span></div>
+	<div id="home" class="dim mono"></div>
+	<div id="chips"></div>
+	<div id="live" title="Following the running agent"><span class="dot"></span><span id="live-text">live</span></div>
+</header>
+
+<main>
+	<section id="tree-panel" class="panel">
+		<div class="panel-head">
+			<h2>Memory tree</h2>
+			<div class="legend" id="tree-legend"></div>
+			<span class="hint">scroll to zoom · drag to pan · double-click to fit · click a node</span>
+		</div>
+		<div class="canvas-wrap"><canvas id="tree"></canvas></div>
+	</section>
+
+	<section id="context-panel" class="panel">
+		<div class="panel-head">
+			<h2 id="ctx-title">What goes into the model</h2>
+			<div class="seg-tabs" id="ctx-tabs">
+				<button data-mode="view" class="on" title="The memory view at this moment, as the tree holds it">Memory view</button>
+				<button data-mode="recon" title="The whole first request of a turn at this moment, rebuilt from the store">Rebuilt request</button>
+				<button data-mode="request" title="A recorded request, exactly as it was sent">Recorded request</button>
+			</div>
+			<label class="toggle" title="While playing, show each recorded request as the playhead passes it"><input type="checkbox" id="follow-req" checked> follow requests</label>
+			<button id="full" class="btn">Full request…</button>
+		</div>
+		<div id="ctx-sub" class="dim"></div>
+		<div id="ctx-bar"></div>
+		<div id="ctx-legend"></div>
+		<div id="ctx-blocks"></div>
+	</section>
+
+	<aside id="side">
+		<section id="requests-panel" class="panel">
+			<div class="panel-head">
+				<h2>Requests</h2>
+				<div class="seg-tabs" id="req-filter">
+					<button data-kind="all" class="on">All</button>
+					<button data-kind="turn">Turns</button>
+					<button data-kind="compaction">Compactions</button>
+				</div>
+			</div>
+			<div id="requests"></div>
+		</section>
+		<section id="detail-panel" class="panel">
+			<div class="panel-head"><h2 id="detail-title">Details</h2><button id="detail-close" class="btn ghost" title="Clear">✕</button></div>
+			<div id="detail"><p class="dim">Hover anything to peek; click to pin it here.</p></div>
+		</section>
+	</aside>
+</main>
+
+<footer id="timeline">
+	<div class="controls">
+		<button id="b-start" class="btn icon" title="Go to the first commit (Home)">⏮</button>
+		<button id="b-back" class="btn icon" title="Step back (←)">◀</button>
+		<button id="b-play" class="btn icon play" title="Play / pause (space)">▶</button>
+		<button id="b-fwd" class="btn icon" title="Step forward (→)">▶|</button>
+		<button id="b-end" class="btn icon" title="Go to now (End)">⏭</button>
+		<select id="speed" title="Commits per second">
+			<option value="2">2/s</option>
+			<option value="5">5/s</option>
+			<option value="12" selected>12/s</option>
+			<option value="30">30/s</option>
+			<option value="80">80/s</option>
+			<option value="300">300/s</option>
+		</select>
+	</div>
+	<div class="track">
+		<canvas id="tl"></canvas>
+		<div id="tl-label"><span id="tl-time" class="mono"></span><span id="tl-what"></span></div>
+	</div>
+</footer>
+
+<div id="tip" hidden></div>
+
+<dialog id="modal">
+	<div class="modal-head">
+		<h2 id="modal-title">Request</h2>
+		<div class="seg-tabs" id="modal-tabs"></div>
+		<div class="grow"></div>
+		<button id="modal-copy" class="btn">Copy</button>
+		<a id="modal-download" class="btn" download>Download</a>
+		<button id="modal-close" class="btn ghost">✕</button>
+	</div>
+	<div id="modal-meta" class="dim"></div>
+	<pre id="modal-body" class="mono"></pre>
+</dialog>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>

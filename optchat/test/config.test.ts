@@ -26,6 +26,17 @@ test("old homes default to Pi, and childRuntime round-trips without changing mod
 	} finally { await rm(home, { recursive: true, force: true }); }
 });
 
+test("request log settings survive saves from the hub", async () => {
+	const home = await mkdtemp(join(tmpdir(), "optchat-config-"));
+	try {
+		await writeFile(join(home, "optchat.json"), JSON.stringify({ model: "a/b", recordRequests: false, requestLogMB: 64 }));
+		await updateConfig(home, { model: "c/d" });
+		assert.deepEqual(await readConfig(home), { model: "c/d", recordRequests: false, requestLogMB: 64 });
+		await writeFile(join(home, "optchat.json"), JSON.stringify({ recordRequests: "no", requestLogMB: -1 }));
+		assert.deepEqual(await readConfig(home), {});
+	} finally { await rm(home, { recursive: true, force: true }); }
+});
+
 test("agent_new sends the configured default runtime even to a remote launcher, with a per-call override", async () => {
 	const names = ["TOILET_PI_CLI_SERVER", "TOILET_PI_ORCHESTRATOR_TOKEN", "TOILET_PI_ADMIN_TOKEN"] as const;
 	const previous = names.map(name => process.env[name]);

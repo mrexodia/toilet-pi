@@ -65,6 +65,7 @@ npm run optchat -- --home ~/optchat                      # a local chat: each li
 npm run optchat -- --home ~/optchat say "..."            # one turn
 npm run optchat -- --home ~/optchat serve               # a session on the Toilet-Pi hub, until stopped
 npm run optchat -- --home ~/optchat status | view | zoom ID [N [AT]] | compact | note "..."
+npm run optchat -- --home ~/optchat viz                 # watch the memory being built, and see each request
 ```
 
 `serve` connects with the machine connect URL that `/toilet-pi setup` saved in pi (or `TOILET_PI_SERVER_URL`), as an
@@ -104,6 +105,48 @@ Inactive discovery/history/resume still require the optional supervisor. Scoped 
 Run `serve` as a service (systemd, launchd, Task Scheduler) so it is always up. One process owns a home directory at a
 time; `status`, `view` and `zoom` only read and can run beside it.
 
+### Connection recovery
+
+`serve` reconnects automatically with jittered exponential backoff and sends a fresh session hello, without replaying
+submitted work. Each connection attempt has a 15-second deadline, including DNS, TCP, TLS and the WebSocket upgrade.
+The live connection sends a ping every 25 seconds and reconnects if no pong arrives within 10 seconds.
+
+Normal system DNS is always tried first. On a temporary `EAI_AGAIN` failure only, the runner can retry the address of
+its last successfully opened connection to the same hostname, provided that connection opened or received a pong
+within the last five minutes. This in-memory fallback expires while offline, does not help a cold start, and never
+changes the URL hostname, TLS certificate verification, or system DNS settings. Permanent DNS errors are not masked.
+Logs include fallback use, reconnect delay, connection lifetime, last-pong age and locally initiated terminations.
+
+These measures improve recovery; they cannot prevent network outages or Cloudflare Durable Object resets. If DNS
+failures continue, investigate the host's resolver, VPN and network. For fewer platform-driven resets, the existing
+Node server on a stable always-on host is an alternative to the Cloudflare Worker (see [quickstart](../docs/quickstart.md));
+WebSocket clients still need reconnect support in either deployment.
+
+## See the memory
+
+```bash
+npm run optchat -- --home ~/optchat viz [--port 4777] [--host 127.0.0.1] [--no-open]
+```
+
+opens a local page over the home. It only reads (no lock, no writes), so it runs beside `serve` and follows it live.
+
+- **Memory tree**: every node as it was built, one row per level, your messages colored by kind along the bottom.
+  Lines in the view are bright, the compactor's view is underlined, running compactions pulse, failed ones are red.
+  Hover a node for its summary and the real messages under it; click to pin it, zoom into its halves, and read them.
+- **Timeline**: every commit to the memory, replayed exactly from the store (messages indexed, nodes built, views
+  merged, turns frozen, failures folded into bursts). Play, step or scrub it; turns are purple, requests are dots.
+- **What goes into the model**: colored blocks sized by bytes: the system prompt, tools, each view line, your message,
+  and the run so far (thinking, tool calls and results). *Memory view* is the view at the playhead; *Rebuilt request*
+  rebuilds a turn's first request from the store; *Recorded request* is a real call, exactly as it was sent.
+- **Requests**: every turn and compaction call with tokens, cache hits and cost. *Full request…* opens the wire payload
+  (after the cache layout), the provider-neutral context, a readable transcript, and the response, to copy or download.
+
+The agent records each model request in `.optchat/requests.sqlite`, long strings stored once, oldest requests dropped
+past `requestLogMB` (256 by default). It holds your messages and tool output like the transcript does; delete the file
+any time, or set `"recordRequests": false` in `optchat.json`. Recording starts when the agent runs this version;
+earlier history still plays from the store, without recorded requests. The page refuses non-local host names; with
+`--host` it is reachable by anyone on that network.
+
 Options and environment variables, each overriding `optchat.json` for one run:
 
 | Option | Variable | Meaning |
@@ -131,6 +174,9 @@ Options and environment variables, each overriding `optchat.json` for one run:
 - `src/runner.ts`: the Toilet-Pi runner protocol, with the hub's input ids as durable request ids.
 - `src/orchestrate.ts`: the hub tools and the reporter task.
 - `src/host.ts`: pi's model runtime and settings, the Harness over SQLite, the coding tools.
+- `src/requests.ts`: the request log: each call's context, wire payload and response, deduplicated and bounded.
+- `src/viz/`: the visualizer: `store.ts` replays the chat document's revisions into frames, read-only, beside the
+  agent; `segments.ts` splits a request into its parts; `server.ts` serves `ui/` on localhost.
 
 What differs from the document, knowingly:
 

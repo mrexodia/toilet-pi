@@ -26,6 +26,7 @@ import { Home, type Reload, selfExtension } from "./home.ts";
 import { withMemoryCache } from "./optchat/cache.ts";
 import { type ModelChoice, Optchat } from "./optchat/index.ts";
 import { agentsExtension } from "./orchestrate.ts";
+import { recordRequests, RequestLog, REQUESTS_FILE } from "./requests.ts";
 
 export type AgentOptions = {
 	/** The agent's working directory; its memory lives in `.optchat/` under it, its settings in `optchat.json`. */
@@ -180,6 +181,15 @@ export async function readInstructions(home: string): Promise<string | undefined
 	}
 }
 
+function openRequestLog(home: string, config: AgentConfig, report: (error: unknown) => void): RequestLog | undefined {
+	try {
+		return RequestLog.open(join(home, ".optchat", REQUESTS_FILE), { maxMB: config.requestLogMB, report });
+	} catch (error) {
+		report(new Error(`request log: not recording: ${error instanceof Error ? error.message : String(error)}`));
+		return undefined;
+	}
+}
+
 export async function openAgent(options: AgentOptions): Promise<Agent> {
 	const home = resolve(options.home);
 	const context = options.context ?? BACKGROUND_CONTEXT;
@@ -208,14 +218,21 @@ export async function openAgent(options: AgentOptions): Promise<Agent> {
 	registry.install(selfExtension(additions));
 	await additions.reload();
 	const env = new NodeExecutionEnv({ cwd: home });
-	const release = options.readonly ? async () => {} : await takeLock(home);
+	const lock = options.readonly ? async () => {} : await takeLock(home);
+	// Every model request, as sent, for the visualizer (`viz`); only the process holding the lock writes it.
+	const requests = options.readonly || config.recordRequests === false ? undefined : openRequestLog(home, config, report);
+	const release = async (): Promise<void> => {
+		requests?.close();
+		await lock();
+	};
 	const storage = await openNodeSqliteStorage(join(home, ".optchat", "agent.sqlite")).catch(async (error) => {
 		await release();
 		throw error;
 	});
+	const cached = withMemoryCache(modelRuntime);
 	const harness = await Harness.open(
 		storage,
-		{ models: withMemoryCache(modelRuntime), registry, settings: harnessSettings(settings), env: () => env, onReport: report },
+		{ models: requests === undefined ? cached : recordRequests(cached, requests), registry, settings: harnessSettings(settings), env: () => env, onReport: report },
 		context,
 	);
 	try {

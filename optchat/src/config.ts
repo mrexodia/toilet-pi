@@ -21,6 +21,10 @@ export type AgentConfig = {
 	compactorThinking?: string;
 	/** Default runtime for agent_new and children launched by this runner; Pi when absent. */
 	childRuntime?: ChildRuntime;
+	/** Record every model request in `.optchat/requests.sqlite` for the visualizer; on when absent. */
+	recordRequests?: boolean;
+	/** The request log's size limit in megabytes; the oldest requests go first. 256 when absent. */
+	requestLogMB?: number;
 };
 
 export const CONFIG_FILE = "optchat.json";
@@ -43,12 +47,20 @@ export async function readConfig(home: string): Promise<AgentConfig> {
 		if (typeof value === "string" && value.trim() !== "") config[key] = value.trim();
 	}
 	if (parsed.childRuntime !== undefined) config.childRuntime = parseChildRuntime(parsed.childRuntime);
+	if (typeof parsed.recordRequests === "boolean") config.recordRequests = parsed.recordRequests;
+	if (typeof parsed.requestLogMB === "number" && Number.isFinite(parsed.requestLogMB) && parsed.requestLogMB > 0) {
+		config.requestLogMB = parsed.requestLogMB;
+	}
 	return config;
 }
 
 export async function writeConfig(home: string, config: AgentConfig): Promise<void> {
 	if (config.childRuntime !== undefined) parseChildRuntime(config.childRuntime);
-	const clean = Object.fromEntries(Object.entries(config).filter(([, value]) => typeof value === "string" && value !== ""));
+	const clean = Object.fromEntries(
+		Object.entries(config).filter(
+			([, value]) => (typeof value === "string" && value !== "") || typeof value === "boolean" || (typeof value === "number" && Number.isFinite(value)),
+		),
+	);
 	await writeFile(configPath(home), `${JSON.stringify(clean, null, 2)}\n`, "utf8");
 }
 

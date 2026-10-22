@@ -10,6 +10,7 @@
  *   node main.ts [options] view             the view as the model sees it
  *   node main.ts [options] zoom ID [N [AT]] open a line of the view
  *   node main.ts [options] page [FILE]      write the whole memory as one HTML page (default: .optchat/memory.html)
+ *   node main.ts [options] viz [--port N]   a local web page: watch the memory grow, see each request's context
  *   node main.ts [options] serve            run as a session on the Toilet-Pi hub, until stopped
  *   node main.ts [options] setup            choose the name, the models and the hub, saved in the home's optchat.json
  *
@@ -32,6 +33,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { type AgentEvent, type EntryRecord, watchEvents } from "@earendil-works/pi-durable";
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import { ModelRuntime, SettingsManager } from "@earendil-works/pi-coding-agent";
+import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
@@ -41,6 +43,7 @@ import { parseToiletPiInput, readToiletPiConfig, redactUrlTokens, toBrowserBaseU
 import { parseChildRuntime, readConfig, writeConfig } from "./src/config.ts";
 import { type Agent, openAgent, parseModel } from "./src/host.ts";
 import { renderPage } from "./src/page.ts";
+import { startViz } from "./src/viz/server.ts";
 import { StreamedMessage } from "./src/stream.ts";
 import { Runner } from "./src/runner.ts";
 import type { ChatState } from "./src/optchat/index.ts";
@@ -61,6 +64,9 @@ function usage(): string {
   node main.ts [options] view             the view as the model sees it
   node main.ts [options] zoom ID [N [AT]] open a line of the view
   node main.ts [options] page [FILE]      write the whole memory as one HTML page (default: .optchat/memory.html)
+  node main.ts [options] viz [--port N] [--host ADDR] [--no-open]
+                                          a local web page, read-only beside a running agent: watch the memory
+                                          being built, see what each model request held, open any request whole
   node main.ts [options] serve            run as a session on the Toilet-Pi hub, until stopped
   node main.ts [options] setup            choose the name, the models and the hub; saved in the home's optchat.json
 
@@ -297,6 +303,50 @@ work done. For example:
 - Prefer short answers. Ask before destructive commands.
 `;
 
+function openBrowser(url: string): void {
+	const [cmd, args] =
+		process.platform === "win32" ? ["cmd", ["/c", "start", "", url]] : process.platform === "darwin" ? ["open", [url]] : ["xdg-open", [url]];
+	try {
+		spawn(cmd, args, { detached: true, stdio: "ignore", windowsHide: true }).on("error", () => {}).unref();
+	} catch {}
+}
+
+/** The visualizer: a local page over the home's memory and request log. Only reads; runs beside `serve`. */
+async function viz(options: Options, args: string[]): Promise<number> {
+	let port: number | undefined;
+	let host = "127.0.0.1";
+	let open = true;
+	for (let k = 0; k < args.length; k++) {
+		const arg = args[k]!;
+		if (arg === "--port") port = Number(args[++k]);
+		else if (arg === "--host") host = args[++k] ?? host;
+		else if (arg === "--no-open") open = false;
+		else throw new Error(`viz: unknown option ${arg} (--port N, --host ADDR, --no-open)`);
+	}
+	if (port !== undefined && (!Number.isInteger(port) || port < 0 || port > 65535)) throw new Error("viz: --port takes a port number");
+	const home = resolve(options.home);
+	let started: Awaited<ReturnType<typeof startViz>> | undefined;
+	// The default port moves up when taken; an explicit one does not.
+	for (let k = 0; started === undefined; k++) {
+		try {
+			started = await startViz({ home, host, port: port ?? 4777 + k });
+		} catch (error) {
+			if (port !== undefined || k >= 20 || (error as NodeJS.ErrnoException).code !== "EADDRINUSE") throw error;
+		}
+	}
+	console.log(`optchat visualizer for ${home}\n  ${started.url}\n${DIM}read-only; Ctrl+C to stop${OFF}`);
+	if (!["127.0.0.1", "::1", "localhost"].includes(host)) {
+		console.log(`warning: listening on ${host}: anyone who can reach it can read the whole memory and every request`);
+	}
+	if (open) openBrowser(started.url);
+	await new Promise<void>((done) => {
+		process.once("SIGINT", () => done());
+		process.once("SIGTERM", () => done());
+	});
+	await started.close();
+	return 0;
+}
+
 /** An interactive setup: the name, the models and their thinking levels, the hub, saved in optchat.json. */
 async function setup(options: Options): Promise<number> {
 	const home = resolve(options.home);
@@ -350,7 +400,7 @@ async function setup(options: Options): Promise<number> {
 		const compactor = await pick("Compactions' model: a fast, cheap one (a number, or provider/id)", current.compactor ?? options.compactor ?? model);
 		const compactorThinking = await ask(`Compactions' thinking level (${levelsOf(compactor).join(", ")})`, current.compactorThinking ?? options.compactorThinking ?? "medium");
 		const childRuntime = parseChildRuntime(await ask("Default runtime for new child sessions (pi or omp)", options.childRuntime ?? process.env.OPTCHAT_CHILD_RUNTIME ?? current.childRuntime ?? "pi"));
-		await writeConfig(home, { name, model, thinking, compactor, compactorThinking, childRuntime });
+		await writeConfig(home, { ...current, name, model, thinking, compactor, compactorThinking, childRuntime });
 		console.log(`\nSaved ${join(home, "optchat.json")}`);
 
 		const hub = await readToiletPiConfig();
@@ -406,6 +456,7 @@ async function main(): Promise<number> {
 	const command = rest[0] ?? "chat";
 	if (options.childRuntime !== undefined || process.env.OPTCHAT_CHILD_RUNTIME !== undefined) parseChildRuntime(options.childRuntime ?? process.env.OPTCHAT_CHILD_RUNTIME);
 	if (command === "setup") return setup(options);
+	if (command === "viz") return viz(options, rest.slice(1));
 	const readonly = command === "status" || command === "view" || command === "zoom" || command === "page";
 	const agent = await openAgent({ ...options, readonly, onReport: (error) => console.error(`${DIM}(${error instanceof Error ? error.message : String(error)})${OFF}`) });
 	try {
