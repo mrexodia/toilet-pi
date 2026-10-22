@@ -29,6 +29,7 @@ import { buildConnectUrl, parseToiletPiInput, readToiletPiConfig, redactUrlToken
 import type { Agent } from "./host.ts";
 import { timestampLog } from "./log.ts";
 import { contentText, NOTE_KIND } from "./optchat/memory.ts";
+import { createRunnerSocketFactory } from "../../runner-socket.js";
 import { StreamedMessage } from "./stream.ts";
 
 const context = BACKGROUND_CONTEXT;
@@ -124,6 +125,7 @@ export class Runner {
 	readonly #name: string | undefined;
 	readonly #log: (text: string) => void;
 	readonly #connectUrlOption: string | undefined;
+	readonly #createSocket: (url: string) => WebSocket;
 	#launchUrl: string | undefined;
 	readonly #launchEnabled = process.env.TOILET_PI_DISABLE_LAUNCH !== "1";
 	readonly #launcher = createBackgroundLauncher({ getConnectUrl: () => this.#launchUrl, runtime: "pi",
@@ -137,6 +139,7 @@ export class Runner {
 	#heartbeat: NodeJS.Timeout | undefined;
 	#pongTimeout: NodeJS.Timeout | undefined;
 	#connectedAt = 0;
+	#lastPongAt = 0;
 	#busy = false;
 	readonly #partial = new StreamedMessage();
 	#lastStreamAt = 0;
@@ -169,6 +172,7 @@ export class Runner {
 		const log = options.log ?? ((text: string) => console.error(text));
 		this.#log = (text) => log(timestampLog(text));
 		this.#connectUrlOption = options.connectUrl;
+		this.#createSocket = createRunnerSocketFactory({ log: (text) => this.#log(`toilet-pi: ${text}`) });
 	}
 
 	get sessionGuid(): string | undefined {
@@ -225,7 +229,8 @@ export class Runner {
 		const ws = this.#ws;
 		this.#ws = undefined;
 		if (ws !== undefined) {
-			ws.removeAllListeners();
+			// Keep transport cleanup listeners (including the connection deadline) alive.
+			ws.removeAllListeners("message");
 			ws.on("error", () => {});
 			ws.close(1000, "shutdown");
 		}
@@ -256,6 +261,7 @@ export class Runner {
 	async #connect(): Promise<void> {
 		if (this.#stopped || this.#ws !== undefined) return;
 		const url = await this.#connectUrl();
+		if (this.#stopped || this.#ws !== undefined) return;
 		if (url === undefined) {
 			this.#log("toilet-pi: no connect URL; run `/toilet-pi setup <url>` in pi, or set TOILET_PI_SERVER_URL");
 			this.#scheduleReconnect();
@@ -263,7 +269,8 @@ export class Runner {
 		}
 		this.#log(`toilet-pi: connecting to ${redactUrlTokens(url)}${this.#reconnectAttempt > 0 ? ` (attempt ${this.#reconnectAttempt + 1})` : ""}`);
 		this.#launchUrl = url;
-		const ws = new WebSocket(url);
+		this.#lastPongAt = 0;
+		const ws = this.#createSocket(url);
 		this.#ws = ws;
 		ws.on("open", () => {
 			if (this.#ws !== ws) return;
@@ -290,7 +297,7 @@ export class Runner {
 			this.#connectedAt = 0;
 			if (lifetime >= 30_000) this.#reconnectAttempt = 0;
 			const why = reason.toString();
-			this.#log(`toilet-pi: disconnected (${code}${why ? `: ${why}` : ""})`);
+			this.#log(`toilet-pi: disconnected (${code}${why ? `: ${why}` : ""}); connected for ${lifetime}ms; last pong ${this.#lastPongAt ? `${Date.now() - this.#lastPongAt}ms ago` : "not received"}`);
 			for (const input of this.#inputs.values()) if (input.state === "submitted") input.state = "unknown";
 			if (this.#stopped) return;
 			if (why === "replaced") {
@@ -309,6 +316,7 @@ export class Runner {
 		if (this.#reconnectTimer !== undefined || this.#stopped) return;
 		const base = delay ?? Math.min(MAX_RECONNECT_MS, 1000 * 2 ** Math.min(this.#reconnectAttempt, 5));
 		const ms = Math.round(base * (0.8 + Math.random() * 0.4));
+		this.#log(`toilet-pi: reconnecting in ${ms}ms`);
 		this.#reconnectTimer = setTimeout(() => {
 			this.#reconnectTimer = undefined;
 			this.#reconnectAttempt += 1;
@@ -319,6 +327,8 @@ export class Runner {
 	#startHeartbeat(ws: WebSocket): void {
 		this.#clearHeartbeat();
 		ws.on("pong", () => {
+			if (this.#ws !== ws) return;
+			this.#lastPongAt = Date.now();
 			if (this.#pongTimeout !== undefined) clearTimeout(this.#pongTimeout);
 			this.#pongTimeout = undefined;
 		});
@@ -336,7 +346,8 @@ export class Runner {
 					this.#log("toilet-pi: heartbeat timed out; reconnecting");
 					ws.terminate();
 				}, PONG_MS);
-			} catch {
+			} catch (error) {
+				this.#log(`toilet-pi: ping failed; terminating socket: ${error instanceof Error ? error.message : String(error)}`);
 				ws.terminate();
 			}
 		}, PING_MS);
@@ -354,7 +365,8 @@ export class Runner {
 		if (ws === undefined || ws.readyState !== WebSocket.OPEN) return;
 		try {
 			ws.send(JSON.stringify(payload));
-		} catch {
+		} catch (error) {
+			this.#log(`toilet-pi: send failed; terminating socket: ${error instanceof Error ? error.message : String(error)}`);
 			ws.terminate();
 		}
 	}

@@ -5,6 +5,7 @@ import { supportsSettlementVersion } from "./settlement-version.js";
 import { createModelController } from "./model-control.js";
 import { createInputTracker } from "./input-tracker.js";
 import { buildHistoryPage } from "./history-page.js";
+import { createRunnerSocketFactory } from "./runner-socket.js";
 import { WebSocket } from "ws";
 import type {
   ExtensionAPI,
@@ -110,6 +111,7 @@ export default function (pi: ExtensionAPI) {
   let lastThinkingText: string | null = null;
   let reconnectAttempt = 0;
   let connectedAt = 0;
+  let lastPongAt = 0;
   let shuttingDown = false;
   let releasing = false;
   let pendingAssistantAbortMessage = false;
@@ -123,6 +125,7 @@ export default function (pi: ExtensionAPI) {
   let statusWidgetMounted = false;
   let requestStatusRender: (() => void) | null = null;
   const recentLogs: string[] = [];
+  const createSocket = createRunnerSocketFactory({ log: (text: string) => logError(`WebSocket ${text}`) });
   let sessionContextTokens: number | null = null;
   let sessionCostUsd: number | null = null;
   const modelController = createModelController({
@@ -323,7 +326,8 @@ export default function (pi: ExtensionAPI) {
     if (!isOpen()) return;
     try {
       ws?.send(JSON.stringify(payload));
-    } catch {
+    } catch (error) {
+      logError(`WebSocket send failed; terminating socket: ${error instanceof Error ? error.message : String(error)}`);
       // Force the close/reconnect path when a half-open socket rejects a send.
       try {
         ws?.terminate();
@@ -521,8 +525,9 @@ export default function (pi: ExtensionAPI) {
   function startSocketHeartbeat(socket: WebSocket) {
     clearSocketHeartbeat();
     socket.on("pong", () => {
-      if (ws !== socket || !pongTimeout) return;
-      clearTimeout(pongTimeout);
+      if (ws !== socket) return;
+      lastPongAt = Date.now();
+      if (pongTimeout) clearTimeout(pongTimeout);
       pongTimeout = null;
     });
     heartbeatTimer = setInterval(() => {
@@ -539,7 +544,8 @@ export default function (pi: ExtensionAPI) {
           logError("WebSocket heartbeat timed out; reconnecting");
           socket.terminate();
         }, WS_PONG_TIMEOUT_MS);
-      } catch {
+      } catch (error) {
+        logError(`WebSocket ping failed; terminating socket: ${error instanceof Error ? error.message : String(error)}`);
         socket.terminate();
       }
     }, WS_PING_INTERVAL_MS);
@@ -550,8 +556,12 @@ export default function (pi: ExtensionAPI) {
     if (!ws) return;
     const socket = ws;
     ws = null;
+    connectedAt = 0;
+    lastPongAt = 0;
     try {
-      socket.removeAllListeners();
+      // Keep shared transport cleanup listeners, including the connection deadline.
+      // Other extension callbacks ignore this socket once ws is cleared.
+      socket.removeAllListeners("message");
       // Closing during the opening handshake emits an asynchronous error in ws.
       // Keep a no-op listener attached so shutdown cannot crash the pi process.
       socket.on("error", () => {});
@@ -567,6 +577,7 @@ export default function (pi: ExtensionAPI) {
     if (force) closeSocket("session changed");
 
     connectionConfig = await loadConnectionConfig();
+    if (!ctx || shuttingDown) return;
     const connectUrl = getConnectUrl();
     if (!connectUrl) {
       updateStatus("unconfigured", false);
@@ -591,7 +602,9 @@ export default function (pi: ExtensionAPI) {
       `connecting ${reconnectAttempt > 0 ? `(${reconnectAttempt + 1})` : ""}`.trim(),
       false,
     );
-    const socket = new WebSocket(connectUrl);
+    connectedAt = 0;
+    lastPongAt = 0;
+    const socket = createSocket(connectUrl);
     ws = socket;
 
     socket.on("open", () => {
@@ -626,7 +639,7 @@ export default function (pi: ExtensionAPI) {
       if (shuttingDown) return;
       const closeReason = reason.toString();
       const detail = `disconnected (${code}${closeReason ? `: ${closeReason}` : ""})`;
-      logError(`WebSocket ${detail}`);
+      logError(`WebSocket ${detail}; connected for ${connectionLifetimeMs}ms; last pong ${lastPongAt ? `${Date.now() - lastPongAt}ms ago` : "not received"}`);
       updateStatus(detail, false);
       if (closeReason === "replaced") {
         logError("Another pi instance connected with this session ID; automatic reconnect stopped");
@@ -653,6 +666,7 @@ export default function (pi: ExtensionAPI) {
       1000 * 2 ** Math.min(reconnectAttempt, 5),
     );
     const delayMs = Math.round(baseDelay * (0.8 + Math.random() * 0.4));
+    log(`WebSocket reconnecting in ${delayMs}ms`);
     updateStatus(`disconnected; reconnecting in ${(delayMs / 1000).toFixed(1)}s`, false);
     reconnectTimer = setTimeout(() => {
       reconnectTimer = null;
@@ -679,6 +693,8 @@ export default function (pi: ExtensionAPI) {
         clearTimeout(timeout);
         if (helloAcceptedTimer) clearTimeout(helloAcceptedTimer);
         socket.removeAllListeners();
+        // A canceled verification handshake can still emit an asynchronous error.
+        socket.on("error", () => {});
         try {
           socket.close();
         } catch {

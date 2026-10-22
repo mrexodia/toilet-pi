@@ -1,5 +1,14 @@
 // The plain JavaScript modules of toilet-pi that the agent reuses.
 
+declare module "*/runner-socket.js" {
+	export function createRunnerSocketFactory(options: {
+		log: (text: string) => void;
+		lookup?: import("node:net").LookupFunction;
+		now?: () => number;
+		connectTimeoutMs?: number;
+	}): (url: string) => import("ws").default;
+}
+
 declare module "*/background-launcher.js" {
 	export function createBackgroundLauncher(options: {
 		getConnectUrl: () => string | undefined | null;

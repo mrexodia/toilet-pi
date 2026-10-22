@@ -118,6 +118,29 @@ Open the web UI to:
 Normal local pi and OMP sessions connect automatically through `toilet-pi.ts`.
 OMP preserves extension instances across `/new`, `/resume`, `/fork`, and branch operations, so Toilet-Pi handles OMP's `session_switch` and `session_branch` events and reconnects whenever the session GUID changes. Pi's separate shutdown/start replacement lifecycle is also supported. Same-identity reloads, tree navigation, and successful compaction refresh the existing connection instead.
 
+### Connection recovery
+
+The Pi/OMP extension and optchat share the same connection recovery transport:
+
+- Normal system DNS is always tried first. On `EAI_AGAIN` only, a runner can reuse an address from a successful
+  connection to the same hostname that opened or received a pong within the last five minutes. The fallback stays
+  in memory, expires while offline, and does not help a cold start or mask permanent DNS errors.
+- Each connection attempt has a 15-second deadline covering DNS, TCP, TLS and the WebSocket upgrade. Existing
+  ping/pong heartbeats detect connections that stop responding; reconnects use jittered exponential backoff.
+- TLS hostname/certificate verification is unchanged. No public DNS service is contacted as a fallback and no
+  system DNS settings are modified.
+- Diagnostics include DNS fallback use, connection lifetime, last-pong age, retry delays and locally initiated
+  terminations. The extension keeps errors in its status widget when a TUI is attached, without writing over it;
+  headless runners log to stdout.
+
+Reconnects publish a fresh session snapshot without automatically replaying submitted work. The extension still
+stops automatic reconnection when replaced, released, or rejected with policy code `1008`. Setup verification
+keeps its separate five-second timeout and uses fresh DNS rather than the running session's fallback address.
+
+These measures shorten outages; they cannot prevent network failures or Cloudflare Durable Object resets.
+Reload/restart the extension after updating its code. See [optchat](optchat/README.md#connection-recovery) for its
+runner-specific details.
+
 ## CLI
 
 A compact plain-text CLI supports discovery, model/thinking selection, dispatch, lifecycle control, observation, and history:
