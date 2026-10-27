@@ -35,6 +35,7 @@ This design provides one UI across multiple computers without moving session fil
 - Seamless handoff back to the local pi TUI
 - Plain-text orchestration CLI with tracked dispatch, settlement waits, and branch-aware history
 - Scoped orchestrator tokens and browser model/thinking selection
+- Claude Code sessions alongside pi ones: watch, prompt, answer permission prompts and abort ([claude-code](claude-code/README.md))
 
 Interactive sessions remain usable if Toilet-Pi is offline. Background sessions keep running and reconnect after temporary server outages. Runner-launched sessions survive their launching session exiting; supervisor-managed sessions stop when that supervisor shuts down. Both stop when the session is closed or an interactive agent takes ownership.
 
@@ -140,6 +141,14 @@ keeps its separate five-second timeout and uses fresh DNS rather than the runnin
 These measures shorten outages; they cannot prevent network failures or Cloudflare Durable Object resets.
 Reload/restart the extension after updating its code. See [optchat](optchat/README.md#connection-recovery) for its
 runner-specific details.
+
+## Claude Code
+
+This repository is also a Claude Code plugin. Installed (`claude plugin install toilet-pi@mrexodia` from
+[mrexodia/claude-marketplace](https://github.com/mrexodia/claude-marketplace)), it mirrors every Claude Code session on
+the machine to the hub live; started with `claude --dangerously-load-development-channels plugin:toilet-pi@mrexodia`,
+a session also takes prompts, permission answers and aborts from the web UI and CLI. See
+[claude-code/README.md](claude-code/README.md).
 
 ## CLI
 

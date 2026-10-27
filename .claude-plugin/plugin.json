@@ -1,0 +1,46 @@
+{
+  "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
+  "name": "toilet-pi",
+  "displayName": "Toilet-Pi",
+  "description": "Control your Claude Code sessions from the Toilet-Pi web UI and CLI: watch them live, send prompts, answer permission prompts and abort runs.",
+  "author": {
+    "name": "Duncan Ogilvie",
+    "url": "https://github.com/mrexodia"
+  },
+  "homepage": "https://github.com/mrexodia/toilet-pi/tree/master/claude-code#readme",
+  "repository": "https://github.com/mrexodia/toilet-pi",
+  "license": "MPL-2.0",
+  "keywords": [
+    "toilet-pi",
+    "remote-control",
+    "channel",
+    "mobile"
+  ],
+  "icon": "./server/public/icon-512.png",
+  "userConfig": {
+    "connect_url": {
+      "type": "string",
+      "title": "Machine connect URL",
+      "description": "The wss://…/ws?token=… URL from the Toilet-Pi web UI (Installation). Leave empty to reuse the one /toilet-pi setup saved for pi on this machine.",
+      "sensitive": true
+    }
+  },
+  "hooks": "./claude-code/hooks.json",
+  "mcpServers": {
+    "toilet-pi": {
+      "command": "node",
+      "args": [
+        "${CLAUDE_PLUGIN_ROOT}/claude-code/start.js"
+      ],
+      "env": {
+        "TOILET_PI_SERVER_URL": "${user_config.connect_url}"
+      }
+    }
+  },
+  "channels": [
+    {
+      "server": "toilet-pi",
+      "displayName": "Toilet-Pi"
+    }
+  ]
+}

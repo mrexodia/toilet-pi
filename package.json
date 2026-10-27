@@ -43,6 +43,7 @@
     "optchat": "node optchat/main.ts",
     "optchat:setup": "npm install --prefix optchat",
     "optchat:test": "npm test --prefix optchat",
+    "claude:e2e": "node claude-code/e2e.js",
     "test": "node --test test/*.test.js",
     "setup": "npm install && npm install --prefix server && npm run build:client --prefix server"
   },
