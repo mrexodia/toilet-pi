@@ -209,6 +209,12 @@ check(r.code !== 0, `undelivered input fails instead of hanging (exit ${r.code}:
 r = await cli("history", SID, "--last", "2");
 check(r.out.includes("dangerously-load-development-channels"), "hub history shows how to enable the channel");
 
+// 5b. terminate ends the Claude Code process, so with this script as the parent it is refused and nothing is killed
+r = await cli("terminate", SID);
+check(r.code !== 0 && /cannot be closed remotely/.test(r.out + r.err), `terminate is refused when the parent is not Claude Code (exit ${r.code}: ${(r.out + r.err).trim().split("\n").pop()})`);
+await sleep(300);
+check(bridge.exitCode === null && (await cli("sessions")).out.includes(SID), "after a refused terminate the bridge and session stay up");
+
 // 6. /rename shows on the hub; /clear → new session id → bridge reconnects as the new session, without the old name
 appendFileSync(TP, JSON.stringify({ type: "custom-title", customTitle: "Renamed work", sessionId: SID }) + "\n");
 await sleep(1500);

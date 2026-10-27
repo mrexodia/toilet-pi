@@ -47,3 +47,28 @@ export function findBridgeSocket(startPid = process.ppid, maxDepth = 8) {
 	}
 	return null;
 }
+
+/** The command line of `pid` as argv, or null when it can't be read. */
+export function commandLine(pid) {
+	try {
+		return readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0").filter(Boolean);
+	} catch {
+		// no procfs
+	}
+	try {
+		return execFileSync("ps", ["-o", "command=", "-p", String(pid)], { encoding: "utf8", timeout: 2000 }).trim().split(/\s+/);
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * Whether `pid` is the Claude Code CLI: its executable or script is named `claude` (the native build) or lives in
+ * the `@anthropic-ai/claude-code` package (an npm install). Checked before signalling it, so a bridge started any
+ * other way (a test harness, a wrapper) never ends a process that isn't Claude Code.
+ */
+export function isClaudeCode(pid) {
+	const argv = commandLine(pid);
+	if (argv === null) return false;
+	return argv.slice(0, 2).some((arg) => /(^|\/)claude(\.exe)?$/.test(arg) || arg.includes("@anthropic-ai/claude-code"));
+}

@@ -33,7 +33,7 @@
         "${CLAUDE_PLUGIN_ROOT}/.claude-plugin/start.js"
       ],
       "env": {
-        "TOILET_PI_SERVER_URL": "${user_config.connect_url}"
+        "TOILET_PI_CLAUDE_CONNECT_URL": "${user_config.connect_url}"
       }
     }
   },

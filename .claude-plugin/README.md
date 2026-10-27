@@ -95,6 +95,10 @@ toilet-pi abort <session>
   the input reports `aborted`. Claude Code has no remote interrupt, so a reply being generated without tool calls
   runs to the end. Like pi's abort, it leaves queued input alone. Pressing Esc in the terminal also ends the turn
   as `aborted` on the hub.
+- **Close** (the web UI's close-session action, or `toilet-pi terminate`) ends the Claude Code process, as it does
+  for pi: the run is aborted and given up to 5 seconds to stop, then Claude Code gets SIGTERM, restores the terminal
+  and exits. The transcript is kept, so `claude --resume` continues the session. The bridge only does this when its
+  parent process is verifiably Claude Code; otherwise `terminate` fails as `unsupported`.
 
 ## Limits
 
@@ -102,7 +106,8 @@ toilet-pi abort <session>
   explanation in the session, rather than hanging.
 - Replies appear when Claude Code writes them to the transcript, a block at a time, not token by token.
 - No remote model or thinking selection, and Claude Code sessions don't launch new sessions (`new`) or resume
-  inactive ones; a session is on the hub while its `claude` process runs.
+  inactive ones; a session is on the hub while its `claude` process runs, so a closed session can only be
+  continued from a terminal.
 - Subagent (sidechain) activity is not mirrored, only the main conversation.
 - Linux and macOS. On Windows the bridge starts but stays inert.
 - Each hook is a short Node process, so every tool call costs a few tens of milliseconds.
@@ -111,7 +116,7 @@ toilet-pi abort <session>
 
 | Variable | Effect |
 | --- | --- |
-| `TOILET_PI_SERVER_URL` | Machine connect URL. The plugin's `connect_url` option sets it; otherwise the one `/toilet-pi setup` saved is used. |
+| `TOILET_PI_SERVER_URL` | Machine connect URL, used when the plugin's `connect_url` option is empty; otherwise the one `/toilet-pi setup` saved is used. |
 | `TOILET_PI_CLAUDE=0` | Turn the integration off for one session: the bridge stays inert and hooks do nothing. |
 | `TOILET_PI_SESSION_NAME` | The session's name on the hub (otherwise Claude Code's `/rename` title, else the first message). |
 | `TOILET_PI_HOST_ID` | Host id sent in the hello, as for the pi extension. |

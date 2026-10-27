@@ -23,7 +23,7 @@ import WebSocket from "ws";
 import { buildHistoryPage } from "../history-page.js";
 import { createRunnerSocketFactory } from "../runner-socket.js";
 import { buildConnectUrl, parseToiletPiInput, readToiletPiConfig, redactUrlTokens } from "../toilet-pi-config.js";
-import { runDir, socketPath } from "./ipc.js";
+import { isClaudeCode, runDir, socketPath } from "./ipc.js";
 import { log, logToFile } from "./log.js";
 import { Tail, Transcript, unwrapChannel } from "./transcript.js";
 
@@ -33,6 +33,8 @@ const MAX_RECONNECT_MS = 30_000;
 const HELLO_MESSAGES = 300;
 const DELIVERY_TIMEOUT_MS = Number(process.env.TOILET_PI_CLAUDE_DELIVERY_MS) || 30_000;
 const POLL_MS = 1000;
+/** Like pi's terminateSession: how long an aborted run gets to stop before Claude Code is ended anyway. */
+const TERMINATE_GRACE_MS = 5000;
 
 /** `yes abcde`, `no abcde`, or a bare `yes`/`no` when exactly one prompt is open. IDs never contain `l`. */
 const VERDICT_RE = /^\s*(y|yes|allow|n|no|deny)(?:\s+([a-km-z]{5}))?\s*[.!]?\s*$/i;
@@ -64,6 +66,7 @@ export class Bridge {
 
 	#ws;
 	#stopped = false;
+	#terminating = false;
 	#reconnectAttempt = 0;
 	#reconnectTimer;
 	#heartbeat;
@@ -389,6 +392,36 @@ export class Bridge {
 		if (this.#busy) this.#abortRequested = true;
 	}
 
+	/** Terminate ends the Claude Code process, so it is only offered when the parent is verifiably Claude Code. */
+	#canTerminate() {
+		return isClaudeCode(process.ppid);
+	}
+
+	/**
+	 * Close the session like pi's terminateSession: abort the run, give it a few seconds to stop, then end Claude
+	 * Code with SIGTERM (it restores the terminal and exits). The transcript stays, so `claude --resume` continues
+	 * it. Once Claude exits, the bridge's stdin closes and it disconnects from the hub.
+	 */
+	async #terminate() {
+		if (this.#terminating) return;
+		this.#terminating = true;
+		this.#notice({ role: "assistant", stopReason: "stop", text: "⏏ Closing this Claude Code session from Toilet-Pi. Continue it in a terminal with `claude --resume`." });
+		await this.#abort();
+		const deadline = Date.now() + TERMINATE_GRACE_MS;
+		while (this.#busy && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 200));
+		log(`terminate: sending SIGTERM to Claude process ${process.ppid}`);
+		try {
+			process.kill(process.ppid, "SIGTERM");
+		} catch (error) {
+			this.#terminating = false;
+			log(`terminate failed: ${error instanceof Error ? error.message : String(error)}`);
+		}
+	}
+
+	#cannotTerminate() {
+		return "This Claude Code session cannot be closed remotely: the bridge could not confirm its parent process is Claude Code.";
+	}
+
 	// --- from Claude Code ------------------------------------------------------------------------------------
 
 	#onClaudeNotification(method, params) {
@@ -409,9 +442,12 @@ export class Bridge {
 	// --- the hub socket --------------------------------------------------------------------------------------
 
 	async #connectUrl() {
-		// The plugin's connect URL setting arrives here; empty (or an unsubstituted placeholder) means "not set".
-		const configured = process.env.TOILET_PI_SERVER_URL?.trim();
-		if (configured && !configured.startsWith("${")) return buildConnectUrl(parseToiletPiInput(configured));
+		// The plugin's connect_url option arrives in its own variable, so an empty option can't mask
+		// TOILET_PI_SERVER_URL from the environment. Empty (or an unsubstituted placeholder) means "not set".
+		for (const name of ["TOILET_PI_CLAUDE_CONNECT_URL", "TOILET_PI_SERVER_URL"]) {
+			const configured = process.env[name]?.trim();
+			if (configured && !configured.startsWith("${")) return buildConnectUrl(parseToiletPiInput(configured));
+		}
 		const config = await readToiletPiConfig();
 		return config === null ? undefined : buildConnectUrl(config);
 	}
@@ -592,9 +628,13 @@ export class Bridge {
 						await this.#pull();
 						return reply({ history: this.#historyPage(typeof message.since === "string" ? message.since : undefined, typeof message.last === "number" ? message.last : 100) });
 					case "abort":
-					case "terminate":
 						reply({ status: "requested" });
 						return await this.#abort();
+					case "terminate":
+						// Acknowledges the shutdown request, not process exit, as for pi.
+						if (!this.#canTerminate()) return fail("unsupported", this.#cannotTerminate());
+						reply({ status: "requested" });
+						return await this.#terminate();
 					default:
 						return fail("unsupported", "Unsupported control operation");
 				}
@@ -606,7 +646,12 @@ export class Bridge {
 			// Web UI inputs carry no mode: queue behind a busy turn, like the interactive pi runner steers.
 			return this.#dispatch(typeof message.inputId === "string" ? message.inputId : randomUUID(), String(message.text ?? ""), "steer");
 		}
-		if (type === "abort" || type === "abort_and_release" || type === "terminate_session") return this.#abort();
+		if (type === "abort" || type === "abort_and_release") return this.#abort();
+		if (type === "terminate_session") {
+			// The web UI's close-session action: the hub has already told the user it is closing.
+			if (this.#canTerminate()) return this.#terminate();
+			return this.#notice({ role: "assistant", stopReason: "error", text: `Error: ${this.#cannotTerminate()}` });
+		}
 		if (type === "start_background_session") {
 			return this.#send({ type: "runner_status", requestId: message.requestId, status: "error", error: "Claude Code sessions cannot launch new sessions" });
 		}

@@ -3,7 +3,9 @@ import { mkdtempSync, writeFileSync, appendFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { findBridgeSocket, parentOf, socketPath } from "../.claude-plugin/ipc.js";
+import { spawn } from "node:child_process";
+import { symlinkSync } from "node:fs";
+import { findBridgeSocket, isClaudeCode, parentOf, socketPath } from "../.claude-plugin/ipc.js";
 import { contentText, Tail, Transcript, unwrapChannel } from "../.claude-plugin/transcript.js";
 
 const at = "2026-10-27T15:00:00.000Z";
@@ -123,4 +125,19 @@ test("Tail keeps a multibyte character that a read splits in half", async () => 
 	assert.deepEqual(await tail.read(), []);
 	appendFileSync(file, line.subarray(cut));
 	assert.deepEqual(await tail.read(), [{ t: "héllo 🚽 done" }]);
+});
+
+test("terminate only targets a process that is Claude Code", async () => {
+	assert.equal(isClaudeCode(process.pid), false, "a plain node process is not Claude Code");
+	const dir = mkdtempSync(join(tmpdir(), "tp-claude-"));
+	const claude = join(dir, "claude");
+	symlinkSync(process.execPath, claude);
+	const child = spawn(claude, ["-e", "setTimeout(() => {}, 10000)"], { stdio: "ignore" });
+	try {
+		await new Promise((resolve) => setTimeout(resolve, 200));
+		assert.equal(isClaudeCode(child.pid), true, "an executable named claude is");
+	} finally {
+		child.kill();
+	}
+	assert.equal(isClaudeCode(2 ** 22 + 12345), false, "a missing process is not");
 });
