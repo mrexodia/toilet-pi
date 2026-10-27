@@ -155,7 +155,6 @@ export class Bridge {
 		await this.#pull();
 		switch (event) {
 			case "UserPromptSubmit":
-				this.#permissions.clear();
 				this.#setBusy(true);
 				// A channel message starts its turn through UserPromptSubmit too: confirm delivery now, without waiting
 				// for the transcript.
@@ -166,7 +165,8 @@ export class Bridge {
 				return this.#abortRequested ? this.#endAborted(event) : null;
 			case "PostToolUse":
 			case "PostToolUseFailure":
-				this.#permissions.clear();
+				// Only this tool's prompt is settled: with parallel tool calls another may still be waiting for one.
+				this.#forgetPermission(input.tool_name);
 				return this.#abortRequested ? this.#endAborted(event) : null;
 			case "Notification":
 				// Claude is waiting for the user: whatever turn we thought was running has ended.
@@ -174,7 +174,6 @@ export class Bridge {
 				return null;
 			case "Stop": {
 				const aborted = this.#abortRequested;
-				this.#permissions.clear();
 				this.#abortRequested = false;
 				this.#setBusy(false, aborted ? "aborted" : "settled");
 				return null;
@@ -190,7 +189,6 @@ export class Bridge {
 	 */
 	#endAborted(event) {
 		this.#abortRequested = false;
-		this.#permissions.clear();
 		this.#notice({ role: "assistant", stopReason: "aborted", text: "⏹ Stopped remotely from Toilet-Pi." });
 		this.#setBusy(false, "aborted");
 		return this.#stopOutput(event);
@@ -211,6 +209,8 @@ export class Bridge {
 		}
 		const previous = this.#session?.sessionGuid;
 		this.#session = { sessionGuid, transcriptPath: null, cwd: typeof input.cwd === "string" ? input.cwd : process.cwd() };
+		// A /rename title belongs to its session: start over, keeping an explicit override.
+		this.#name = process.env.TOILET_PI_SESSION_NAME || null;
 		this.#transcript = new Transcript();
 		this.#inputs.clear();
 		this.#permissions.clear();
@@ -277,6 +277,8 @@ export class Bridge {
 
 	#setBusy(busy, outcome = "settled") {
 		if (!busy) {
+			// The turn is over (Stop, idle, Esc or abort), so no tool is still waiting for permission.
+			this.#permissions.clear();
 			for (const [inputId, input] of this.#inputs) if (input.state === "running") this.#publish(inputId, outcome);
 		}
 		if (this.#busy === busy) return;
@@ -307,7 +309,6 @@ export class Bridge {
 		}
 		this.#emit({ type: "queued_input_remove", inputId });
 		this.#publish(inputId, "running");
-		this.#permissions.clear();
 		this.#setBusy(true);
 	}
 
@@ -338,6 +339,16 @@ export class Bridge {
 		this.#publish(inputId, "running");
 		this.#publish(inputId, "settled");
 		return true;
+	}
+
+	/** A tool finished (or failed): drop the oldest open permission prompt for that tool, if it had one. */
+	#forgetPermission(toolName) {
+		for (const [requestId, request] of this.#permissions) {
+			if (request.tool_name === toolName) {
+				this.#permissions.delete(requestId);
+				return;
+			}
+		}
 	}
 
 	#answerPermission(requestId, behavior) {

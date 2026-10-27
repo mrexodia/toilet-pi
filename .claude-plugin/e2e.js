@@ -23,6 +23,9 @@ const check = (ok, what) => { console.log(`${ok ? "PASS" : "FAIL"}  ${what}`); i
 
 // --- real hub
 const server = spawn("npx", ["tsx", "src/node/entry.ts"], { cwd: join(ROOT, "server"), env: { ...env, PORT: String(PORT) }, stdio: ["ignore", "pipe", "pipe"], detached: true });
+// Take the hub down with this script however it ends, including a crashed or timed-out check.
+process.on("exit", () => { try { process.kill(-server.pid); } catch {} });
+process.on("unhandledRejection", (error) => { console.log(`FAIL  ${error instanceof Error ? error.message : String(error)}`); process.exit(1); });
 let serverLog = "";
 server.stdout.on("data", (d) => (serverLog += d));
 server.stderr.on("data", (d) => (serverLog += d));
@@ -161,9 +164,28 @@ check(t2.permission?.request_id === "abcde" && t2.permission?.behavior === "allo
 check(!notifications.some((m) => m.method === "notifications/claude/channel" && m.params.content === "yes"), "the verdict was not also sent to Claude as chat");
 check((await s2).code === 0 && yes.code === 0, "both inputs settled");
 
+// 3b. parallel tool calls: a Read finishing must not drop the Bash call's pending permission prompt
+const s5 = cli("send", SID, "read and clean", "--wait");
+const p5 = await next((m) => m.method === "notifications/claude/channel" && m.params.content === "read and clean");
+channelUser(p5.params.meta.input_id, "read and clean");
+await hook("PreToolUse", { tool_name: "Read", tool_input: { file_path: "/work/demo/Makefile" } });
+await hook("PreToolUse", { tool_name: "Bash", tool_input: { command: "make clean" } });
+mcp({ method: "notifications/claude/channel/permission_request", params: { request_id: "fghij", tool_name: "Bash", description: "Clean", input_preview: '{"command": "make clean"}' } });
+await sleep(300);
+await hook("PostToolUse", { tool_name: "Read", tool_input: { file_path: "/work/demo/Makefile" } });
+const yes5 = cli("send", SID, "yes fghij", "--steer");
+const v5 = await next((m) => m.method === "notifications/claude/channel/permission", 8000).catch(() => null);
+check(v5?.params?.request_id === "fghij" && v5.params.behavior === "allow", `a pending Bash prompt survives a parallel Read finishing (${JSON.stringify(v5?.params ?? null)})`);
+check(!notifications.some((m) => m.method === "notifications/claude/channel" && m.params.content === "yes fghij"), "that verdict was not sent to Claude as chat");
+await hook("PostToolUse", { tool_name: "Bash", tool_input: { command: "make clean" } });
+assistant([{ type: "text", text: "Cleaned." }]);
+await hook("Stop", {});
+await s5; await yes5;
+for (const m of notifications.filter((m) => m.method === "notifications/claude/channel" && m.params.content === "yes fghij")) notifications.splice(notifications.indexOf(m), 1);
+
 // 4. abort stops the run at the next tool boundary (real Claude Code fires no Stop after continue:false)
 const s3 = cli("send", SID, "long refactor", "--wait");
-const p3 = await next((m) => m.method === "notifications/claude/channel");
+const p3 = await next((m) => m.method === "notifications/claude/channel" && m.params.content === "long refactor");
 channelUser(p3.params.meta.input_id, "long refactor");
 check((await hook("PreToolUse", { tool_name: "Bash" })) === null, "tools run normally before an abort");
 await sleep(500);
@@ -187,13 +209,19 @@ check(r.code !== 0, `undelivered input fails instead of hanging (exit ${r.code}:
 r = await cli("history", SID, "--last", "2");
 check(r.out.includes("dangerously-load-development-channels"), "hub history shows how to enable the channel");
 
-// 6. /clear → new session id → bridge reconnects as the new session
+// 6. /rename shows on the hub; /clear → new session id → bridge reconnects as the new session, without the old name
+appendFileSync(TP, JSON.stringify({ type: "custom-title", customTitle: "Renamed work", sessionId: SID }) + "\n");
+await sleep(1500);
+r = await cli("status", SID);
+check(/Name: Renamed work/.test(r.out), `a /rename title becomes the hub session name (${r.out.split("\n").find((l) => l.startsWith("Name")) ?? r.err.trim()})`);
 const SID2 = randomUUID();
 currentSid = SID2; currentTp = join(T, `${SID2}.jsonl`); writeFileSync(currentTp, "");
 await hook("SessionStart", { source: "clear" });
 await sleep(1000);
 r = await cli("sessions");
 check(r.out.includes(SID2), "after /clear the new session id is live on the hub");
+r = await cli("status", SID2);
+check(/^Name: -$/m.test(r.out), `the new session does not inherit the old session's title (${r.out.split("\n").find((l) => l.startsWith("Name")) ?? r.err.trim()})`);
 
 // 7. exit: stdin closes → bridge exits, socket removed
 const sock = join(T, "run", `${process.pid}.sock`);
@@ -202,7 +230,6 @@ bridge.stdin.end();
 await sleep(800);
 check(bridge.exitCode !== null && !existsSync(sock), "bridge exits and removes its socket when Claude exits");
 
-process.kill(-server.pid);
 if (failures) { console.log("\n--- bridge log\n" + bridgeLog.slice(-3000)); }
 console.log(failures ? `\n${failures} FAILED` : "\nALL PASSED");
 process.exit(failures ? 1 : 0);

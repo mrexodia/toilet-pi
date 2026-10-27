@@ -112,3 +112,15 @@ test("a plugin channel's namespaced source still unwraps", () => {
 	assert.equal(text, "hi");
 	assert.deepEqual(inputIds, ["in-9"]);
 });
+
+test("Tail keeps a multibyte character that a read splits in half", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "tp-utf8-"));
+	const file = join(dir, "t.jsonl");
+	const tail = new Tail(file);
+	const line = Buffer.from('{"t":"héllo 🚽 done"}\n');
+	const cut = line.indexOf(Buffer.from("🚽")) + 2; // inside the 4-byte emoji
+	writeFileSync(file, line.subarray(0, cut));
+	assert.deepEqual(await tail.read(), []);
+	appendFileSync(file, line.subarray(cut));
+	assert.deepEqual(await tail.read(), [{ t: "héllo 🚽 done" }]);
+});

@@ -187,7 +187,8 @@ export class Tail {
 	constructor(path) {
 		this.path = path;
 		this.offset = 0;
-		this.partial = "";
+		/** Bytes after the last newline: kept undecoded, since a read can end inside a multibyte character. */
+		this.partial = Buffer.alloc(0);
 	}
 
 	async read() {
@@ -200,7 +201,7 @@ export class Tail {
 		if (size < this.offset) {
 			// Rewritten (or replaced) underneath us: start over.
 			this.offset = 0;
-			this.partial = "";
+			this.partial = Buffer.alloc(0);
 		}
 		if (size === this.offset) return [];
 		const handle = await open(this.path, "r");
@@ -209,9 +210,15 @@ export class Tail {
 			const buffer = Buffer.alloc(length);
 			const { bytesRead } = await handle.read(buffer, 0, length, this.offset);
 			this.offset += bytesRead;
-			const text = this.partial + buffer.subarray(0, bytesRead).toString("utf8");
-			const lines = text.split("\n");
-			this.partial = lines.pop() ?? "";
+			const data = Buffer.concat([this.partial, buffer.subarray(0, bytesRead)]);
+			// 0x0A never occurs inside a UTF-8 multibyte sequence, so everything up to the last one decodes whole.
+			const end = data.lastIndexOf(0x0a);
+			if (end < 0) {
+				this.partial = data;
+				return [];
+			}
+			this.partial = data.subarray(end + 1);
+			const lines = data.subarray(0, end).toString("utf8").split("\n");
 			const entries = [];
 			for (const line of lines) {
 				if (line.trim() === "") continue;

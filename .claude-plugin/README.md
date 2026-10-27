@@ -31,8 +31,8 @@ Browser / toilet-pi CLI
 - **Channel.** The bridge is a Claude Code [channel](https://code.claude.com/docs/en/channels-reference): hub input
   is pushed into the live session as a `<channel source="plugin:toilet-pi:toilet-pi">` event, and Claude Code relays its tool
   permission prompts to the bridge, which shows them on the hub.
-- **Hooks.** `hook.js` runs on `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `Stop`,
-  `Notification` and `SessionEnd`. It finds its session's bridge through the process tree (both are children of the same `claude`
+- **Hooks.** `hook.js` runs on `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`,
+  `PostToolUseFailure`, `Stop`, `Notification` and `SessionEnd`. It finds its session's bridge through the process tree (both are children of the same `claude`
   process), so sessions in the same folder never mix. It tells the bridge when turns start and stop, which is how
   `send --wait` settles, and gives it a tool boundary at which to stop an aborted run.
 - **Transcript.** The bridge tails the session's JSONL transcript and mirrors user prompts, replies, thinking and tool
