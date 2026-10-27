@@ -7,7 +7,7 @@
     "name": "Duncan Ogilvie",
     "url": "https://github.com/mrexodia"
   },
-  "homepage": "https://github.com/mrexodia/toilet-pi/tree/master/claude-code#readme",
+  "homepage": "https://github.com/mrexodia/toilet-pi/tree/master/.claude-plugin#readme",
   "repository": "https://github.com/mrexodia/toilet-pi",
   "license": "MPL-2.0",
   "keywords": [
@@ -25,12 +25,12 @@
       "sensitive": true
     }
   },
-  "hooks": "./claude-code/hooks.json",
+  "hooks": "./.claude-plugin/hooks.json",
   "mcpServers": {
     "toilet-pi": {
       "command": "node",
       "args": [
-        "${CLAUDE_PLUGIN_ROOT}/claude-code/start.js"
+        "${CLAUDE_PLUGIN_ROOT}/.claude-plugin/start.js"
       ],
       "env": {
         "TOILET_PI_SERVER_URL": "${user_config.connect_url}"

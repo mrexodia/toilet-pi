@@ -67,7 +67,7 @@ const cost = (usd) => appendFileSync(TP, JSON.stringify({ type: "cost-state", se
 user("hello"); assistant([{ type: "text", text: "Hi! What are we working on?" }]); cost(0.012);
 
 // --- the bridge, as Claude Code would start it
-const bridge = spawn("node", [join(ROOT, "claude-code/start.js")], { env, stdio: ["pipe", "pipe", "pipe"] });
+const bridge = spawn("node", [join(ROOT, ".claude-plugin/start.js")], { env, stdio: ["pipe", "pipe", "pipe"] });
 let bridgeLog = "";
 bridge.stderr.on("data", (d) => (bridgeLog += d));
 const notifications = [];
@@ -95,7 +95,7 @@ mcp({ method: "notifications/initialized" });
 
 function hook(event, extra = {}) {
 	return new Promise((resolve) => {
-		const p = spawn("sh", ["-c", `node ${join(ROOT, "claude-code/hook.js")}`], { env });
+		const p = spawn("sh", ["-c", `node ${join(ROOT, ".claude-plugin/hook.js")}`], { env });
 		let out = "";
 		p.stdout.on("data", (d) => (out += d));
 		p.on("close", () => resolve(out.trim() ? JSON.parse(out) : null));

@@ -3,8 +3,8 @@ import { mkdtempSync, writeFileSync, appendFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { findBridgeSocket, parentOf, socketPath } from "../claude-code/ipc.js";
-import { contentText, Tail, Transcript, unwrapChannel } from "../claude-code/transcript.js";
+import { findBridgeSocket, parentOf, socketPath } from "../.claude-plugin/ipc.js";
+import { contentText, Tail, Transcript, unwrapChannel } from "../.claude-plugin/transcript.js";
 
 const at = "2026-10-27T15:00:00.000Z";
 

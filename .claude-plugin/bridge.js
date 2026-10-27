@@ -366,7 +366,7 @@ export class Bridge {
 			this.#notice({
 				role: "assistant", stopReason: "error",
 				text: "Error: Claude Code did not pick up this message. Remote input needs the Toilet-Pi channel: start Claude with " +
-					"`claude --dangerously-load-development-channels plugin:toilet-pi@<marketplace>` (see claude-code/README.md). " +
+					"`claude --dangerously-load-development-channels plugin:toilet-pi@<marketplace>` (see .claude-plugin/README.md in toilet-pi). " +
 					"Watching the session works without it.",
 			});
 		}
