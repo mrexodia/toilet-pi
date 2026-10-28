@@ -109,7 +109,8 @@ toilet-pi abort <session>
   inactive ones; a session is on the hub while its `claude` process runs, so a closed session can only be
   continued from a terminal.
 - Subagent (sidechain) activity is not mirrored, only the main conversation.
-- Linux and macOS. On Windows the bridge starts but stays inert.
+- On Windows, closing a session remotely isn't supported (`terminate` reports `unsupported`): Windows can only
+  hard-kill a process, which would leave its terminal in a mess. Everything else works as on macOS and Linux.
 - Each hook is a short Node process, so every tool call costs a few tens of milliseconds.
 
 ## Settings
