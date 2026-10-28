@@ -6,7 +6,7 @@
  */
 
 import { connect } from "node:net";
-import { findBridgeSocket } from "./ipc.js";
+import { bridgeCandidates } from "./ipc.js";
 
 const REPLY_TIMEOUT_MS = 3000;
 
@@ -20,17 +20,25 @@ function readStdin() {
 	});
 }
 
+/**
+ * Hand the hook to the bridge at `path`. Resolves `{ connected: false }` when nothing listens there (so the next
+ * candidate can be tried), else `{ connected: true, reply }`, with a null reply on a bad or slow answer.
+ */
 function ask(path, payload) {
 	return new Promise((resolve) => {
 		const socket = connect(path);
+		let connected = false;
 		let buffer = "";
-		const done = (value) => {
+		const done = (reply) => {
 			clearTimeout(timer);
 			socket.destroy();
-			resolve(value);
+			resolve({ connected, reply });
 		};
 		const timer = setTimeout(() => done(null), REPLY_TIMEOUT_MS);
-		socket.on("connect", () => socket.write(`${JSON.stringify(payload)}\n`));
+		socket.on("connect", () => {
+			connected = true;
+			socket.write(`${JSON.stringify(payload)}\n`);
+		});
 		socket.on("data", (chunk) => {
 			buffer += chunk;
 			const newline = buffer.indexOf("\n");
@@ -54,16 +62,18 @@ async function main() {
 	} catch {
 		return;
 	}
-	// At startup the bridge may still be binding its socket: SessionStart waits for it briefly.
+	// At startup the bridge may still be binding its endpoint: SessionStart waits for it briefly.
 	const deadline = Date.now() + (input.hook_event_name === "SessionStart" ? 5000 : 0);
-	let path = findBridgeSocket();
-	while (path === null && Date.now() < deadline) {
+	for (;;) {
+		for (const path of bridgeCandidates()) {
+			const { connected, reply } = await ask(path, input);
+			if (!connected) continue;
+			if (reply?.output) process.stdout.write(`${JSON.stringify(reply.output)}\n`);
+			return;
+		}
+		if (Date.now() >= deadline) return;
 		await new Promise((resolve) => setTimeout(resolve, 200));
-		path = findBridgeSocket();
 	}
-	if (path === null) return;
-	const reply = await ask(path, input);
-	if (reply?.output) process.stdout.write(`${JSON.stringify(reply.output)}\n`);
 }
 
 main().catch(() => {}).finally(() => process.exit(0));

@@ -98,7 +98,8 @@ mcp({ method: "notifications/initialized" });
 
 function hook(event, extra = {}) {
 	return new Promise((resolve) => {
-		const p = spawn("sh", ["-c", `node ${join(ROOT, ".claude-plugin/hook.js")}`], { env });
+		// Like Claude Code: every hook gets CLAUDE_PID, the pid of the claude process (this script).
+		const p = spawn("sh", ["-c", `node ${join(ROOT, ".claude-plugin/hook.js")}`], { env: { ...env, CLAUDE_PID: String(process.pid) } });
 		let out = "";
 		p.stdout.on("data", (d) => (out += d));
 		p.on("close", () => resolve(out.trim() ? JSON.parse(out) : null));
