@@ -5,7 +5,7 @@
 // `sh -c` as Claude Code does, writes a transcript, and reacts to channel notifications the way Claude would. The
 // hub (server/), the CLI (cli/) and the bridge are the real ones. Needs `npm run setup` first. Linux/macOS.
 import { spawn } from "node:child_process";
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -55,11 +55,12 @@ const SID = randomUUID();
 // Where Claude Code keeps it: <config>/projects/<project path with non-alphanumerics as "-">/<session>.jsonl
 mkdirSync(join(T, "cc", "projects", "-work-demo"), { recursive: true });
 const TP = join(T, "cc", "projects", "-work-demo", `${SID}.jsonl`);
+let writeTp = TP; // where simulated Claude appends: moves in 3c
 let parent = null;
 const now = () => new Date().toISOString();
 function entry(type, message, extra = {}) {
 	const uuid = randomUUID();
-	appendFileSync(TP, JSON.stringify({ parentUuid: parent, isSidechain: false, type, message, uuid, timestamp: now(), cwd: "/work/demo", sessionId: SID, ...extra }) + "\n");
+	appendFileSync(writeTp, JSON.stringify({ parentUuid: parent, isSidechain: false, type, message, uuid, timestamp: now(), cwd: "/work/demo", sessionId: SID, ...extra }) + "\n");
 	parent = uuid;
 }
 const user = (text) => entry("user", { role: "user", content: text });
@@ -68,7 +69,7 @@ const channelUser = (inputId, text) => entry("user", { role: "user", content: `<
 	{ isMeta: true, origin: { kind: "channel", server: "toilet-pi" }, promptSource: "system" });
 const assistant = (content, stop = "end_turn") => entry("assistant", { id: `msg_${randomUUID()}`, model: "claude-opus-5-5", role: "assistant", content, stop_reason: stop,
 	usage: { input_tokens: 3, cache_read_input_tokens: 41000, cache_creation_input_tokens: 900, output_tokens: 120 } });
-const cost = (usd) => appendFileSync(TP, JSON.stringify({ type: "cost-state", sessionId: SID, totalCostUSD: usd }) + "\n");
+const cost = (usd) => appendFileSync(writeTp, JSON.stringify({ type: "cost-state", sessionId: SID, totalCostUSD: usd }) + "\n");
 user("hello"); assistant([{ type: "text", text: "Hi! What are we working on?" }]); cost(0.012);
 
 // --- the bridge, as Claude Code would start it
@@ -197,6 +198,26 @@ await hook("Stop", {});
 await s5; await yes5;
 for (const m of notifications.filter((m) => m.method === "notifications/claude/channel" && m.params.content === "yes fghij")) notifications.splice(notifications.indexOf(m), 1);
 
+// 3c. a hook reveals the transcript lives elsewhere (the startup guess was wrong) while an input is in flight:
+// the input still settles, and nothing the hub already shows is shown twice
+const s6 = cli("send", SID, "moved transcript", "--wait");
+const p6 = await next((m) => m.method === "notifications/claude/channel" && m.params.content === "moved transcript");
+const movedTp = join(T, "cc", "projects", "-real-place", `${SID}.jsonl`);
+mkdirSync(dirname(movedTp), { recursive: true });
+copyFileSync(TP, movedTp);
+writeTp = movedTp;
+currentTp = movedTp;
+channelUser(p6.params.meta.input_id, "moved transcript");
+await hook("UserPromptSubmit", { prompt: `<channel source="toilet-pi" input_id="${p6.params.meta.input_id}">\nmoved transcript\n</channel>` });
+assistant([{ type: "text", text: "Moved and done." }]);
+await sleep(1500);
+await hook("Stop", {});
+r = await s6;
+check(r.code === 0, `an input in flight settles when the transcript turns out to be elsewhere (exit ${r.code}: ${(r.out + r.err).trim().split("\n").pop()})`);
+r = await cli("history", SID, "--last", "200");
+const shown = (text) => r.out.split("\n").filter((line) => line.includes(text)).length;
+check(shown("Hi! What are we working on?") === 1 && shown("Moved and done.") === 1, `nothing is shown twice after the move (greeting ${shown("Hi! What are we working on?")}x, reply ${shown("Moved and done.")}x)`);
+
 // 4. abort stops the run at the next tool boundary (real Claude Code fires no Stop after continue:false)
 const s3 = cli("send", SID, "long refactor", "--wait");
 const p3 = await next((m) => m.method === "notifications/claude/channel" && m.params.content === "long refactor");
@@ -230,7 +251,7 @@ await sleep(300);
 check(bridge.exitCode === null && (await cli("sessions")).out.includes(SID), "after a refused terminate the bridge and session stay up");
 
 // 6. /rename shows on the hub; /clear → new session id → bridge reconnects as the new session, without the old name
-appendFileSync(TP, JSON.stringify({ type: "custom-title", customTitle: "Renamed work", sessionId: SID }) + "\n");
+appendFileSync(writeTp, JSON.stringify({ type: "custom-title", customTitle: "Renamed work", sessionId: SID }) + "\n");
 await sleep(1500);
 r = await cli("status", SID);
 check(/Name: Renamed work/.test(r.out), `a /rename title becomes the hub session name (${r.out.split("\n").find((l) => l.startsWith("Name")) ?? r.err.trim()})`);

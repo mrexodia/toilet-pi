@@ -264,14 +264,12 @@ export class Bridge {
 		if (this.#session?.sessionGuid === sessionGuid) {
 			const path = input.transcript_path;
 			if (!path || (this.#session.transcriptPath && samePath(path, this.#session.transcriptPath))) return;
-			if (this.#session.transcriptPath) log(`transcript is ${path}, not ${this.#session.transcriptPath}: rebinding`);
+			return this.#retarget(path);
 		}
 		const previous = this.#session?.sessionGuid;
-		if (previous !== sessionGuid) {
-			// Hooks can also find this bridge by session id: move that endpoint along with the session.
-			if (previous) this.#unlisten(sessionEndpoint(previous));
-			void this.#listen(sessionEndpoint(sessionGuid));
-		}
+		// Hooks can also find this bridge by session id: move that endpoint along with the session.
+		if (previous) this.#unlisten(sessionEndpoint(previous));
+		void this.#listen(sessionEndpoint(sessionGuid));
 		this.#session = { sessionGuid, transcriptPath: null, cwd: typeof input.cwd === "string" ? input.cwd : process.cwd() };
 		// A /rename title belongs to its session: start over, keeping an explicit override.
 		this.#name = process.env.TOILET_PI_SESSION_NAME || null;
@@ -283,10 +281,37 @@ export class Bridge {
 		if (input.transcript_path) this.#follow(input.transcript_path);
 		// Catch up silently: the hello carries the history.
 		await this.#pull({ silent: true });
-		log(previous && previous !== sessionGuid ? `session changed ${previous} → ${sessionGuid}` : `session ${sessionGuid} (transcript ${input.transcript_path ?? "unknown"})`);
+		log(previous ? `session changed ${previous} → ${sessionGuid}` : `session ${sessionGuid} (transcript ${input.transcript_path ?? "unknown"})`);
 		this.#disconnect("session changed");
 		this.#reconnectAttempt = 0;
 		await this.#connect();
+	}
+
+	/** entryIds the hub already has, while #retarget re-reads a transcript: those messages aren't sent again. */
+	#shown = null;
+
+	/**
+	 * Same session, but its transcript is elsewhere (the path guessed at startup was wrong). Follow the right file
+	 * without touching the live state: inputs, permission prompts, a pending abort and the hub connection all stay,
+	 * since reconnecting would turn every input in flight into "unknown". What the hub hasn't seen yet is sent as
+	 * ordinary messages; messages only the bridge made (prompts, notices) keep their place by time.
+	 */
+	async #retarget(path) {
+		log(`transcript is ${path}, not ${this.#session.transcriptPath ?? "known yet"}: following it`);
+		const previous = this.#transcript.messages;
+		this.#shown = new Set(previous.map((message) => message.entryId).filter(Boolean));
+		this.#transcript = new Transcript();
+		this.#follow(path);
+		try {
+			await this.#pull();
+		} finally {
+			this.#shown = null;
+		}
+		const own = previous.filter((message) => message.entryId?.startsWith("toilet-pi-"));
+		if (own.length > 0) {
+			this.#transcript.messages.push(...own);
+			this.#transcript.messages.sort((a, b) => (a.timestamp ?? 0) - (b.timestamp ?? 0));
+		}
 	}
 
 	#follow(path) {
@@ -328,7 +353,9 @@ export class Bridge {
 						continue;
 					}
 					if (silent) continue;
-					if (event.type === "message") this.#emit({ type: "message", message: event.message });
+					if (event.type === "message") {
+						if (!this.#shown?.has(event.message.entryId)) this.#emit({ type: "message", message: event.message });
+					}
 					else if (event.type === "tool_start") this.#emit({ type: "tool_start", toolCallId: event.toolCallId, toolName: event.toolName, args: event.args });
 					else if (event.type === "tool_end") this.#emit({ type: "tool_end", toolCallId: event.toolCallId, toolName: event.toolName, isError: event.isError });
 					else if (event.type === "usage") this.#emit({ type: "usage", contextTokens: this.#transcript.contextTokens, costUsd: this.#transcript.costUsd });
