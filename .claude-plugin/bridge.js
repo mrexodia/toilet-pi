@@ -19,13 +19,14 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync, unlinkSync, watch } from "node:fs";
 import { createServer } from "node:net";
 import { hostname } from "node:os";
+import { resolve } from "node:path";
 import WebSocket from "ws";
 import { buildHistoryPage } from "../history-page.js";
 import { createRunnerSocketFactory } from "../runner-socket.js";
 import { buildConnectUrl, parseToiletPiInput, readToiletPiConfig, redactUrlTokens } from "../toilet-pi-config.js";
-import { endpoint, endpointIsFile, isClaudeCode, runDir } from "./ipc.js";
+import { endpoint, endpointIsFile, isClaudeCode, parentOf, runDir, sessionEndpoint, windowsParentOf } from "./ipc.js";
 import { log, logToFile } from "./log.js";
-import { Tail, Transcript, unwrapChannel } from "./transcript.js";
+import { locateTranscript, Tail, Transcript, unwrapChannel } from "./transcript.js";
 
 const PING_MS = 25_000;
 const PONG_MS = 10_000;
@@ -41,6 +42,24 @@ const VERDICT_RE = /^\s*(y|yes|allow|n|no|deny)(?:\s+([a-km-z]{5}))?\s*[.!]?\s*$
 
 
 // ---------------------------------------------------------------------------------------------------------------
+
+/**
+ * The Claude Code process when it is not this process's parent: on macOS/Linux the nearest ancestor that is Claude
+ * Code; on Windows, where processes can't be identified that way, the grandparent (harmless if it isn't Claude).
+ */
+async function claudeBehindShim() {
+	if (process.platform === "win32") return windowsParentOf(process.ppid);
+	if (isClaudeCode(process.ppid)) return null;
+	let pid = parentOf(process.ppid);
+	for (let depth = 0; pid && depth < 4; depth++, pid = parentOf(pid)) if (isClaudeCode(pid)) return pid;
+	return null;
+}
+
+/** Whether two paths name the same file; Windows paths compare without case. */
+function samePath(a, b) {
+	const norm = (p) => (process.platform === "win32" ? resolve(p).toLowerCase() : resolve(p));
+	return norm(a) === norm(b);
+}
 
 export class Bridge {
 	#mcp;
@@ -73,7 +92,6 @@ export class Bridge {
 	#pongTimeout;
 	#connectedAt = 0;
 	#lastPongAt = 0;
-	#ipc;
 	#timers = [];
 
 	/** @param {{ mcp: import("./mcp.js").StdioMcp }} options */
@@ -84,50 +102,91 @@ export class Bridge {
 	}
 
 	async start() {
-		// A Unix socket on macOS/Linux, a named pipe on Windows; either way keyed by the claude process.
-		const path = endpoint(process.ppid);
+		log(`starting: pid ${process.pid}, parent ${process.ppid}, ${process.platform}, node ${process.version}, ` +
+			`session ${process.env.CLAUDE_CODE_SESSION_ID ?? "(not given)"}, project ${process.env.CLAUDE_PROJECT_DIR ?? process.cwd()}`);
+		if (endpointIsFile) mkdirSync(runDir(), { recursive: true, mode: 0o700 });
+		// Keyed by the claude process, which is normally this process's parent.
+		await this.#listen(endpoint(process.ppid));
+		this.#timers.push(setInterval(() => void this.#pull(), POLL_MS));
+		this.#timers.push(setInterval(() => this.#checkDelivery(), 2000));
+		// A `node` shim (Scoop, Volta, …) makes the parent the shim, not Claude: also listen under Claude's own pid,
+		// so hooks looking up CLAUDE_PID still find this bridge, including after /clear.
+		void claudeBehindShim().then((pid) => {
+			if (pid !== null && !this.#stopped) return this.#listen(endpoint(pid));
+		});
+		// Claude Code tells its MCP servers the session id: join the hub now rather than waiting for the first hook.
+		const sessionGuid = process.env.CLAUDE_CODE_SESSION_ID;
+		if (sessionGuid) {
+			await this.#bind({ session_id: sessionGuid, transcript_path: locateTranscript(sessionGuid), cwd: process.env.CLAUDE_PROJECT_DIR ?? process.cwd() });
+		}
+	}
+
+	/** path → server: every endpoint this bridge answers hooks on. */
+	#listeners = new Map();
+
+	/** Listen for hooks on `path`; a failure (such as another bridge already using it) is logged and skipped. */
+	async #listen(path) {
+		if (this.#listeners.has(path)) return true;
 		if (endpointIsFile) {
-			mkdirSync(runDir(), { recursive: true, mode: 0o700 });
 			try {
 				unlinkSync(path);
 			} catch {
 				// none left over
 			}
 		}
-		this.#ipc = createServer((socket) => {
-			let buffer = "";
-			socket.setEncoding("utf8");
-			socket.on("data", (chunk) => {
-				buffer += chunk;
-				const newline = buffer.indexOf("\n");
-				if (newline < 0) return;
-				let input;
-				try {
-					input = JSON.parse(buffer.slice(0, newline));
-				} catch {
-					socket.end("{}\n");
-					return;
-				}
-				this.onHook(input)
-					.catch((error) => {
-						log(`hook ${input?.hook_event_name}: ${error instanceof Error ? error.message : String(error)}`);
-						return null;
-					})
-					.then((output) => socket.end(`${JSON.stringify(output ? { output } : {})}\n`));
+		const server = createServer((socket) => this.#onHookConnection(socket));
+		try {
+			await new Promise((resolve, reject) => {
+				server.once("error", reject);
+				server.listen(path, resolve);
 			});
-			socket.on("error", () => {});
-		});
-		await new Promise((resolve, reject) => {
-			this.#ipc.once("error", reject);
-			this.#ipc.listen(path, resolve);
-		});
-		this.#socketPath = path;
-		this.#timers.push(setInterval(() => void this.#pull(), POLL_MS));
-		this.#timers.push(setInterval(() => this.#checkDelivery(), 2000));
-		log(`listening for hooks of Claude process ${process.ppid} on ${path}`);
+		} catch (error) {
+			log(`could not listen on ${path}: ${error instanceof Error ? error.message : String(error)}`);
+			return false;
+		}
+		server.on("error", () => {});
+		this.#listeners.set(path, server);
+		log(`listening for hooks on ${path}`);
+		return true;
 	}
 
-	#socketPath;
+	#unlisten(path) {
+		const server = this.#listeners.get(path);
+		if (server === undefined) return;
+		this.#listeners.delete(path);
+		server.close();
+		if (endpointIsFile) {
+			try {
+				unlinkSync(path);
+			} catch {
+				// already gone
+			}
+		}
+	}
+
+	#onHookConnection(socket) {
+		let buffer = "";
+		socket.setEncoding("utf8");
+		socket.on("data", (chunk) => {
+			buffer += chunk;
+			const newline = buffer.indexOf("\n");
+			if (newline < 0) return;
+			let input;
+			try {
+				input = JSON.parse(buffer.slice(0, newline));
+			} catch {
+				socket.end("{}\n");
+				return;
+			}
+			this.onHook(input)
+				.catch((error) => {
+					log(`hook ${input?.hook_event_name}: ${error instanceof Error ? error.message : String(error)}`);
+					return null;
+				})
+				.then((output) => socket.end(`${JSON.stringify(output ? { output } : {})}\n`));
+		});
+		socket.on("error", () => {});
+	}
 
 	async stop() {
 		if (this.#stopped) return;
@@ -135,14 +194,7 @@ export class Bridge {
 		for (const timer of this.#timers) clearInterval(timer);
 		this.#watcher?.close();
 		this.#disconnect("shutdown");
-		this.#ipc?.close();
-		if (this.#socketPath && endpointIsFile) {
-			try {
-				unlinkSync(this.#socketPath);
-			} catch {
-				// already gone
-			}
-		}
+		for (const path of [...this.#listeners.keys()]) this.#unlisten(path);
 		setTimeout(() => process.exit(0), 200).unref();
 	}
 
@@ -210,10 +262,14 @@ export class Bridge {
 	async #bind(input) {
 		const sessionGuid = input.session_id;
 		if (this.#session?.sessionGuid === sessionGuid) {
-			if (!this.#session.transcriptPath && input.transcript_path) this.#follow(input.transcript_path);
-			return;
+			const path = input.transcript_path;
+			if (!path || (this.#session.transcriptPath && samePath(path, this.#session.transcriptPath))) return;
+			return this.#retarget(path);
 		}
 		const previous = this.#session?.sessionGuid;
+		// Hooks can also find this bridge by session id: move that endpoint along with the session.
+		if (previous) this.#unlisten(sessionEndpoint(previous));
+		void this.#listen(sessionEndpoint(sessionGuid));
 		this.#session = { sessionGuid, transcriptPath: null, cwd: typeof input.cwd === "string" ? input.cwd : process.cwd() };
 		// A /rename title belongs to its session: start over, keeping an explicit override.
 		this.#name = process.env.TOILET_PI_SESSION_NAME || null;
@@ -225,10 +281,37 @@ export class Bridge {
 		if (input.transcript_path) this.#follow(input.transcript_path);
 		// Catch up silently: the hello carries the history.
 		await this.#pull({ silent: true });
-		log(previous ? `session changed ${previous} → ${sessionGuid}` : `session ${sessionGuid}`);
+		log(previous ? `session changed ${previous} → ${sessionGuid}` : `session ${sessionGuid} (transcript ${input.transcript_path ?? "unknown"})`);
 		this.#disconnect("session changed");
 		this.#reconnectAttempt = 0;
 		await this.#connect();
+	}
+
+	/** entryIds the hub already has, while #retarget re-reads a transcript: those messages aren't sent again. */
+	#shown = null;
+
+	/**
+	 * Same session, but its transcript is elsewhere (the path guessed at startup was wrong). Follow the right file
+	 * without touching the live state: inputs, permission prompts, a pending abort and the hub connection all stay,
+	 * since reconnecting would turn every input in flight into "unknown". What the hub hasn't seen yet is sent as
+	 * ordinary messages; messages only the bridge made (prompts, notices) keep their place by time.
+	 */
+	async #retarget(path) {
+		log(`transcript is ${path}, not ${this.#session.transcriptPath ?? "known yet"}: following it`);
+		const previous = this.#transcript.messages;
+		this.#shown = new Set(previous.map((message) => message.entryId).filter(Boolean));
+		this.#transcript = new Transcript();
+		this.#follow(path);
+		try {
+			await this.#pull({ replay: true });
+		} finally {
+			this.#shown = null;
+		}
+		const own = previous.filter((message) => message.entryId?.startsWith("toilet-pi-"));
+		if (own.length > 0) {
+			this.#transcript.messages.push(...own);
+			this.#transcript.messages.sort((a, b) => (a.timestamp ?? 0) - (b.timestamp ?? 0));
+		}
 	}
 
 	#follow(path) {
@@ -244,8 +327,12 @@ export class Bridge {
 		}
 	}
 
-	/** Read new transcript lines and publish them; serialized so events keep their order. */
-	#pull({ silent = false } = {}) {
+	/**
+	 * Read new transcript lines and publish them; serialized so events keep their order. `silent` catches up without
+	 * publishing (the hello carries the history). `replay` re-reads history: unseen messages are published, but
+	 * entries that signal something live (an Esc interrupt) are not acted on, since they happened earlier.
+	 */
+	#pull({ silent = false, replay = false } = {}) {
 		this.#pulling = this.#pulling.then(async () => {
 			const tail = this.#tail;
 			if (tail === null) return;
@@ -263,14 +350,16 @@ export class Bridge {
 					}
 					if (event.type === "interrupted") {
 						// Esc in the terminal: Claude Code fires no Stop for a user interrupt.
-						if (!silent) {
+						if (!silent && !replay) {
 							this.#abortRequested = false;
 							this.#setBusy(false, "aborted");
 						}
 						continue;
 					}
 					if (silent) continue;
-					if (event.type === "message") this.#emit({ type: "message", message: event.message });
+					if (event.type === "message") {
+						if (!this.#shown?.has(event.message.entryId)) this.#emit({ type: "message", message: event.message });
+					}
 					else if (event.type === "tool_start") this.#emit({ type: "tool_start", toolCallId: event.toolCallId, toolName: event.toolName, args: event.args });
 					else if (event.type === "tool_end") this.#emit({ type: "tool_end", toolCallId: event.toolCallId, toolName: event.toolName, isError: event.isError });
 					else if (event.type === "usage") this.#emit({ type: "usage", contextTokens: this.#transcript.contextTokens, costUsd: this.#transcript.costUsd });

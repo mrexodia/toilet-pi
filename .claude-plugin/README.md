@@ -25,15 +25,18 @@ Browser / toilet-pi CLI
 ```
 
 - **Bridge.** Claude Code starts the plugin's `toilet-pi` MCP server (`start.js`, which runs `bridge.js`) for every
-  session. It connects to the hub as an
-  `interactive` session, exactly like `toilet-pi.ts` and Optchat do, using the same machine connect URL and reconnect
-  logic. The hub session id is Claude Code's own session id; `/clear` switches the bridge to the new one.
+  session. It connects to the hub as an `interactive` session, exactly like `toilet-pi.ts` and Optchat do, using the
+  same machine connect URL and reconnect logic, as soon as Claude starts: Claude Code tells it the session id, and
+  it finds the transcript under `~/.claude/projects/`. The hub session id is Claude Code's own session id; `/clear`
+  switches the bridge to the new one.
 - **Channel.** The bridge is a Claude Code [channel](https://code.claude.com/docs/en/channels-reference): hub input
   is pushed into the live session as a `<channel source="plugin:toilet-pi:toilet-pi">` event, and Claude Code relays its tool
   permission prompts to the bridge, which shows them on the hub.
 - **Hooks.** `hook.js` runs on `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`,
-  `PostToolUseFailure`, `Stop`, `Notification` and `SessionEnd`. It finds its session's bridge through the process tree (both are children of the same `claude`
-  process), so sessions in the same folder never mix. It tells the bridge when turns start and stop, which is how
+  `PostToolUseFailure`, `Stop`, `Notification` and `SessionEnd`. It finds its session's bridge by Claude's pid
+  (`CLAUDE_PID`) or by its session id, on a Unix socket (macOS/Linux) or named pipe (Windows), so sessions in the
+  same folder never mix. When a `node` shim (Scoop, Volta, …) sits between Claude and the bridge, the bridge also
+  listens under Claude's own pid. It tells the bridge when turns start and stop, which is how
   `send --wait` settles, and gives it a tool boundary at which to stop an aborted run.
 - **Transcript.** The bridge tails the session's JSONL transcript and mirrors user prompts, replies, thinking and tool
   results, plus the model, context size and cost.
@@ -122,6 +125,21 @@ toilet-pi abort <session>
 | `TOILET_PI_SESSION_NAME` | The session's name on the hub (otherwise Claude Code's `/rename` title, else the first message). |
 | `TOILET_PI_HOST_ID` | Host id sent in the hello, as for the pi extension. |
 | `TOILET_PI_CLAUDE_LOG` | Append the bridge's log to this file. Claude Code's own debug log keeps little of it. |
+
+## Troubleshooting
+
+Start Claude with `TOILET_PI_CLAUDE_LOG` set to collect the bridge's log (and any hook that couldn't reach it):
+
+```bash
+TOILET_PI_CLAUDE_LOG=~/toilet-pi-claude.log claude --dangerously-load-development-channels plugin:toilet-pi@mrexodia
+```
+```powershell
+$env:TOILET_PI_CLAUDE_LOG = "$HOME\toilet-pi-claude.log"; claude --dangerously-load-development-channels plugin:toilet-pi@mrexodia
+```
+
+A working start logs `starting: …`, `listening for hooks on …`, `session …` and `connected as …`. No `connected
+as` means the hub can't be reached (check the connect URL); `no bridge answered` lines mean hooks can't find the
+bridge, and list where they looked.
 
 ## Development
 

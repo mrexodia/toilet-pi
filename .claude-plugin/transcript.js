@@ -7,7 +7,10 @@
  * context size, cost). It is pure: the bridge feeds it lines, it returns what to publish.
  */
 
+import { existsSync, readdirSync } from "node:fs";
 import { open, stat } from "node:fs/promises";
+import { homedir } from "node:os";
+import { join } from "node:path";
 
 const MAX_TEXT_BYTES = 50 * 1024;
 
@@ -73,6 +76,29 @@ function isPlumbing(text) {
 }
 
 const STOP_REASONS = { end_turn: "stop", tool_use: "toolUse", max_tokens: "length", stop_sequence: "stop", refusal: "refusal", pause_turn: "stop" };
+
+/** Claude Code's folder for a project: its path with every character other than a letter or digit as `-`. */
+export function projectSlug(projectDir) {
+	return String(projectDir).replace(/[^A-Za-z0-9]/g, "-");
+}
+
+/**
+ * Where Claude Code keeps the transcript of `sessionId`: the existing `<config>/projects/<any>/<id>.jsonl`, else
+ * the path it will be created at under the project's folder (a new session writes it with its first message).
+ */
+export function locateTranscript(sessionId, { configDir = process.env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude"), projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd() } = {}) {
+	const projects = join(configDir, "projects");
+	const file = `${sessionId}.jsonl`;
+	try {
+		for (const folder of readdirSync(projects)) {
+			const candidate = join(projects, folder, file);
+			if (existsSync(candidate)) return candidate;
+		}
+	} catch {
+		// no projects folder yet
+	}
+	return join(projects, projectSlug(projectDir), file);
+}
 
 export class Transcript {
 	constructor() {
