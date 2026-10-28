@@ -5,7 +5,7 @@
 // `sh -c` as Claude Code does, writes a transcript, and reacts to channel notifications the way Claude would. The
 // hub (server/), the CLI (cli/) and the bridge are the real ones. Needs `npm run setup` first. Linux/macOS.
 import { spawn } from "node:child_process";
-import { appendFileSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -52,7 +52,9 @@ function cli(...args) {
 
 // --- transcript
 const SID = randomUUID();
-const TP = join(T, `${SID}.jsonl`);
+// Where Claude Code keeps it: <config>/projects/<project path with non-alphanumerics as "-">/<session>.jsonl
+mkdirSync(join(T, "cc", "projects", "-work-demo"), { recursive: true });
+const TP = join(T, "cc", "projects", "-work-demo", `${SID}.jsonl`);
 let parent = null;
 const now = () => new Date().toISOString();
 function entry(type, message, extra = {}) {
@@ -70,7 +72,11 @@ const cost = (usd) => appendFileSync(TP, JSON.stringify({ type: "cost-state", se
 user("hello"); assistant([{ type: "text", text: "Hi! What are we working on?" }]); cost(0.012);
 
 // --- the bridge, as Claude Code would start it
-const bridge = spawn("node", [join(ROOT, ".claude-plugin/start.js")], { env, stdio: ["pipe", "pipe", "pipe"] });
+// Like Claude Code, which tells its MCP servers the session id, config folder and project.
+const bridge = spawn("node", [join(ROOT, ".claude-plugin/start.js")], {
+	env: { ...env, CLAUDE_CODE_SESSION_ID: SID, CLAUDE_CONFIG_DIR: join(T, "cc"), CLAUDE_PROJECT_DIR: "/work/demo" },
+	stdio: ["pipe", "pipe", "pipe"],
+});
 let bridgeLog = "";
 bridge.stderr.on("data", (d) => (bridgeLog += d));
 const notifications = [];
@@ -109,10 +115,17 @@ function hook(event, extra = {}) {
 let currentSid = SID, currentTp = TP;
 // The bridge keys its socket by its parent's pid: this process.
 
+// 0. the session is on the hub as soon as the bridge starts, before any hook (hooks may not reach it)
+await sleep(1500);
+let r = await cli("sessions");
+check(r.out.includes(SID), "session on the hub before any hook ran, from the session id Claude Code gives the bridge");
+r = await cli("history", SID, "--last", "5");
+check(r.out.includes("What are we working on"), "its transcript was found under the config folder and mirrored");
+
 // 1. session appears with history
 await hook("SessionStart", { source: "startup" });
 await sleep(800);
-let r = await cli("sessions");
+r = await cli("sessions");
 const hostsOut = (await cli("hosts")).out;
 check(r.out.includes(SID) && r.out.includes("/work/demo") && /sessions=1/.test(hostsOut), "session listed on the hub with its cwd, grouped under the machine");
 r = await cli("history", SID, "--last", "5");

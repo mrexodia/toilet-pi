@@ -2,12 +2,14 @@
  * How a hook finds its session's bridge. Claude Code starts the bridge (an MCP server) and every hook as its own
  * children, so the bridge listens on an endpoint named after its parent's pid (the `claude` process), and a hook
  * looks for the endpoint of the Claude process it belongs to: `CLAUDE_PID`, which Claude Code gives every hook.
- * No session ids need to be known in advance, and two Claude sessions in the same folder never cross.
+ * The bridge also listens on an endpoint named after the session it is bound to, which a hook knows from its input:
+ * that one still works when something (a `node` shim such as Scoop's or Volta's) sits between Claude and the bridge.
+ * Two Claude sessions in the same folder never cross.
  *
- * The endpoint is a Unix socket on macOS and Linux and a named pipe on Windows.
+ * Endpoints are Unix sockets on macOS and Linux and named pipes on Windows.
  */
 
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -22,6 +24,13 @@ export function runDir() {
 export function endpoint(claudePid) {
 	if (WINDOWS) return `\\\\.\\pipe\\toilet-pi-claude-${claudePid}`;
 	return join(runDir(), `${claudePid}.sock`);
+}
+
+/** Where the bridge bound to Claude Code session `sessionId` also listens. */
+export function sessionEndpoint(sessionId) {
+	const id = String(sessionId).replace(/[^A-Za-z0-9-]/g, "").slice(0, 64);
+	if (WINDOWS) return `\\\\.\\pipe\\toilet-pi-claude-s-${id}`;
+	return join(runDir(), `s-${id}.sock`);
 }
 
 /** Endpoints are files only on POSIX: there a stale one is removed before listening. */
@@ -52,15 +61,16 @@ export function parentOf(pid) {
  * (Claude Code itself for an exec-form hook), then, on POSIX, any that exist for its further ancestors, which
  * covers a hook run through a shell by a Claude Code without `CLAUDE_PID`.
  */
-export function bridgeCandidates(env = process.env, startPid = process.ppid, maxDepth = 8) {
+export function bridgeCandidates(env = process.env, startPid = process.ppid, sessionId = undefined, maxDepth = 8) {
 	const out = [];
-	const add = (pid) => {
-		const path = endpoint(pid);
+	const addPath = (path) => {
 		if (!out.includes(path)) out.push(path);
 	};
+	const add = (pid) => addPath(endpoint(pid));
 	const claudePid = Number(env.CLAUDE_PID);
 	if (Number.isInteger(claudePid) && claudePid > 1) add(claudePid);
 	add(startPid);
+	if (typeof sessionId === "string" && sessionId !== "") addPath(sessionEndpoint(sessionId));
 	if (WINDOWS) return out;
 	let pid = parentOf(startPid);
 	for (let depth = 1; pid && depth < maxDepth; depth++) {
@@ -68,6 +78,21 @@ export function bridgeCandidates(env = process.env, startPid = process.ppid, max
 		pid = parentOf(pid);
 	}
 	return out;
+}
+
+/**
+ * Windows only: the parent of `pid`, asked of PowerShell once (Node has no API for it). Resolves null on any failure.
+ * The bridge uses it to also listen under Claude's own pid when its parent is a `node` shim rather than Claude.
+ */
+export function windowsParentOf(pid) {
+	return new Promise((resolve) => {
+		if (!WINDOWS) return resolve(null);
+		const command = `(Get-CimInstance Win32_Process -Filter "ProcessId=${Number(pid)}").ParentProcessId`;
+		execFile("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", command], { timeout: 10_000, windowsHide: true }, (error, stdout) => {
+			const parent = Number(String(stdout).trim());
+			resolve(!error && Number.isInteger(parent) && parent > 4 ? parent : null);
+		});
+	});
 }
 
 /** The command line of `pid` as argv, or null when it can't be read (always on Windows). */

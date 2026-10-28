@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, appendFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -7,8 +7,8 @@ import { spawn } from "node:child_process";
 import { symlinkSync } from "node:fs";
 import { createServer } from "node:net";
 import { fileURLToPath } from "node:url";
-import { bridgeCandidates, endpoint, isClaudeCode, parentOf } from "../.claude-plugin/ipc.js";
-import { contentText, Tail, Transcript, unwrapChannel } from "../.claude-plugin/transcript.js";
+import { bridgeCandidates, endpoint, isClaudeCode, parentOf, sessionEndpoint } from "../.claude-plugin/ipc.js";
+import { contentText, locateTranscript, projectSlug, Tail, Transcript, unwrapChannel } from "../.claude-plugin/transcript.js";
 
 const at = "2026-10-27T15:00:00.000Z";
 
@@ -173,4 +173,52 @@ test("terminate only targets a process that is Claude Code", async () => {
 		child.kill();
 	}
 	assert.equal(isClaudeCode(2 ** 22 + 12345), false, "a missing process is not");
+});
+
+test("transcripts are found where Claude Code keeps them", () => {
+	assert.equal(projectSlug("/tmp/a b/proj"), "-tmp-a-b-proj");
+	assert.equal(projectSlug("C:\\Users\\me\\sysadmin"), "C--Users-me-sysadmin");
+	const config = mkdtempSync(join(tmpdir(), "tp-config-"));
+	// Not there yet: the path it will be created at under the project's folder.
+	assert.equal(locateTranscript("abc", { configDir: config, projectDir: "/work/demo" }), join(config, "projects", "-work-demo", "abc.jsonl"));
+	// Already there (here under another folder, as after a move): found by its name.
+	mkdirSync(join(config, "projects", "-elsewhere"), { recursive: true });
+	writeFileSync(join(config, "projects", "-elsewhere", "abc.jsonl"), "");
+	assert.equal(locateTranscript("abc", { configDir: config, projectDir: "/work/demo" }), join(config, "projects", "-elsewhere", "abc.jsonl"));
+});
+
+test("hook.js reaches the bridge through the session endpoint when CLAUDE_PID points elsewhere (a node shim)", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "tp-shim-"));
+	const env = { ...process.env, TOILET_PI_CLAUDE_RUN_DIR: dir, CLAUDE_PID: "4199999" };
+	process.env.TOILET_PI_CLAUDE_RUN_DIR = dir;
+	const path = sessionEndpoint("sess-1");
+	assert.ok(bridgeCandidates(env, process.pid, "sess-1").includes(path));
+	delete process.env.TOILET_PI_CLAUDE_RUN_DIR;
+	let received;
+	const server = createServer((socket) => {
+		socket.setEncoding("utf8");
+		socket.once("data", (line) => {
+			received = JSON.parse(line);
+			socket.end("{}\n");
+		});
+	});
+	await new Promise((resolve) => server.listen(path, resolve));
+	try {
+		const hook = spawn(process.execPath, [fileURLToPath(new URL("../.claude-plugin/hook.js", import.meta.url))], { env });
+		hook.stdin.end(JSON.stringify({ hook_event_name: "Stop", session_id: "sess-1" }));
+		await new Promise((resolve) => hook.on("close", resolve));
+		assert.equal(received?.hook_event_name, "Stop");
+	} finally {
+		server.close();
+	}
+});
+
+test("a hook that finds no bridge says so in TOILET_PI_CLAUDE_LOG", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "tp-nolog-"));
+	const logFile = join(dir, "bridge.log");
+	const env = { ...process.env, TOILET_PI_CLAUDE_RUN_DIR: dir, CLAUDE_PID: "4199998", TOILET_PI_CLAUDE_LOG: logFile };
+	const hook = spawn(process.execPath, [fileURLToPath(new URL("../.claude-plugin/hook.js", import.meta.url))], { env });
+	hook.stdin.end(JSON.stringify({ hook_event_name: "PreToolUse", session_id: "nobody" }));
+	await new Promise((resolve) => hook.on("close", resolve));
+	assert.match(readFileSync(logFile, "utf8"), /PreToolUse: no bridge answered \(CLAUDE_PID=4199998, .*session=nobody; tried /);
 });
