@@ -218,6 +218,27 @@ r = await cli("history", SID, "--last", "200");
 const shown = (text) => r.out.split("\n").filter((line) => line.includes(text)).length;
 check(shown("Hi! What are we working on?") === 1 && shown("Moved and done.") === 1, `nothing is shown twice after the move (greeting ${shown("Hi! What are we working on?")}x, reply ${shown("Moved and done.")}x)`);
 
+// 3d. the corrected transcript holds an old Esc interrupt: replaying it must not cancel a pending remote abort
+user("[Request interrupted by user for tool use]"); // an earlier turn, interrupted in the terminal
+await sleep(1200);
+const s7 = cli("send", SID, "keep going", "--wait");
+const p7 = await next((m) => m.method === "notifications/claude/channel" && m.params.content === "keep going");
+channelUser(p7.params.meta.input_id, "keep going");
+await hook("UserPromptSubmit", { prompt: `<channel source="toilet-pi" input_id="${p7.params.meta.input_id}">\nkeep going\n</channel>` });
+await hook("PreToolUse", { tool_name: "Bash" });
+r = await cli("abort", SID);
+await sleep(500);
+const movedAgain = join(T, "cc", "projects", "-real-place-2", `${SID}.jsonl`);
+mkdirSync(dirname(movedAgain), { recursive: true });
+copyFileSync(writeTp, movedAgain);
+writeTp = movedAgain;
+currentTp = movedAgain;
+const stoppedAfterMove = await hook("PreToolUse", { tool_name: "Bash" });
+check(stoppedAfterMove?.continue === false, `a pending abort survives a transcript move whose history holds an old interrupt (hook output ${JSON.stringify(stoppedAfterMove)})`);
+r = await s7;
+check(r.code === 3, `that input reports aborted (exit ${r.code}, expected 3)`);
+await hook("Stop", {});
+
 // 4. abort stops the run at the next tool boundary (real Claude Code fires no Stop after continue:false)
 const s3 = cli("send", SID, "long refactor", "--wait");
 const p3 = await next((m) => m.method === "notifications/claude/channel" && m.params.content === "long refactor");

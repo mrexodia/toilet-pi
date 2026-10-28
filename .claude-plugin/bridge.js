@@ -303,7 +303,7 @@ export class Bridge {
 		this.#transcript = new Transcript();
 		this.#follow(path);
 		try {
-			await this.#pull();
+			await this.#pull({ replay: true });
 		} finally {
 			this.#shown = null;
 		}
@@ -327,8 +327,12 @@ export class Bridge {
 		}
 	}
 
-	/** Read new transcript lines and publish them; serialized so events keep their order. */
-	#pull({ silent = false } = {}) {
+	/**
+	 * Read new transcript lines and publish them; serialized so events keep their order. `silent` catches up without
+	 * publishing (the hello carries the history). `replay` re-reads history: unseen messages are published, but
+	 * entries that signal something live (an Esc interrupt) are not acted on, since they happened earlier.
+	 */
+	#pull({ silent = false, replay = false } = {}) {
 		this.#pulling = this.#pulling.then(async () => {
 			const tail = this.#tail;
 			if (tail === null) return;
@@ -346,7 +350,7 @@ export class Bridge {
 					}
 					if (event.type === "interrupted") {
 						// Esc in the terminal: Claude Code fires no Stop for a user interrupt.
-						if (!silent) {
+						if (!silent && !replay) {
 							this.#abortRequested = false;
 							this.#setBusy(false, "aborted");
 						}
