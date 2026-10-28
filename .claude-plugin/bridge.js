@@ -23,7 +23,7 @@ import WebSocket from "ws";
 import { buildHistoryPage } from "../history-page.js";
 import { createRunnerSocketFactory } from "../runner-socket.js";
 import { buildConnectUrl, parseToiletPiInput, readToiletPiConfig, redactUrlTokens } from "../toilet-pi-config.js";
-import { isClaudeCode, runDir, socketPath } from "./ipc.js";
+import { endpoint, endpointIsFile, isClaudeCode, runDir } from "./ipc.js";
 import { log, logToFile } from "./log.js";
 import { Tail, Transcript, unwrapChannel } from "./transcript.js";
 
@@ -84,12 +84,15 @@ export class Bridge {
 	}
 
 	async start() {
-		mkdirSync(runDir(), { recursive: true, mode: 0o700 });
-		const path = socketPath(process.ppid);
-		try {
-			unlinkSync(path);
-		} catch {
-			// none left over
+		// A Unix socket on macOS/Linux, a named pipe on Windows; either way keyed by the claude process.
+		const path = endpoint(process.ppid);
+		if (endpointIsFile) {
+			mkdirSync(runDir(), { recursive: true, mode: 0o700 });
+			try {
+				unlinkSync(path);
+			} catch {
+				// none left over
+			}
 		}
 		this.#ipc = createServer((socket) => {
 			let buffer = "";
@@ -121,7 +124,7 @@ export class Bridge {
 		this.#socketPath = path;
 		this.#timers.push(setInterval(() => void this.#pull(), POLL_MS));
 		this.#timers.push(setInterval(() => this.#checkDelivery(), 2000));
-		log(`listening for hooks of Claude process ${process.ppid}`);
+		log(`listening for hooks of Claude process ${process.ppid} on ${path}`);
 	}
 
 	#socketPath;
@@ -133,7 +136,7 @@ export class Bridge {
 		this.#watcher?.close();
 		this.#disconnect("shutdown");
 		this.#ipc?.close();
-		if (this.#socketPath) {
+		if (this.#socketPath && endpointIsFile) {
 			try {
 				unlinkSync(this.#socketPath);
 			} catch {
@@ -419,6 +422,10 @@ export class Bridge {
 	}
 
 	#cannotTerminate() {
+		if (process.platform === "win32") {
+			// Windows can only hard-kill a process, which would leave the terminal Claude Code was drawing in a mess.
+			return "Closing Claude Code sessions remotely isn't supported on Windows yet; close it in its terminal (/exit).";
+		}
 		return "This Claude Code session cannot be closed remotely: the bridge could not confirm its parent process is Claude Code.";
 	}
 

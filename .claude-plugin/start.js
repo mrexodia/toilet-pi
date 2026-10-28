@@ -37,7 +37,9 @@ function wanted() {
 
 function npm(args, cwd) {
 	return new Promise((resolvePromise, reject) => {
-		execFile("npm", args, { cwd, timeout: 120_000, env: { ...process.env, npm_config_update_notifier: "false" } }, (error, _stdout, stderr) =>
+		// npm is a .cmd script on Windows, which Node only runs through a shell.
+		const windows = process.platform === "win32";
+		execFile(windows ? "npm.cmd" : "npm", args, { cwd, shell: windows, timeout: 120_000, env: { ...process.env, npm_config_update_notifier: "false" } }, (error, _stdout, stderr) =>
 			error ? reject(new Error(`npm ${args[0]} failed: ${String(stderr || error.message).trim().split("\n").slice(-3).join(" ")}`)) : resolvePromise());
 	});
 }
@@ -100,10 +102,6 @@ function fallBackTo(data) {
 async function main() {
 	const mcp = new StdioMcp();
 	if (process.env.TOILET_PI_CLAUDE === "0") return;
-	if (process.platform === "win32") {
-		log("the Claude Code integration is not supported on Windows yet");
-		return;
-	}
 	if (!PACKAGES.every((name) => resolvableFrom(ROOT, name))) {
 		const data = process.env.CLAUDE_PLUGIN_DATA;
 		if (!data) throw new Error(`missing ${PACKAGES.join(", ")}: run npm install in ${ROOT}`);

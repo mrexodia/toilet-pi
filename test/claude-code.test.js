@@ -5,7 +5,9 @@ import { join } from "node:path";
 import test from "node:test";
 import { spawn } from "node:child_process";
 import { symlinkSync } from "node:fs";
-import { findBridgeSocket, isClaudeCode, parentOf, socketPath } from "../.claude-plugin/ipc.js";
+import { createServer } from "node:net";
+import { fileURLToPath } from "node:url";
+import { bridgeCandidates, endpoint, isClaudeCode, parentOf } from "../.claude-plugin/ipc.js";
 import { contentText, Tail, Transcript, unwrapChannel } from "../.claude-plugin/transcript.js";
 
 const at = "2026-10-27T15:00:00.000Z";
@@ -88,17 +90,48 @@ test("Tail yields only complete lines and resumes where it stopped", async () =>
 	assert.deepEqual(await tail.read(), [{ d: 4 }]);
 });
 
-test("a hook finds the bridge socket of its nearest ancestor", () => {
+test("hook candidates: CLAUDE_PID first, then the parent, then ancestors with an endpoint", () => {
 	const dir = mkdtempSync(join(tmpdir(), "tp-run-"));
 	process.env.TOILET_PI_CLAUDE_RUN_DIR = dir;
 	try {
-		assert.equal(findBridgeSocket(process.pid), null);
+		assert.deepEqual(bridgeCandidates({ CLAUDE_PID: "4242" }, process.pid), [endpoint(4242), endpoint(process.pid)]);
+		assert.deepEqual(bridgeCandidates({}, process.pid), [endpoint(process.pid)], "no endpoints up the tree yet");
+		// A Claude Code without CLAUDE_PID that runs hooks through a shell: found by walking up.
 		const parent = parentOf(process.pid);
 		assert.ok(Number.isInteger(parent) && parent > 1, "parent pid resolves");
-		writeFileSync(socketPath(parent), "");
-		assert.equal(findBridgeSocket(process.pid), socketPath(parent));
+		writeFileSync(endpoint(parent), "");
+		assert.deepEqual(bridgeCandidates({}, process.pid), [endpoint(process.pid), endpoint(parent)]);
 	} finally {
 		delete process.env.TOILET_PI_CLAUDE_RUN_DIR;
+	}
+});
+
+test("hook.js reaches the bridge through CLAUDE_PID alone and prints its answer", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "tp-hook-"));
+	const fakeClaude = 4_000_000 + (process.pid % 1000); // no such process: only CLAUDE_PID links the two
+	const env = { ...process.env, TOILET_PI_CLAUDE_RUN_DIR: dir, CLAUDE_PID: String(fakeClaude) };
+	process.env.TOILET_PI_CLAUDE_RUN_DIR = dir;
+	const path = endpoint(fakeClaude);
+	delete process.env.TOILET_PI_CLAUDE_RUN_DIR;
+	let received;
+	const server = createServer((socket) => {
+		socket.setEncoding("utf8");
+		socket.once("data", (line) => {
+			received = JSON.parse(line);
+			socket.end(`${JSON.stringify({ output: { continue: false } })}\n`);
+		});
+	});
+	await new Promise((resolve) => server.listen(path, resolve));
+	try {
+		const hook = spawn(process.execPath, [fileURLToPath(new URL("../.claude-plugin/hook.js", import.meta.url))], { env });
+		let out = "";
+		hook.stdout.on("data", (d) => (out += d));
+		hook.stdin.end(JSON.stringify({ hook_event_name: "PreToolUse", session_id: "s1", tool_name: "Bash" }));
+		await new Promise((resolve) => hook.on("close", resolve));
+		assert.equal(received?.tool_name, "Bash");
+		assert.deepEqual(JSON.parse(out), { continue: false });
+	} finally {
+		server.close();
 	}
 });
 
