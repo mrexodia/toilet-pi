@@ -6,7 +6,13 @@
 	<meta name="theme-color" content="#0d1117" />
 	<meta name="mobile-web-app-capable" content="yes" />
 	<meta name="apple-mobile-web-app-capable" content="yes" />
-	<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+	<!--
+		No black-translucent: since iOS 27, an installed web app using it is laid
+		out one status bar short (empty strip at the bottom) and gets a system
+		blur over the top inset. The default opaque bar avoids both. iOS reads
+		this only when the app is added to the Home Screen, so re-add it.
+	-->
+	<meta name="apple-mobile-web-app-status-bar-style" content="default" />
 	<meta name="apple-mobile-web-app-title" content="toilet-pi" />
 	<link rel="manifest" href="./manifest.webmanifest" />
 	<link rel="icon" href="./favicon.svg?v=4" type="image/svg+xml" />
@@ -596,8 +602,8 @@
 		}
 
 		.main-header {
-			background: rgba(13, 17, 23, 0.72);
-			backdrop-filter: blur(10px);
+			/* Solid so iOS can sample a colour for the opaque status bar. */
+			background: var(--bg);
 			overflow: visible;
 		}
 
