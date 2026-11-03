@@ -1134,7 +1134,7 @@
 		}
 
 		.sidebar-body {
-			padding-bottom: 92px;
+			padding-bottom: calc(92px + var(--safe-bottom));
 		}
 
 		.list-item,
@@ -1326,7 +1326,8 @@
 			border-top: 1px solid var(--border);
 			border-bottom: none;
 			box-shadow: 0 -10px 24px rgba(0, 0, 0, 0.22);
-			padding-bottom: 14px;
+			/* Keep the input clear of the home indicator in the installed app. */
+			padding-bottom: calc(14px + var(--safe-bottom));
 		}
 
 		.abort-button {
@@ -1335,7 +1336,7 @@
 
 		.new-session-fab {
 			position: fixed;
-			bottom: 24px;
+			bottom: calc(24px + var(--safe-bottom));
 			right: 24px;
 			z-index: 100;
 			border-radius: 50%;
@@ -1450,7 +1451,7 @@
 				grid-template-columns: minmax(0, 1fr) auto auto;
 				gap: 6px;
 				padding-top: 10px;
-				padding-bottom: 10px;
+				padding-bottom: calc(10px + var(--safe-bottom));
 			}
 		}
 
@@ -1493,7 +1494,7 @@
 				grid-template-columns: minmax(0, 1fr) auto auto;
 				gap: 6px;
 				padding-top: 8px;
-				padding-bottom: 8px;
+				padding-bottom: calc(8px + var(--safe-bottom));
 				padding-left: 6px;
 				padding-right: 6px;
 			}
