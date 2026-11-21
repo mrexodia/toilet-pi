@@ -4,7 +4,7 @@
  */
 
 import type { Context } from "@earendil-works/chord";
-import type { AssistantMessage, Message, SystemMessage, ThinkingLevel, Tool, UserMessage, Usage as AiUsage } from "@earendil-works/pi-ai";
+import type { AssistantMessage, Message, SystemMessage, ThinkingLevel, UserMessage, Usage as AiUsage } from "@earendil-works/pi-ai";
 import {
 	type Agent,
 	type Conversation,
@@ -178,7 +178,7 @@ function textOf(message: AssistantMessage): string {
 		.trim();
 }
 
-/** The same leading system message a turn gets: the agent's sections in order, and its tools. */
+/** Keep the turn's system sections and environment, but expose no callable tools to a compaction (as in UniiChat). */
 export async function systemMessage(
 	agent: Agent,
 	conversationId: ConversationId,
@@ -193,13 +193,7 @@ export async function systemMessage(
 		if (text === undefined) continue;
 		sections[section.key] = section.tag === false ? text : `<${section.key}>\n${text}\n</${section.key}>`;
 	}
-	const toolsAdded: Tool[] = agent.tools.map((tool) => ({
-		name: tool.name,
-		description: tool.description,
-		parameters: tool.parameters,
-		...(tool.constrainedSampling === undefined ? {} : { constrainedSampling: tool.constrainedSampling }),
-	}));
-	return { role: "system", content: "", sections, toolsAdded, timestamp };
+	return { role: "system", content: "", sections, timestamp };
 }
 
 function addUsage(total: AiUsage | undefined, usage: AiUsage): AiUsage {

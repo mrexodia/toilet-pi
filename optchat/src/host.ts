@@ -229,7 +229,10 @@ export async function openAgent(options: AgentOptions): Promise<Agent> {
 		await release();
 		throw error;
 	});
-	const cached = withMemoryCache(modelRuntime);
+	const cached = withMemoryCache(modelRuntime, {
+		// ChatGPT login rejects explicit cache options even for models whose API-key endpoint supports them.
+		allowOpenAIExplicit: (model) => !modelRuntime.isUsingOAuth(model.provider),
+	});
 	const harness = await Harness.open(
 		storage,
 		{ models: requests === undefined ? cached : recordRequests(cached, requests), registry, settings: harnessSettings(settings), env: () => env, onReport: report },

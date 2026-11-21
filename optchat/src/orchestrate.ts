@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { Type } from "@earendil-works/pi-ai";
 import { defineExtension, defineTask, defineTool, type Extension, LiveDoc } from "@earendil-works/pi-durable";
 import { createAuthStore, resolveCredentials } from "../../cli/auth.js";
-import { type HubHost, type HubSession, ToiletPiClient } from "../../cli/client.js";
+import { ControlError, type HubHost, type HubSession, ToiletPiClient } from "../../cli/client.js";
 import { parseChildRuntime, type ChildRuntime } from "./config.ts";
 import { ChatDoc } from "./optchat/docs.ts";
 import { stateLine } from "./optchat/extension.ts";
@@ -75,6 +75,10 @@ function reply(text: string) {
 type ReporterInput = { sessionGuid: string; name: string; inputId: string; task: string };
 type ReporterState = { phase: "wait"; attempt: number } | { phase: "report"; text: string };
 
+function unknownOutcome(name: string, inputId: string): string {
+	return `[${name}] report: the outcome of input ${inputId} is unknown (tracking was lost or expired, or the session disconnected). The task may already have executed; read the session's history to see what happened. Do not automatically resend it.`;
+}
+
 /** Waits for one input on another session to settle, then posts its answer into the chat. */
 export const Reporter = defineTask<ReporterInput, ReporterState, null>({
 	name: "agents.reporter",
@@ -89,7 +93,7 @@ export const Reporter = defineTask<ReporterInput, ReporterState, null>({
 				client = await hubClient(WAIT_MS);
 				const input = await client.waitInput(sessionGuid, inputId);
 				if (input.state === "unknown") {
-					text = `[${name}] report: the outcome of input ${inputId} is unknown (the session disconnected or the hub lost track of it); read its history to see what happened.`;
+					text = unknownOutcome(name, inputId);
 				} else {
 					let answer = "(no answer text)";
 					try {
@@ -104,12 +108,18 @@ export const Reporter = defineTask<ReporterInput, ReporterState, null>({
 					text = `[${name}] report (input ${inputId} ${input.state}): ${answer}`;
 				}
 			} catch (error) {
-				// A timeout or a disconnect: try again from a new checkpoint, with a little patience.
-				const attempt = task.state.checkpoint.attempt;
-				runtime.report(new Error(`reporter for ${name}: ${error instanceof Error ? error.message : String(error)} (attempt ${attempt})`));
-				await runtime.commit(() => ({ status: "running", checkpoint: { phase: "wait", attempt: attempt + 1 } }), context);
-				await runtime.sleep(runtime.now() + Math.min(60_000, 1000 * 2 ** Math.min(attempt, 6)), context);
-				return;
+				if (error instanceof ControlError && error.code === "unknown_input") {
+					// The hub's tracking ledger is ephemeral. Polling cannot recover a missing record;
+					// report once through the normal durable path, without replaying the original work.
+					text = unknownOutcome(name, inputId);
+				} else {
+					// A timeout or a disconnect: try again from a new checkpoint, with a little patience.
+					const attempt = task.state.checkpoint.attempt;
+					runtime.report(new Error(`reporter for ${name}: ${error instanceof Error ? error.message : String(error)} (attempt ${attempt})`));
+					await runtime.commit(() => ({ status: "running", checkpoint: { phase: "wait", attempt: attempt + 1 } }), context);
+					await runtime.sleep(runtime.now() + Math.min(60_000, 1000 * 2 ** Math.min(attempt, 6)), context);
+					return;
+				}
 			} finally {
 				client?.close();
 			}

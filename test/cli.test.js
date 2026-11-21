@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { compact, resolveSession, runCli } from "../cli/main.js";
-import { parseServerUrl } from "../cli/client.js";
+import { ControlError, parseServerUrl, ToiletPiClient } from "../cli/client.js";
 
 const configuration = { provider: "test", modelId: "model", thinkingLevel: "high" };
 function fixture() {
@@ -101,4 +101,31 @@ test("credentials are redacted from errors and mutation failures are not retried
   assert.equal(calls, 1);
   assert.equal(stderr, "error: [REDACTED] failed\n");
   assert.equal(f.closed, true);
+});
+
+test("waitInput preserves the hub error code without retrying or resending unknown inputs", async () => {
+  const client = new ToiletPiClient({ serverUrl: "http://127.0.0.1:1/", orchestratorToken: "test" });
+  client.overview = { capabilities: ["orchestration_v1"] };
+  const calls = [];
+  let receive;
+  client.waitFor = predicate => new Promise(resolve => {
+    receive = response => { assert.ok(predicate(response)); resolve(response); };
+  });
+  client.send = request => {
+    calls.push(request);
+    receive({ type: "control_response", requestId: request.requestId, success: false,
+      error: { code: "unknown_input", message: "Tracking record no longer exists" } });
+  };
+  try {
+    await assert.rejects(client.waitInput("session", "old-input"), error => {
+      assert.ok(error instanceof ControlError);
+      assert.equal(error.code, "unknown_input");
+      assert.equal(error.message, "unknown_input: Tracking record no longer exists");
+      return true;
+    });
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].operation, "get_input");
+    assert.equal(calls[0].sessionGuid, "session");
+    assert.equal(calls[0].inputId, "old-input");
+  } finally { client.close(); }
 });

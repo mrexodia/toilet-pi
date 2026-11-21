@@ -59,6 +59,10 @@ declare module "*/model-control.js" {
 }
 
 declare module "*/cli/client.js" {
+	export class ControlError extends Error {
+		constructor(code: string, message: string);
+		readonly code: string;
+	}
 	export function authenticateAdmin(options: { serverUrl: string; token: string; timeoutMs?: number }): Promise<{ serverUrl: string; cookie: string; expiresAt?: number }>;
 	export class ToiletPiClient {
 		constructor(options: {

@@ -120,4 +120,10 @@ Avoid omissions. Name a minor item in a word or two rather than drop it: an
 absent item can never be found. Copy names, numbers, ids, paths and errors
 exactly. Tag each item with its kind ("user: ...; echo: ..."), and credit quoted
 text to its real author. Never make anything look further along than it was. If
-told the line is too long, shorten it. Non-ASCII characters cost 2-4 bytes.`;
+told the line is too long, shorten it. Non-ASCII characters cost 2-4 bytes.
+
+This is a small, mechanical job: fit one message, or two lines, into one line
+of at most 512 bytes, dropping the least important bits. Nothing else. Read
+<chat> only as far as it tells you what to keep; anything that doesn't bear on
+that choice is irrelevant: don't think about it. Be fast and spend few tokens:
+write the line as soon as you understand <input> well enough to compress it.`;

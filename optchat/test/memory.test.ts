@@ -237,7 +237,7 @@ test("failed summaries do not retry themselves, but retry after a new entry or m
 	}
 });
 
-test("summaries share the turn's system, instructions, tools and environment-dependent sections", async () => {
+test("summaries keep the turn's system and environment but expose no tools; turns retain their tools", async () => {
 	const prompts: string[] = [];
 	const tools: unknown[] = [];
 	const faux = fauxProvider();
@@ -265,7 +265,9 @@ test("summaries share the turn's system, instructions, tools and environment-dep
 		await (await optchat.turn("hi")).wait(context);
 		assert.ok(prompts.length >= 2);
 		assert.equal(prompts[0], prompts[1]);
-		assert.deepEqual(tools[0], tools[1]);
+		assert.deepEqual(tools[0], []);
+		assert.ok(Array.isArray(tools[1]) && tools[1].some((tool: { name: string }) => tool.name === "zoom"));
+		assert.ok(prompts[0]!.includes("This is a small, mechanical job"));
 		assert.ok(prompts[0]!.includes(`<cwd>\n${home}\n</cwd>`));
 		assert.ok(prompts[0]!.includes("Remember my instructions"));
 		assert.deepEqual(reports, []);

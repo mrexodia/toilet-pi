@@ -41,6 +41,15 @@ export async function authenticateAdmin({ serverUrl, token, timeoutMs = 20000 })
   return { serverUrl: url.href, cookie, ...(expiresAt !== undefined ? { expiresAt } : {}) };
 }
 
+/** A rejected hub control operation; keep the wire code separate from its human-readable message. */
+export class ControlError extends Error {
+  constructor(code, message) {
+    super(`${code}: ${message}`);
+    this.name = "ControlError";
+    this.code = code;
+  }
+}
+
 export class ToiletPiClient {
   constructor({ serverUrl, token, orchestratorToken, sessionCookie, timeoutMs = 20000 }) {
     this.serverUrl = parseServerUrl(serverUrl);
@@ -158,7 +167,7 @@ export class ToiletPiClient {
     const pending = this.waitFor(message => message.type === "control_response" && message.requestId === requestId, timeoutMs);
     this.send({ type: "control_request", requestId, operation, ...fields });
     const response = await pending;
-    if (!response.success) throw new Error(`${response.error?.code || "failed"}: ${response.error?.message || "Control request failed"}`);
+    if (!response.success) throw new ControlError(response.error?.code || "failed", response.error?.message || "Control request failed");
     return response.data;
   }
 

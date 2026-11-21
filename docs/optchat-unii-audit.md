@@ -1,5 +1,9 @@
 # Optchat / UniiChat implementation review
 
+Historical review of the initial parity fixes. The [compaction efficiency follow-up](optchat-compaction-efficiency.md#implementation-follow-up)
+adds tool-free compactions, the canonical efficiency paragraph, auth-aware OpenAI view blocks and bounded cache-writer
+coordination. Its tests intentionally replace the turn/compactor tool-equality assertion described below.
+
 ## Scope and reference
 
 Compared `optchat/` against Victor Taelin's actual [UniiChat implementation](https://github.com/VictorTaelin/UniiChat/tree/0500bf6a8ea4bf0ce047488562022b1b6532cc30),

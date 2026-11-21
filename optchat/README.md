@@ -85,7 +85,10 @@ For the agent's own tools that drive other sessions (`agents`, `agent_send`, `ag
 `agent_resume`, `agent_new`), give it the CLI's saved login (`toilet-pi login`) or a scoped token in
 `TOILET_PI_ORCHESTRATOR_TOKEN` with `TOILET_PI_CLI_SERVER`. A task sent with `agent_send` returns at once; a durable
 reporter task waits for the other session to settle and posts its answer into the chat as a message starting
-`[name] report`, which starts a turn.
+`[name] report`, which starts a turn. Temporary connection failures/timeouts are retried. If the hub has lost or expired
+an input's tracking record (`unknown_input`), the reporter posts one outcome-unknown report and stops polling; it never
+resends the original task. Check the target session's history before deciding whether to send new work. Restart Optchat
+to load reporter fixes; existing waiting reporters resume from their saved checkpoints without a database migration.
 
 `agent_new` can start a normal headless Pi or OMP in an existing absolute folder on any host with a connected launch-capable
 Pi/OMP/Optchat runner; no supervisor or inactive-project scan is required. Bootstrap the first remote Pi over SSH inside
@@ -168,9 +171,13 @@ Options and environment variables, each overriding `optchat.json` for one run:
   ready, and the `Build` task that makes one node with a model call, with retries and the "Too long" cut.
 - `src/optchat/extension.ts`: the system prompt, the `zoom` and `date` tools, the hook that gives each request
   `[tools] [system] [view] [message]` with the view frozen for the run, and the hook that clips tool output.
-- `src/optchat/cache.ts`: Anthropic Messages wire-format caching: four-line view blocks, the last whole one marked,
-  and no mark on a compaction's unique task. Each view merges on its own ceiling; a turn-view merge never forces a
-  compactor-view merge.
+- `src/optchat/cache.ts`: stable four-line view blocks for Anthropic Messages and explicitly capable OpenAI Responses
+  models. API-key OpenAI calls get view breakpoints; ChatGPT-login calls get ordinary text blocks, without explicit
+  cache fields that their auth path rejects. The compaction task is not explicitly marked. Each view merges on its own ceiling.
+- `src/optchat/cache-flight.ts`: bounded coordination of background calls sharing a cold prefix. Followers wait only
+  until the writer's provider response indicates prefill has finished (at most 10 seconds); each still makes its own
+  request. Normal turns never wait on this coordinator. Failures/cancellation release waiters; only bounded, process-local
+  hashes and short-lived scheduling hints are kept.
 - `src/runner.ts`: the Toilet-Pi runner protocol, with the hub's input ids as durable request ids.
 - `src/orchestrate.ts`: the hub tools and the reporter task.
 - `src/host.ts`: pi's model runtime and settings, the Harness over SQLite, the coding tools.
@@ -182,10 +189,18 @@ What differs from the document, knowingly:
 
 - Thoughts are never summarized and never shown, but they stay in the durable transcript, because providers need
   them back during a run's tool calls. The document never logs them at all.
-- OpenAI-style automatic prefix caching, including Codex, is left to pi-ai. The explicit view-block adapter targets
-  Anthropic Messages, including API-key and OAuth calls; it does not add breakpoints to other wire protocols.
+- Explicit view caching targets Anthropic Messages and `openai-responses` models declaring
+  `compat.supportsExplicitPromptCacheMode`. Direct OpenAI also requires known API-key auth: ChatGPT login (or unknown
+  auth) uses ordinary stable text blocks and automatic caching instead. Codex, Azure, Completions and other protocols
+  are unchanged. `cacheRetention: "none"` bypasses the adapter and coordinator.
 - The compactions' model does not have to be the turns' model, so a compaction may not share the turns' cache entry.
 - Images and `zoom("Name")` into a subagent's log are absent; other agents are hub sessions reached through tools.
+
+Compaction requests are text-only: they retain the system instructions and memory context but expose no callable tools.
+The user-facing agent keeps all its tools. The 512-byte target, five attempts, shortest-answer fallback, tree and zoom
+remain unchanged. The [compaction efficiency report](../docs/optchat-compaction-efficiency.md) explains the measurements,
+changes and remaining live-validation limits. Restart the Optchat process to load these changes; existing summaries are
+not regenerated. Request layout changes cause a one-time cold prefix; actual cache hits remain provider-dependent.
 
 Every message is a transcript entry committed before it is shown. Every node, queue change and view change is a
 commit on the same line. A compaction is a durable task: a crash resumes it. Tests: `npm run optchat:test`.
